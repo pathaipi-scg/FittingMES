@@ -325,9 +325,15 @@ class DepalletTests(unittest.TestCase):
             response=production_page(request(),production_id=7,production_date=DAY)
         self.assertEqual(response.status_code,200)
         text=response.body.decode()
-        self.assertLess(text.index('CALCULATED DATA'),text.index('DEPALLET INPUT'))
+        self.assertLess(text.index('id="wet-reject-qty"'),text.index('DEPALLET INPUT'))
+        for heading in ('CALCULATED DATA','REJECT DETAIL','CALCULATED DEPALLET DATA'):
+            self.assertNotIn('<h2>'+heading+'</h2>',text)
         self.assertIn('name="lot_no"',text)
-        self.assertIn('R99 / Unclassified',text)
+        self.assertIn('R99 อื่นๆ',text)
+        import re
+        r99=re.search(r'<input id="depallet-r99"[^>]*>',text)[0]
+        self.assertIn('readonly',r99)
+        self.assertNotIn('name=',r99)
         self.assertNotIn('id="reject-R99"',text)
         self.assertEqual(text.count('data-reject-code='),24)
         import re

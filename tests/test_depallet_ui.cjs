@@ -8,9 +8,16 @@ function element(value = '') { return { get value() { return String(value); }, s
   append(...children) { this.children.push(...children); }, children: [],
   replaceChildren() { this.children = []; } }; }
 const ids = ['depallet-input','depallet-fields','depallet-date','depallet-qty','depallet-good','depallet-rejects',
-  'save-depallet','depallet-reject-qty','depallet-r99','depallet-difference',
+  'depallet-r99-row','save-depallet','depallet-reject-qty','depallet-r99','depallet-difference',
   'depallet-physical','depallet-balance','depallet-shift','depallet-lot','depallet-remark'];
 const nodes = Object.fromEntries(ids.map(id => [id, element()]));
+nodes['depallet-r99-row'].append(element(), nodes['depallet-r99']);
+const r99Tag = html.match(/<input id="depallet-r99"[^>]*>/)[0];
+assert.match(r99Tag, /type="number"/);
+assert.match(r99Tag, /\breadonly\b/);
+assert.doesNotMatch(r99Tag, /\bname=|data-reject-code=/);
+assert.ok(html.includes('<label for="depallet-r99">R99 อื่นๆ</label>'));
+assert.ok(html.indexOf('id="depallet-r99-row"') > html.indexOf('{% for reason in inactive_rejects %}'));
 const form = nodes['depallet-input'];
 form.action = '/lots/7/depallet';
 nodes['depallet-date'].value = '2026-09-22';
@@ -36,7 +43,7 @@ const submit = () => form.handlers.submit({preventDefault() {}});
   nodes['depallet-good'].value = '89'; trigger();
   assert.equal(nodes['depallet-difference'].value, '1');
   for (const [depallet,good,classified, difference, warning] of [
-    [3140,2980,41,119,'Unclassified rejects are calculated as R99.'],
+    [3140,2980,41,119,'R99 อื่นๆ (คำนวณ) = 119'],
     [3000,2800,215,-15,'Classified reject exceeds physical reject by 15. R99 = 0. Save is allowed.']
   ]) {
     nodes['depallet-qty'].value = String(depallet); nodes['depallet-good'].value = String(good);
@@ -85,10 +92,19 @@ const submit = () => form.handlers.submit({preventDefault() {}});
   await nodes['depallet-date'].handlers.change();
   assert.equal(nodes['depallet-lot'].value, 'RELOADED');
   assert.equal(nodes['save-depallet'].disabled, false);
-  assert.equal(nodes['depallet-balance'].value, 'Unclassified rejects are calculated as R99.');
+  assert.equal(nodes['depallet-balance'].value, 'R99 อื่นๆ (คำนวณ) = 1');
   assert.equal(nodes['depallet-r99'].value, '1');
   assert.equal(nodes['depallet-reject-qty'].value, '0');
-  assert.equal(nodes['depallet-rejects'].children.length, 1);
+  assert.equal(nodes['depallet-rejects'].children.length, 2);
   assert.equal(nodes['depallet-rejects'].children[0].children[1].dataset.rejectCode, 'R01');
+  assert.equal(nodes['depallet-rejects'].children.at(-1), nodes['depallet-r99-row']);
+  const manual = nodes['depallet-rejects'].children[0].children[1];
+  assert.notEqual(manual.readOnly, true);
+  manual.value = '2'; form.handlers.input({target:manual});
+  assert.equal(nodes['depallet-r99'].value, '0');
+  manual.value = '0'; form.handlers.input({target:manual});
+  assert.equal(nodes['depallet-r99'].value, '1');
+  nodes['depallet-good'].value = '3'; form.handlers.input({target:nodes['depallet-good']});
+  assert.equal(nodes['depallet-r99'].value, '2');
   console.log('Depallet live totals, validation, save statuses, date reload and failed-load protection passed.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

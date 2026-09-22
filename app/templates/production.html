@@ -96,7 +96,7 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
 #production-shift{width:38px}
 #production-input .production-remark{flex:1;min-width:150px}
 #production-remark{width:100%;min-width:0}
-.calculated-data{border-top:0.75px solid #edf0f4;margin-top:4.5px;padding-top:3px}
+.calculated-data{border-top:0.75px solid #edf0f4;margin-top:3px;padding-top:2px}
 
 .lot-input-heading{display:flex;align-items:baseline;gap:6px;min-width:0}
 .lot-input-heading h2{flex:none}
@@ -114,7 +114,7 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
 #family-product-form .family-lot-preview{display:flex;flex-basis:100%;flex-wrap:wrap;gap:8px}
 .family-lot-preview output{font-weight:600}
 
-.depallet-section{border-top:0.75px solid #dbe2ea;margin-top:4.5px;padding-top:3px}
+.depallet-section{border-top:0.75px solid #dbe2ea;margin-top:3px;padding-top:2px}
 #depallet-input{display:block}
 #depallet-fields{border:0;margin:0;padding:0;min-width:0}
 .depallet-input-row{display:flex;align-items:center;flex-wrap:wrap;gap:4.5px}
@@ -123,7 +123,7 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
 #depallet-qty,#depallet-good{width:65px}
 .depallet-input-row .depallet-remark{flex:1;min-width:125px}
 #depallet-remark{min-width:0;width:100%}
-.reject-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:3px 7px}
+.reject-grid{margin-top:3px;display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:3px 7px}
 .reject-grid>div{display:flex;align-items:center;gap:4px;min-width:0}
 .reject-grid label{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .reject-grid input{width:52px;flex:none}
@@ -212,7 +212,7 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
 <div class="production-remark"><label for="production-remark">Remark</label><input id="production-remark" name="remark" maxlength="1000" value="{{ production_data.get('Remark') or '' }}"></div>
 <button class="primary" type="submit">SAVE PRODUCTION</button>
 </form>
-<div class="calculated-data"><h2>CALCULATED DATA</h2>
+<div class="calculated-data">
 <dl class="info-fields" aria-live="polite">
 <div><dt>Wet Reject Qty</dt><dd><output id="wet-reject-qty">{{ calculated.WetRejectQty if calculated.WetRejectQty is not none else '' }}</output></dd></div>
 <div><dt>Wet Reject %</dt><dd><output id="wet-reject-percent">{{ '{:.2f} %'.format(calculated.WetRejectPercent) if calculated.WetRejectPercent is not none else '' }}</output></dd></div>
@@ -230,16 +230,16 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
 <div><label for="depallet-good">Good Qty</label><input id="depallet-good" name="good_qty" type="number" min="0" max="2147483647" step="1" value="{{ depallet.GoodQty }}" required></div>
 <div class="depallet-remark"><label for="depallet-remark">Remark</label><input id="depallet-remark" name="remark" maxlength="500" value="{{ depallet.Remark or '' }}"></div>
 <button id="save-depallet" type="submit" class="primary">SAVE DEPALLET</button></div>
-<h2>REJECT DETAIL</h2><div id="depallet-rejects" class="reject-grid">
+<div id="depallet-rejects" class="reject-grid">
 {% for reason in reject_reasons %}<div><label for="reject-{{ reason.ReasonCode }}" title="{{ reason.ReasonCode }} {{ reason.ReasonNameTH }}">{{ reason.ReasonCode }} {{ reason.ReasonNameTH }}</label><input id="reject-{{ reason.ReasonCode }}" name="reject_{{ reason.ReasonCode }}" data-reject-code="{{ reason.ReasonCode }}" type="number" min="0" max="2147483647" step="1" value="{{ reject_values.get(reason.ReasonCode, '') }}" aria-label="{{ reason.ReasonCode }} {{ reason.ReasonNameTH }}"></div>{% endfor %}
 {% for reason in inactive_rejects %}<div><label for="reject-{{ reason.ReasonCode }}">{{ reason.ReasonCode }} {{ reason.ReasonNameTH or '' }} (inactive)</label><input id="reject-{{ reason.ReasonCode }}" data-reject-code="{{ reason.ReasonCode }}" type="number" value="{{ reason.Qty }}" readonly aria-label="{{ reason.ReasonCode }} inactive saved quantity"></div>{% endfor %}
-</div><div class="calculated-data"><h2>CALCULATED DEPALLET DATA</h2>
+<div id="depallet-r99-row"><label for="depallet-r99">R99 อื่นๆ</label><input id="depallet-r99" type="number" min="0" step="1" value="{{ depallet.R99|default('') }}" readonly aria-label="R99 อื่นๆ"></div>
+</div><div class="calculated-data">
 <dl class="info-fields" aria-live="polite">
 <div><dt>Physical Reject</dt><dd><output id="depallet-physical">{{ depallet.PhysicalRejectQty|default('') }}</output></dd></div>
 <div><dt>Classified Reject</dt><dd><output id="depallet-reject-qty">{{ depallet.ClassifiedRejectQty|default('') }}</output></dd></div>
-<div><dt>R99 / Unclassified</dt><dd><output id="depallet-r99">{{ depallet.R99|default('') }}</output></dd></div>
 <div><dt>Difference</dt><dd><output id="depallet-difference">{{ depallet.DifferenceQty|default('') }}</output></dd></div>
-<div><dt>Status</dt><dd><output id="depallet-balance">{{ ('All physical rejects classified.' if depallet.DifferenceQty == 0 else 'Unclassified rejects are calculated as R99.' if depallet.DifferenceQty > 0 else 'Classified reject exceeds physical reject by ' ~ (-depallet.DifferenceQty) ~ '. R99 = 0. Save is allowed.') if depallet.DifferenceQty is defined else '' }}</output></dd></div>
+<div><dt>Status</dt><dd><output id="depallet-balance">{{ ('All physical rejects classified.' if depallet.DifferenceQty == 0 else 'R99 อื่นๆ (คำนวณ) = ' ~ depallet.R99 if depallet.DifferenceQty > 0 else 'Classified reject exceeds physical reject by ' ~ (-depallet.DifferenceQty) ~ '. R99 = 0. Save is allowed.') if depallet.DifferenceQty is defined else '' }}</output></dd></div>
 </dl></div></fieldset></form></section>
 {% endif %}
 {% else %}<p class="muted">Select a Lot to enter production data.</p>{% endif %}
@@ -587,6 +587,7 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
   const good = document.getElementById('depallet-good');
   const rejects = document.getElementById('depallet-rejects');
   const button = document.getElementById('save-depallet');
+  const r99Row = document.getElementById('depallet-r99-row');
   const outputs = {
     PhysicalRejectQty: document.getElementById('depallet-physical'),
     ClassifiedRejectQty: document.getElementById('depallet-reject-qty'),
@@ -606,7 +607,7 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
   function show(data) {
     for (const [key, output] of Object.entries(outputs)) {
       output.value = key === 'IsBalanced' ? (data.DifferenceQty === 0 ? 'All physical rejects classified.' :
-        data.DifferenceQty > 0 ? 'Unclassified rejects are calculated as R99.' :
+        data.DifferenceQty > 0 ? `R99 อื่นๆ (คำนวณ) = ${data.R99}` :
         `Classified reject exceeds physical reject by ${-data.DifferenceQty}. R99 = 0. Save is allowed.`) :
         String(data[key]);
     }
@@ -652,6 +653,7 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
       label.title = label.textContent; input.setAttribute('aria-label', label.textContent);
       row.append(label, input); rejects.append(row);
     }
+    rejects.append(r99Row);
     calculate();
   }
   form.addEventListener('input', event => {

@@ -111,7 +111,7 @@ class ProductionDataTests(unittest.TestCase):
         self.assertEqual(response.context['current']['Shift'],'2')
         self.assertEqual(response.context['calculated']['WetRejectQty'],338)
         text=response.body.decode()
-        for value in ('PRODUCTION INPUT','CALCULATED DATA','3648','3310','Saved note','9.27 %','value="2"'):
+        for value in ('PRODUCTION INPUT','Wet Reject Qty','Wet Reject %','3648','3310','Saved note','9.27 %','value="2"'):
             self.assertIn(value,text)
 
     def test_save_route_redirects_and_validation_keeps_input(self):
