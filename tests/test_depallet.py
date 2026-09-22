@@ -128,10 +128,11 @@ class DepalletTests(unittest.TestCase):
         conn=MemoryConnection(existing=True)
         context=read_context(conn.cursor(),LOT,date(2026,9,23))
         self.assertEqual(context['depallet']['LotNo'],'STORED-LOT-01')
-        self.assertEqual(context['reject_values'],{'R01':7,'R99':3})
+        self.assertEqual(context['reject_values'],{'R01':7})
+        self.assertEqual(context['depallet']['R99'],3)
         self.assertEqual(context['depallet']['AccountedQty'],100)
         self.assertEqual(context['depallet']['RejectPct'],Decimal(10))
-        self.assertTrue(context['depallet']['IsBalanced'])
+        self.assertFalse(context['depallet']['IsBalanced'])
 
     def test_all_reason_quantities_save_as_rows(self):
         conn=MemoryConnection()
@@ -139,7 +140,8 @@ class DepalletTests(unittest.TestCase):
         result=save_depallet(conn,7,raw)
         self.assertEqual(len(conn.db['rejects']),25)
         self.assertEqual({key[1] for key in conn.db['rejects']},set(CODES))
-        self.assertTrue(result['IsBalanced'])
+        self.assertEqual(result['R99'],1)
+        self.assertEqual(result['DifferenceQty'],1)
 
     def test_editable_depallet_lot_never_modifies_production(self):
         conn=MemoryConnection(); before=copy.deepcopy(conn.db['lots'])
@@ -189,16 +191,19 @@ class DepalletTests(unittest.TestCase):
             for classified, difference in ((175, 25), (215, -15)):
                 with self.subTest(existing=existing, classified=classified):
                     conn=MemoryConnection(existing=existing)
-                    # Exercise every raw code, including operator-entered Other.
-                    entered={code:'1' for code in CODES}
-                    entered['R01']=str(classified-24)
+                    # Exercise every operator-classified raw code.
+                    entered={code:'1' for code in CODES[:-1]}
+                    entered['R01']=str(classified-23)
                     raw=dict(RAW,DepalletQty='3000',GoodQty='2800',rejects=entered)
                     before=copy.deepcopy(raw)
                     result=save_depallet(conn,7,raw)
                     self.assertEqual(conn.commits,1)
                     self.assertEqual(conn.rollbacks,0)
                     self.assertEqual(raw,before)
-                    self.assertEqual(conn.db['rejects'],{(10,code):int(qty) for code,qty in entered.items()})
+                    expected={(10,code):int(qty) for code,qty in entered.items()}
+                    if difference > 0: expected[(10,'R99')]=difference
+                    self.assertEqual(conn.db['rejects'],expected)
+                    self.assertEqual(result['R99'],max(difference,0))
                     self.assertEqual(result['PhysicalRejectQty'],200)
                     self.assertEqual(result['ClassifiedRejectQty'],classified)
                     self.assertEqual(result['DifferenceQty'],difference)
@@ -207,11 +212,48 @@ class DepalletTests(unittest.TestCase):
                     self.assertEqual(loaded['depallet']['DifferenceQty'],difference)
                     self.assertEqual(loaded['reject_values'],{code:int(qty) for code,qty in entered.items()})
 
-    def test_unclassified_difference_does_not_create_other(self):
+    def test_positive_difference_stores_calculated_r99(self):
         conn=MemoryConnection()
-        result=save_depallet(conn,7,dict(RAW,DepalletQty='3000',GoodQty='2800',rejects={'R01':'175'}))
-        self.assertEqual(result['DifferenceQty'],25)
-        self.assertEqual(conn.db['rejects'],{(10,'R01'):175})
+        result=save_depallet(conn,7,dict(RAW,DepalletQty='3140',GoodQty='2980',rejects={'R01':'41'}))
+        self.assertEqual(result['PhysicalRejectQty'],160)
+        self.assertEqual(result['ClassifiedRejectQty'],41)
+        self.assertEqual(result['DifferenceQty'],119)
+        self.assertEqual(result['R99'],119)
+        self.assertEqual(conn.db['rejects'],{(10,'R01'):41,(10,'R99'):119})
+
+    def test_edit_replaces_deletes_and_recreates_r99(self):
+        conn=MemoryConnection(existing=True)
+        # Even an inactive R99 master must not preserve stale stored R99.
+        conn.work['reasons'][-1]['IsActive']=False
+        for depallet,good,classified,expected in ((3140,2980,41,119),
+                                                (3000,2800,215,0),
+                                                (3000,2800,200,0),
+                                                (3000,2790,200,10)):
+            result=save_depallet(conn,7,dict(RAW,DepalletQty=str(depallet),GoodQty=str(good),rejects={'R01':str(classified)}))
+            self.assertEqual(result['R99'],expected)
+            self.assertEqual(conn.db['rejects'][(10,'R01')],classified)
+            if expected:
+                self.assertEqual(conn.db['rejects'][(10,'R99')],expected)
+            else:
+                self.assertNotIn((10,'R99'),conn.db['rejects'])
+
+    def test_client_r99_is_ignored(self):
+        for supplied in ('999999','-15','not a quantity',None):
+            for classified,expected in ((41,119),(215,0)):
+                conn=MemoryConnection(existing=True)
+                result=save_depallet(conn,7,dict(RAW,DepalletQty='3140',GoodQty='2980',
+                    rejects={'R01':str(classified),'R99':supplied}))
+                self.assertEqual(result['R99'],expected)
+                self.assertEqual(conn.db['rejects'].get((10,'R99'),0),expected)
+
+    def test_loading_stale_r99_recalculates_without_writing(self):
+        conn=MemoryConnection(existing=True)
+        conn.work['rejects'][(10,'R99')]=999
+        context=read_context(conn.cursor(),LOT,date(2026,9,23))
+        self.assertEqual(context['depallet']['R99'],3)
+        self.assertEqual(context['depallet']['ClassifiedRejectQty'],7)
+        self.assertEqual(conn.work['rejects'][(10,'R99')],999)
+        self.assertTrue(all(sql.lstrip().startswith('SELECT') for sql,_ in conn.sql))
 
     def test_unbalanced_save_response_is_successful(self):
         for classified in (175,215):
@@ -250,10 +292,11 @@ class DepalletTests(unittest.TestCase):
 
     def test_inactive_saved_rejects_are_preserved_and_counted(self):
         conn=MemoryConnection(existing=True)
-        conn.work['reasons'][-1]['IsActive']=False
+        conn.work['reasons'][0]['IsActive']=False
         context=read_context(conn.cursor(),LOT,date(2026,9,23))
-        self.assertEqual(context['inactive_rejects'][0]['Qty'],3)
-        save_depallet(conn,7,dict(RAW,rejects={'R01':'7'}))
+        self.assertEqual(context['inactive_rejects'][0]['Qty'],7)
+        save_depallet(conn,7,dict(RAW,rejects={}))
+        self.assertEqual(conn.db['rejects'][(10,'R01')],7)
         self.assertEqual(conn.db['rejects'][(10,'R99')],3)
 
     def test_server_load_and_save_response(self):
@@ -267,7 +310,7 @@ class DepalletTests(unittest.TestCase):
             self.assertEqual(json.loads(response.body)['message'],'Depallet data saved.')
 
     def test_save_route_parses_dynamic_reject_fields(self):
-        body=urlencode(dict(depallet_date='2026-09-23',shift='2',lot_no='OTHER',depallet_qty='1',good_qty='0',reject_R99='1')).encode()
+        body=urlencode(dict(depallet_date='2026-09-23',shift='2',lot_no='OTHER',depallet_qty='1',good_qty='0',reject_R99='99999')).encode()
         async def receive(): return {'type':'http.request','body':body,'more_body':False}
         req=Request({'type':'http','method':'POST','path':'/lots/7/depallet','headers':[(b'content-type',b'application/x-www-form-urlencoded')]},receive)
         conn=MemoryConnection()
@@ -284,8 +327,9 @@ class DepalletTests(unittest.TestCase):
         text=response.body.decode()
         self.assertLess(text.index('CALCULATED DATA'),text.index('DEPALLET INPUT'))
         self.assertIn('name="lot_no"',text)
-        self.assertIn('R99 เหตุผล R99',text)
-        self.assertEqual(text.count('data-reject-code='),25)
+        self.assertIn('R99 / Unclassified',text)
+        self.assertNotIn('id="reject-R99"',text)
+        self.assertEqual(text.count('data-reject-code='),24)
         import re
         tag=re.search(r'<input id="depallet-lot"[^>]*>',text)[0]
         self.assertNotIn('readonly',tag)

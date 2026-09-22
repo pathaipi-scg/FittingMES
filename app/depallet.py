@@ -5,20 +5,25 @@ from decimal import Decimal
 from app.lots import rows, lock_lots
 
 MAX_QTY = 2147483647
+MANUAL_CODES = frozenset(f'R{i:02d}' for i in range(1, 25))
 
 
 def read_reasons(cursor):
     cursor.execute("""SELECT ReasonCode,ReasonNameTH,SortOrder FROM dbo.RejectReasonMaster
         WHERE IsActive=1 ORDER BY SortOrder,ReasonCode""")
-    return rows(cursor)
+    return [r for r in rows(cursor) if r['ReasonCode'] in MANUAL_CODES]
 
 
 def summary(quantity, good, rejects):
-    total = sum(rejects.values())
-    accounted = good + total
-    return dict(PhysicalRejectQty=quantity-good, ClassifiedRejectQty=total,
+    classified = sum(qty for code, qty in rejects.items() if code in MANUAL_CODES)
+    physical = quantity - good
+    difference = physical - classified
+    r99 = max(difference, 0)
+    total = classified + r99
+    return dict(PhysicalRejectQty=physical, ClassifiedRejectQty=classified,
+                R99=r99, DifferenceQty=difference, IsBalanced=difference == 0,
                 RejectQty=total, RejectPct=Decimal(total) * 100 / quantity if quantity else Decimal(0),
-                AccountedQty=accounted, DifferenceQty=quantity-accounted, IsBalanced=quantity == accounted)
+                AccountedQty=good + total)
 
 
 def default_entry(lot, depallet_date):
@@ -47,8 +52,8 @@ def read_context(cursor, lot, depallet_date):
         entry.update(summary(entry['DepalletQty'], entry['GoodQty'],
                              {r['ReasonCode']: r['Qty'] for r in rejects}))
     return dict(depallet=entry, reject_reasons=reasons,
-                reject_values={r['ReasonCode']: r['Qty'] for r in rejects},
-                inactive_rejects=[r for r in rejects if not r['IsActive']])
+                reject_values={r['ReasonCode']: r['Qty'] for r in rejects if r['ReasonCode'] in MANUAL_CODES},
+                inactive_rejects=[r for r in rejects if not r['IsActive'] and r['ReasonCode'] in MANUAL_CODES])
 
 
 def quantity(value, label, blank_zero=False):
@@ -61,7 +66,8 @@ def quantity(value, label, blank_zero=False):
 
 
 def validate(raw, active_codes, retained=None):
-    retained = retained or {}
+    active_codes = set(active_codes) & MANUAL_CODES
+    retained = {code: qty for code, qty in (retained or {}).items() if code in MANUAL_CODES}
     try:
         depallet_date = date.fromisoformat(str(raw.get('DepalletDate', '')))
     except ValueError:
@@ -78,7 +84,7 @@ def validate(raw, active_codes, retained=None):
     supplied = raw.get('rejects', {})
     if not isinstance(supplied, dict):
         raise ValueError('Invalid reject quantities.')
-    if set(supplied) - set(active_codes):
+    if set(supplied) - active_codes - {'R99'}:
         raise ValueError('Reject reasons changed or are invalid. Reload the Depallet date.')
     rejects = {code: quantity(supplied.get(code, ''), code, blank_zero=True) for code in active_codes}
     rejects = {code: qty for code, qty in rejects.items() if qty}
@@ -86,6 +92,10 @@ def validate(raw, active_codes, retained=None):
     data = dict(DepalletDate=depallet_date, Shift=shift, LotNo=lot_no,
                 DepalletQty=quantity(raw.get('DepalletQty'), 'Depallet Qty'),
                 GoodQty=quantity(raw.get('GoodQty'), 'Good Qty'), Remark=remark)
+    # R99 is derived independently of any client or previously stored value.
+    r99 = summary(data['DepalletQty'], data['GoodQty'], rejects)['R99']
+    if r99:
+        rejects['R99'] = r99
     return data, rejects
 
 
@@ -128,7 +138,7 @@ def save_depallet(conn, production_id, raw):
                 Remark=?,UpdatedAt=SYSDATETIME() WHERE DepalletID=?""",
                 data['Shift'], data['LotNo'], data['DepalletQty'], data['GoodQty'], data['Remark'], depallet_id)
         old_codes = {r['ReasonCode'] for r in old_rejects}
-        for code in sorted(active_codes):
+        for code in sorted(active_codes | {'R99'}):
             qty = rejects.get(code, 0)
             if not qty:
                 if code in old_codes:

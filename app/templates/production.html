@@ -236,11 +236,10 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
 </div><div class="calculated-data"><h2>CALCULATED DEPALLET DATA</h2>
 <dl class="info-fields" aria-live="polite">
 <div><dt>Physical Reject</dt><dd><output id="depallet-physical">{{ depallet.PhysicalRejectQty|default('') }}</output></dd></div>
-<div><dt>Classified Reject</dt><dd><output id="depallet-reject-qty">{{ depallet.RejectQty|default('') }}</output></dd></div>
+<div><dt>Classified Reject</dt><dd><output id="depallet-reject-qty">{{ depallet.ClassifiedRejectQty|default('') }}</output></dd></div>
+<div><dt>R99 / Unclassified</dt><dd><output id="depallet-r99">{{ depallet.R99|default('') }}</output></dd></div>
 <div><dt>Difference</dt><dd><output id="depallet-difference">{{ depallet.DifferenceQty|default('') }}</output></dd></div>
-<div><dt>Reject %</dt><dd><output id="depallet-reject-pct">{{ '{:.2f} %'.format(depallet.RejectPct) if depallet.RejectPct is defined and depallet.RejectPct is not none else '' }}</output></dd></div>
-<div><dt>Accounted</dt><dd><output id="depallet-accounted">{{ depallet.AccountedQty|default('') }}</output></dd></div>
-<div><dt>Status</dt><dd><output id="depallet-balance">{{ ('All physical rejects classified.' if depallet.DifferenceQty == 0 else 'Some physical rejects are unclassified. Save is allowed.' if depallet.DifferenceQty > 0 else 'Classified rejects exceed physical rejects. Save is allowed.') if depallet.DifferenceQty is defined else '' }}</output></dd></div>
+<div><dt>Status</dt><dd><output id="depallet-balance">{{ ('All physical rejects classified.' if depallet.DifferenceQty == 0 else 'Unclassified rejects are calculated as R99.' if depallet.DifferenceQty > 0 else 'Classified reject exceeds physical reject by ' ~ (-depallet.DifferenceQty) ~ '. R99 = 0. Save is allowed.') if depallet.DifferenceQty is defined else '' }}</output></dd></div>
 </dl></div></fieldset></form></section>
 {% endif %}
 {% else %}<p class="muted">Select a Lot to enter production data.</p>{% endif %}
@@ -591,8 +590,7 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
   const outputs = {
     PhysicalRejectQty: document.getElementById('depallet-physical'),
     ClassifiedRejectQty: document.getElementById('depallet-reject-qty'),
-    RejectPct: document.getElementById('depallet-reject-pct'),
-    AccountedQty: document.getElementById('depallet-accounted'),
+    R99: document.getElementById('depallet-r99'),
     DifferenceQty: document.getElementById('depallet-difference'),
     IsBalanced: document.getElementById('depallet-balance')
   };
@@ -608,15 +606,15 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
   function show(data) {
     for (const [key, output] of Object.entries(outputs)) {
       output.value = key === 'IsBalanced' ? (data.DifferenceQty === 0 ? 'All physical rejects classified.' :
-        data.DifferenceQty > 0 ? 'Some physical rejects are unclassified. Save is allowed.' :
-        'Classified rejects exceed physical rejects. Save is allowed.') :
-        key === 'RejectPct' ? Number(data[key]).toFixed(2) + ' %' : String(data[key]);
+        data.DifferenceQty > 0 ? 'Unclassified rejects are calculated as R99.' :
+        `Classified reject exceeds physical reject by ${-data.DifferenceQty}. R99 = 0. Save is allowed.`) :
+        String(data[key]);
     }
-    outputs.IsBalanced.dataset.balanced = String(Boolean(data.IsBalanced));
+    outputs.IsBalanced.dataset.balanced = String(data.DifferenceQty >= 0);
   }
   function calculate() {
     const total = pieces(quantity), accepted = pieces(good);
-    const values = Array.from(rejects.querySelectorAll('[data-reject-code]'), input => pieces(input, true));
+    const values = Array.from(rejects.querySelectorAll('[data-reject-code]'), input => /^R(0[1-9]|1[0-9]|2[0-4])$/.test(input.dataset.rejectCode) ? pieces(input, true) : 0);
     if (total === null || accepted === null || values.includes(null)) {
       Object.values(outputs).forEach(output => { output.value = ''; });
       outputs.IsBalanced.value = 'ENTER VALID QUANTITIES';
@@ -625,7 +623,7 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
     }
     const rejected = values.reduce((sum, value) => sum + value, 0);
     const accounted = accepted + rejected;
-    show({ PhysicalRejectQty: total - accepted, ClassifiedRejectQty: rejected, RejectPct: total ? rejected / total * 100 : 0,
+    show({ PhysicalRejectQty: total - accepted, ClassifiedRejectQty: rejected, R99: Math.max(total - accounted, 0),
       AccountedQty: accounted, DifferenceQty: total - accounted, IsBalanced: total === accounted });
     return true;
   }
@@ -644,6 +642,7 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
     const items = data.reject_reasons.map(reason => ({ ...reason, active: true, Qty: data.reject_values[reason.ReasonCode] ?? '' }))
       .concat(data.inactive_rejects.map(reason => ({ ...reason, active: false })));
     for (const reason of items) {
+      if (!/^R(0[1-9]|1[0-9]|2[0-4])$/.test(reason.ReasonCode)) continue;
       const row = document.createElement('div'), label = document.createElement('label'), input = document.createElement('input');
       input.id = 'reject-' + reason.ReasonCode; input.dataset.rejectCode = reason.ReasonCode;
       input.type = 'number'; input.min = '0'; input.max = '2147483647'; input.step = '1'; input.value = reason.Qty;
