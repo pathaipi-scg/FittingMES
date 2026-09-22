@@ -128,7 +128,7 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
 .reject-grid label{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .reject-grid input{width:52px;flex:none}
 #depallet-balance[data-balanced=true]{color:#25643b}
-#depallet-balance[data-balanced=false]{color:#9d2525}
+#depallet-balance[data-balanced=false]{color:#946200}
 </style></head><body><main>
 <header>FittingMES / PRODUCTION · CRTC / 30A1 / SB2-3</header>
 {% if error %}<div class="error" role="alert">{{ error }}</div>{% endif %}
@@ -235,11 +235,12 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
 {% for reason in inactive_rejects %}<div><label for="reject-{{ reason.ReasonCode }}">{{ reason.ReasonCode }} {{ reason.ReasonNameTH or '' }} (inactive)</label><input id="reject-{{ reason.ReasonCode }}" data-reject-code="{{ reason.ReasonCode }}" type="number" value="{{ reason.Qty }}" readonly aria-label="{{ reason.ReasonCode }} inactive saved quantity"></div>{% endfor %}
 </div><div class="calculated-data"><h2>CALCULATED DEPALLET DATA</h2>
 <dl class="info-fields" aria-live="polite">
-<div><dt>Reject Qty</dt><dd><output id="depallet-reject-qty">{{ depallet.RejectQty|default('') }}</output></dd></div>
+<div><dt>Physical Reject</dt><dd><output id="depallet-physical">{{ depallet.PhysicalRejectQty|default('') }}</output></dd></div>
+<div><dt>Classified Reject</dt><dd><output id="depallet-reject-qty">{{ depallet.RejectQty|default('') }}</output></dd></div>
+<div><dt>Difference</dt><dd><output id="depallet-difference">{{ depallet.DifferenceQty|default('') }}</output></dd></div>
 <div><dt>Reject %</dt><dd><output id="depallet-reject-pct">{{ '{:.2f} %'.format(depallet.RejectPct) if depallet.RejectPct is defined and depallet.RejectPct is not none else '' }}</output></dd></div>
 <div><dt>Accounted</dt><dd><output id="depallet-accounted">{{ depallet.AccountedQty|default('') }}</output></dd></div>
-<div><dt>Difference</dt><dd><output id="depallet-difference">{{ depallet.DifferenceQty|default('') }}</output></dd></div>
-<div><dt>Balance</dt><dd><output id="depallet-balance">{{ 'BALANCED' if depallet.IsBalanced else 'NOT BALANCED' if depallet.IsBalanced is defined else '' }}</output></dd></div>
+<div><dt>Status</dt><dd><output id="depallet-balance">{{ ('All physical rejects classified.' if depallet.DifferenceQty == 0 else 'Some physical rejects are unclassified. Save is allowed.' if depallet.DifferenceQty > 0 else 'Classified rejects exceed physical rejects. Save is allowed.') if depallet.DifferenceQty is defined else '' }}</output></dd></div>
 </dl></div></fieldset></form></section>
 {% endif %}
 {% else %}<p class="muted">Select a Lot to enter production data.</p>{% endif %}
@@ -588,7 +589,8 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
   const rejects = document.getElementById('depallet-rejects');
   const button = document.getElementById('save-depallet');
   const outputs = {
-    RejectQty: document.getElementById('depallet-reject-qty'),
+    PhysicalRejectQty: document.getElementById('depallet-physical'),
+    ClassifiedRejectQty: document.getElementById('depallet-reject-qty'),
     RejectPct: document.getElementById('depallet-reject-pct'),
     AccountedQty: document.getElementById('depallet-accounted'),
     DifferenceQty: document.getElementById('depallet-difference'),
@@ -605,7 +607,9 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
   }
   function show(data) {
     for (const [key, output] of Object.entries(outputs)) {
-      output.value = key === 'IsBalanced' ? (data[key] ? 'BALANCED' : 'NOT BALANCED') :
+      output.value = key === 'IsBalanced' ? (data.DifferenceQty === 0 ? 'All physical rejects classified.' :
+        data.DifferenceQty > 0 ? 'Some physical rejects are unclassified. Save is allowed.' :
+        'Classified rejects exceed physical rejects. Save is allowed.') :
         key === 'RejectPct' ? Number(data[key]).toFixed(2) + ' %' : String(data[key]);
     }
     outputs.IsBalanced.dataset.balanced = String(Boolean(data.IsBalanced));
@@ -621,9 +625,9 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
     }
     const rejected = values.reduce((sum, value) => sum + value, 0);
     const accounted = accepted + rejected;
-    show({ RejectQty: rejected, RejectPct: total ? rejected / total * 100 : 0,
+    show({ PhysicalRejectQty: total - accepted, ClassifiedRejectQty: rejected, RejectPct: total ? rejected / total * 100 : 0,
       AccountedQty: accounted, DifferenceQty: total - accounted, IsBalanced: total === accounted });
-    return total === accounted;
+    return true;
   }
   function setBusy(value) {
     busy = value; fieldset.disabled = value;
@@ -668,7 +672,7 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
   form.addEventListener('submit', async event => {
     event.preventDefault();
     if (busy || loadedDate !== date.value) { message('error', 'Load the Depallet date before saving.'); return; }
-    if (!calculate()) { message('error', 'NOT BALANCED: Depallet Qty must equal Good Qty + Reject Qty.'); return; }
+    if (!calculate()) { message('error', 'Enter valid whole-piece quantities before saving.'); return; }
     const body = new FormData(form);
     setBusy(true); message('info', 'Saving Depallet data...');
     try {

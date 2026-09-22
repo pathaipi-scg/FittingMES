@@ -69,7 +69,7 @@ class MemoryCursor:
             for d in selected:
                 rejects={code:q for (id,code),q in c.work['rejects'].items() if id==d['DepalletID']}
                 values=dict(d,**summary(d['DepalletQty'],d['GoodQty'],rejects))
-                if c.bad_view: values['IsBalanced']=False
+                if c.bad_view: continue
                 result.append(values)
             self.set_rows(result)
         elif 'SELECT DepalletID FROM dbo.Depallet' in sql:
@@ -171,8 +171,8 @@ class DepalletTests(unittest.TestCase):
         self.assertEqual(len(conn.db['depallets']),2)
         self.assertEqual(conn.db['depallets'][0],SAVED)
 
-    def test_balance_and_integer_validation(self):
-        for change in ({'GoodQty':'101'},{'GoodQty':'80'},{'DepalletQty':'-1'},
+    def test_integer_and_required_field_validation(self):
+        for change in ({'DepalletQty':'-1'},
                        {'GoodQty':'2.5'},{'DepalletQty':'2147483648'},
                        {'rejects':{'R01':'-1'}},{'rejects':{'R01':'1.5'}},
                        {'rejects':{'R00':'10'}},{'LotNo':''},{'Shift':''},
@@ -183,6 +183,43 @@ class DepalletTests(unittest.TestCase):
                 self.assertEqual(conn.db['depallets'],[])
                 self.assertEqual(conn.commits,0)
                 self.assertEqual(conn.rollbacks,1)
+
+    def test_unbalanced_save_preserves_raw_reasons_on_insert_and_update(self):
+        for existing in (False, True):
+            for classified, difference in ((175, 25), (215, -15)):
+                with self.subTest(existing=existing, classified=classified):
+                    conn=MemoryConnection(existing=existing)
+                    # Exercise every raw code, including operator-entered Other.
+                    entered={code:'1' for code in CODES}
+                    entered['R01']=str(classified-24)
+                    raw=dict(RAW,DepalletQty='3000',GoodQty='2800',rejects=entered)
+                    before=copy.deepcopy(raw)
+                    result=save_depallet(conn,7,raw)
+                    self.assertEqual(conn.commits,1)
+                    self.assertEqual(conn.rollbacks,0)
+                    self.assertEqual(raw,before)
+                    self.assertEqual(conn.db['rejects'],{(10,code):int(qty) for code,qty in entered.items()})
+                    self.assertEqual(result['PhysicalRejectQty'],200)
+                    self.assertEqual(result['ClassifiedRejectQty'],classified)
+                    self.assertEqual(result['DifferenceQty'],difference)
+                    self.assertFalse(result['IsBalanced'])
+                    loaded=read_context(conn.cursor(),LOT,date(2026,9,23))
+                    self.assertEqual(loaded['depallet']['DifferenceQty'],difference)
+                    self.assertEqual(loaded['reject_values'],{code:int(qty) for code,qty in entered.items()})
+
+    def test_unclassified_difference_does_not_create_other(self):
+        conn=MemoryConnection()
+        result=save_depallet(conn,7,dict(RAW,DepalletQty='3000',GoodQty='2800',rejects={'R01':'175'}))
+        self.assertEqual(result['DifferenceQty'],25)
+        self.assertEqual(conn.db['rejects'],{(10,'R01'):175})
+
+    def test_unbalanced_save_response_is_successful(self):
+        for classified in (175,215):
+            conn=MemoryConnection()
+            with patch('app.main.get_connection',return_value=conn):
+                response=save_depallet_response(7,dict(RAW,DepalletQty='3000',GoodQty='2800',rejects={'R01':str(classified)}))
+            self.assertEqual(response.status_code,200)
+            self.assertEqual(json.loads(response.body)['depallet']['DifferenceQty'],200-classified)
 
     def test_zero_quantity_safe(self):
         data,rejects=validate(dict(RAW,DepalletQty='0',GoodQty='0',rejects={}),CODES)

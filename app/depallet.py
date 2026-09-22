@@ -16,7 +16,8 @@ def read_reasons(cursor):
 def summary(quantity, good, rejects):
     total = sum(rejects.values())
     accounted = good + total
-    return dict(RejectQty=total, RejectPct=Decimal(total) * 100 / quantity if quantity else Decimal(0),
+    return dict(PhysicalRejectQty=quantity-good, ClassifiedRejectQty=total,
+                RejectQty=total, RejectPct=Decimal(total) * 100 / quantity if quantity else Decimal(0),
                 AccountedQty=accounted, DifferenceQty=quantity-accounted, IsBalanced=quantity == accounted)
 
 
@@ -42,6 +43,9 @@ def read_context(cursor, lot, depallet_date):
         raise ValueError('Multiple Depallet records exist for this Lot and date. Resolve the duplicate before editing.')
     entry = found[0] if found else default_entry(lot, depallet_date)
     rejects = read_rejects(cursor, entry['DepalletID']) if found else []
+    if found:
+        entry.update(summary(entry['DepalletQty'], entry['GoodQty'],
+                             {r['ReasonCode']: r['Qty'] for r in rejects}))
     return dict(depallet=entry, reject_reasons=reasons,
                 reject_values={r['ReasonCode']: r['Qty'] for r in rejects},
                 inactive_rejects=[r for r in rejects if not r['IsActive']])
@@ -82,9 +86,6 @@ def validate(raw, active_codes, retained=None):
     data = dict(DepalletDate=depallet_date, Shift=shift, LotNo=lot_no,
                 DepalletQty=quantity(raw.get('DepalletQty'), 'Depallet Qty'),
                 GoodQty=quantity(raw.get('GoodQty'), 'Good Qty'), Remark=remark)
-    calculated = summary(data['DepalletQty'], data['GoodQty'], rejects)
-    if not calculated['IsBalanced']:
-        raise ValueError('NOT BALANCED: Depallet Qty must equal Good Qty + Reject Qty.')
     return data, rejects
 
 
@@ -138,8 +139,9 @@ def save_depallet(conn, production_id, raw):
                 cursor.execute('INSERT INTO dbo.DepalletReject (DepalletID,ReasonCode,Qty) VALUES (?,?,?)', depallet_id, code, qty)
         cursor.execute('SELECT * FROM dbo.vw_DepalletValidation WHERE DepalletID=?', depallet_id)
         saved = rows(cursor)
-        if not saved or not saved[0]['IsBalanced']:
+        if not saved:
             raise ValueError('Depallet validation failed. Nothing was saved.')
+        saved[0].update(summary(data['DepalletQty'], data['GoodQty'], rejects))
         conn.commit()
         return saved[0]
     except Exception:
