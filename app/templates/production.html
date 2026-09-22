@@ -1,0 +1,684 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>FittingMES Production</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#eef2f6;color:#243348;font:9.75px/1.2 system-ui,sans-serif}
+main{padding:4.5px;max-width:1920px;margin:auto;height:100vh;display:flex;flex-direction:column}
+header{color:#66758a;font-size:9.75px;line-height:13.5px;margin-bottom:3px}
+.panel{background:white;border:0.75px solid #dbe2ea;border-radius:2.25px;padding:4.5px;margin-bottom:4.5px}
+form,.toolbar{display:flex;align-items:center;gap:4.5px;flex-wrap:wrap}
+label{display:block;font-size:9.75px;font-weight:500;margin:0}
+input,select,button,.button{font:400 9.75px/1.2 system-ui,sans-serif;height:22.5px;min-height:0;border:0.75px solid #c7d2df;border-radius:2.25px;padding:1.5px 4.5px;background:white;color:inherit}
+button,.button{cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;white-space:nowrap}
+.primary{background:#1765ad;color:white;border-color:#1765ad}
+button:disabled{opacity:.45;cursor:not-allowed}
+:focus-visible{outline:1.5px solid #63acec;outline-offset:0.75px}
+option:disabled{color:#929aa4}
+.plan-control{flex:1;min-width:165px}
+.plan-control select{width:100%;min-width:0}
+.top-controls{flex-wrap:nowrap}
+.top-controls>div,.workflow>div,.workflow form>div{display:flex;align-items:center;gap:4.5px}
+.top-controls label,.workflow label{flex:none;white-space:nowrap}
+.top-controls .plan-control{min-width:0}
+.top-controls select{flex:1;width:0}
+.workflow{margin-top:3.75px;border-top:0.75px solid #edf0f4;padding-top:3.75px}
+.workflow .plan-control{display:flex;align-items:center;gap:4.5px}
+.workflow .plan-control select{flex:1;width:0}
+.muted{color:#718096}
+.columns{display:grid;grid-template-columns:minmax(0,var(--lot-width,25%)) 4.5px minmax(0,1fr);gap:0;align-items:start;flex:1;min-height:0}
+.columns>div{min-width:0}
+.list-panel{padding:0;overflow:hidden;display:flex;flex-direction:column;max-height:100%;margin-bottom:0}
+h2{font-size:10.5px;font-weight:600;line-height:1.2;letter-spacing:0;margin:3px 0 4.5px}
+.list-title{padding:3.75px 6px;border-bottom:0.75px solid #e4e9ef;margin:0}
+.lot-list{min-height:0;overflow-y:auto}
+.lot-item{display:flex;flex-direction:column;justify-content:center;min-height:36px;text-decoration:none;color:inherit;padding:3.75px 6px;border-bottom:0.75px solid #edf0f4;border-left:2.25px solid transparent;font-size:9.75px;line-height:1.15}
+.lot-item:hover{background:#f5f9fd}
+.lot-item.selected{background:#eaf4ff;border-left-color:#1765ad}
+.lot-item strong{font-size:10.5px;line-height:1.15;font-weight:700;white-space:nowrap}
+.lot-top,.lot-bottom{display:flex;align-items:baseline;gap:6px;min-width:0}
+.lot-plan,.lot-product{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lot-product{flex:1;min-width:0}
+.lot-qty{flex:none;font-variant-numeric:tabular-nums;text-align:right}
+.info-heading{display:flex;align-items:center;justify-content:space-between;gap:4.5px;margin-bottom:3px;flex-wrap:wrap}
+.info-heading h2{margin:3px 0 4.5px}
+.info-fields{display:flex;flex-wrap:wrap;align-items:baseline;gap:3px 10.5px;margin:0}
+.info-fields>div{display:flex;align-items:baseline;gap:3.75px;min-width:0;max-width:100%}
+.info-secondary{margin-top:3.75px}
+dt{color:#66758a;font-size:9px;line-height:1.2;white-space:nowrap}
+dd{margin:0;font-size:9.75px;line-height:1.2;font-weight:500;overflow-wrap:anywhere}
+.lot-number{font-size:10.5px;line-height:1.2;font-weight:700;white-space:nowrap}
+.locked{font-size:9px}
+.future{border-style:dashed}
+.future p{margin:0;font-size:9.75px}
+.empty{padding:6px 0;color:#718096}
+.error{background:#fff0ef;color:#9d2525;padding:4.5px;margin-bottom:4.5px}
+.danger{color:#af3030;border-color:#ecc1c1}
+.preview{font-size:10.5px;line-height:1.2;font-family:monospace}
+input[readonly]{background:#f4f6f8;width:48px}
+@media(max-width:750px){.top-controls{flex-wrap:wrap}.top-controls .plan-control{min-width:225px}.workflow .plan-control{flex-wrap:wrap}.workflow .plan-control select{width:100%;flex-basis:100%}}
+@media(max-width:600px){main{height:auto;min-height:100vh}.columns{min-height:225px}.lot-list{max-height:195px}.top-controls .plan-control{min-width:180px}}
+@media(max-width:360px){.top-controls .plan-control{flex-basis:100%;order:1}.info-fields{gap:2.25px 7.5px}.workflow>div,.workflow form>div{flex-wrap:wrap}}
+.panel[aria-label="Lot Information"]{padding-bottom:7.5px}
+main>header,main>.panel,main>.error{flex-shrink:0}
+.lot-top{margin-bottom:2.25px}
+
+[hidden]{display:none!important}
+.columns{min-width:0}
+.list-panel{height:100%;min-width:0}
+.list-header{display:flex;align-items:center;justify-content:space-between;border-bottom:0.75px solid #e4e9ef;flex-shrink:0}
+.list-header .list-title{border:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.list-header button{height:18px;padding:0 3.75px;margin-right:2.25px;flex:none}
+.lot-list{flex:1;overflow-x:hidden}
+.lot-splitter{align-self:stretch;cursor:col-resize;touch-action:none;position:relative;background:#dbe2ea;border-left:1.5px solid #eef2f6;border-right:1.5px solid #eef2f6}
+.lot-splitter:hover,.lot-splitter:focus-visible{background:#1765ad}
+body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:none!important}
+.columns.lots-collapsed{grid-template-columns:18px minmax(0,1fr);column-gap:4.5px}
+.lots-rail{height:auto;align-self:stretch;width:18px;padding:4.5px 1.5px;writing-mode:vertical-rl;justify-content:flex-start;font-size:9px}
+.right-content{min-width:0}
+.info-fields dd{min-width:0}
+.workflow select{max-width:100%}
+@media(max-width:600px){.list-panel{max-height:270px}.lot-splitter{min-height:225px}.top-controls .plan-control{min-width:0}}
+
+/* Progressive enhancement: native selects retain all submitted plan tokens. */
+.plan-control.custom-plan-control{flex:0 1 auto;min-width:0;max-width:100%;flex-basis:auto}
+.plan-dropdown{position:relative;display:inline-block;min-width:0;max-width:100%}
+.plan-trigger{display:inline-flex;width:max-content;max-width:min(420px,100%);gap:5px;justify-content:flex-start}
+.plan-trigger-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.plan-trigger-arrow{flex:none;font-size:8px}
+.plan-popup{position:fixed;z-index:1000;width:max-content;min-width:0;margin:0;padding:2px;border:0.75px solid #c7d2df;border-radius:2.25px;background:white;box-shadow:0 2px 6px #24334826;overflow:auto}
+.plan-option{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:4px 5px;line-height:1.2;cursor:pointer}
+.plan-option[aria-disabled="true"]{color:#929aa4;cursor:not-allowed}
+.plan-option.is-highlighted{background:#eaf4ff;color:#243348}
+.plan-option[aria-selected="true"]{font-weight:600}
+
+#production-input>div{display:flex;align-items:center;gap:4px}
+#production-input input[type=number]{width:70px}
+#production-shift{width:38px}
+#production-input .production-remark{flex:1;min-width:150px}
+#production-remark{width:100%;min-width:0}
+.calculated-data{border-top:0.75px solid #edf0f4;margin-top:4.5px;padding-top:3px}
+
+.lot-input-heading{display:flex;align-items:baseline;gap:6px;min-width:0}
+.lot-input-heading h2{flex:none}
+.lot-status-bar{display:flex;align-items:center;gap:4px;min-width:0;overflow:hidden}
+.lot-status-bar:empty{display:none}
+.lot-status{display:block;min-width:0;max-width:100%;padding:1px 4px;border-radius:2px;font-size:9.75px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lot-status-success{background:#e7f4eb;color:#25643b}
+.lot-status-warning{background:#fff4d8;color:#7a5200}
+.lot-status-error{background:#fdeaea;color:#9d2525}
+.lot-status-info{background:#eaf2fc;color:#245b92}
+
+#family-product-form{gap:4.5px}
+#family-product-form .family-product-field{display:flex;align-items:center;gap:3px}
+.family-product-select{width:auto;max-width:170px}
+#family-product-form .family-lot-preview{display:flex;flex-basis:100%;flex-wrap:wrap;gap:8px}
+.family-lot-preview output{font-weight:600}
+
+.depallet-section{border-top:0.75px solid #dbe2ea;margin-top:4.5px;padding-top:3px}
+#depallet-input{display:block}
+#depallet-fields{border:0;margin:0;padding:0;min-width:0}
+.depallet-input-row{display:flex;align-items:center;flex-wrap:wrap;gap:4.5px}
+.depallet-input-row>div{display:flex;align-items:center;gap:3px;min-width:0}
+#depallet-shift{width:38px}#depallet-lot{width:110px;max-width:100%}
+#depallet-qty,#depallet-good{width:65px}
+.depallet-input-row .depallet-remark{flex:1;min-width:125px}
+#depallet-remark{min-width:0;width:100%}
+.reject-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:3px 7px}
+.reject-grid>div{display:flex;align-items:center;gap:4px;min-width:0}
+.reject-grid label{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.reject-grid input{width:52px;flex:none}
+#depallet-balance[data-balanced=true]{color:#25643b}
+#depallet-balance[data-balanced=false]{color:#9d2525}
+</style></head><body><main>
+<header>FittingMES / PRODUCTION · CRTC / 30A1 / SB2-3</header>
+{% if error %}<div class="error" role="alert">{{ error }}</div>{% endif %}
+<section class="panel" aria-label="Create a new Lot">
+<form class="top-controls" method="get" action="/">
+<div><label for="production_date">Production Date</label><input id="production_date" name="production_date" type="date" value="{{ production_date }}" required onchange="this.form.plan_id.value='';this.form.requestSubmit()"></div>
+<div class="plan-control"><label for="plan_id">Production Plan</label><select id="plan_id" name="plan_id" onchange="this.form.requestSubmit()">
+<option value="">{{ 'Select a plan' if plans else 'No plans for this date' }}</option>
+{% for plan in plans %}<option value="{{ plan.selection_id }}" {% if plan.used_by %}disabled{% endif %} {% if selected and selected.selection_id == plan.selection_id %}selected{% endif %}>{{ plan.PlanName }} | {{ plan.MaterialName }} | {{ '{:,.0f}'.format(plan.PlanCount or 0) }}{% if plan.used_by %} | USED: {{ plan.used_by }}{% endif %}</option>{% endfor %}
+</select></div><button type="submit" onclick="this.form.plan_id.value=''">PLAN REFRESH</button></form>
+{% if selected %}<div class="workflow">
+{% if lot %}<form method="post" action="/lots">
+<input type="hidden" name="production_date" value="{{ production_date }}"><input type="hidden" name="plan_id" value="{{ selected.selection_id }}">
+<div><label>Product</label>{{ product_family }} / {{ product_code }}</div><div><label for="running_no">Next Running No</label><input id="running_no" name="running_no" value="{{ running_no }}" readonly></div>
+<div><label>Lot No. preview</label><output class="preview">{{ lot }}{{ '%02d'|format(running_no) }}</output></div><button class="primary" type="submit">CREATE LOT</button></form>
+{% else %}<form method="post" action="/" id="family-product-form">
+<input type="hidden" name="production_date" value="{{ production_date }}"><input type="hidden" name="plan_id" value="{{ selected.selection_id }}">
+<span class="material-prefix">Material prefix <strong>{{ material_prefix }}</strong></span>
+{% set field_names = ['neufit','oriental','special_ridge','prestige_common'] %}
+{% for family, letter in families %}
+{% set choices = products|selectattr('ProductFamily','equalto',family)|list %}
+<div class="family-product-field"><label for="family-product-{{ loop.index }}">{{ family }}</label>
+<select id="family-product-{{ loop.index }}" name="{{ field_names[loop.index0] }}" class="family-product-select" data-family="{{ family }}" {% if not choices %}disabled{% endif %}>
+<option value="">{{ '- / Select Product' if choices else '- / No master rows' }}</option>
+{% for product in choices %}<option value="{{ product.ProductCode }}">{{ product.ProductCode }} &mdash; {{ product.ProductName }}</option>{% endfor %}
+</select></div>
+{% endfor %}
+<button type="submit" class="primary" {% if not products %}disabled{% endif %}>Confirm ProductCode</button>
+<div id="family-lot-preview" class="family-lot-preview" aria-live="polite" hidden>
+<span>Product <output data-preview="ProductFamily"></output> / <output data-preview="ProductCode"></output></span>
+<span>Prefix <output data-preview="LotPrefix"></output></span>
+<span>Next <output data-preview="RunningNo"></output></span>
+<span>Lot <output data-preview="LotNo"></output></span>
+<span class="muted">Preview &middot; Confirm product before Create Lot.</span>
+</div>
+<script type="application/json" id="family-preview-data">{{ product_previews|tojson }}</script>
+</form>{% endif %}
+</div>{% endif %}</section>
+<div class="columns" id="production-workspace">
+<button type="button" class="lots-rail" id="open-lots" aria-controls="lot-panel" aria-expanded="false" title="Open Lot List" hidden>&#9654; LOTS</button>
+<aside class="panel list-panel" id="lot-panel"><div class="list-header"><h2 class="list-title">ACTIVE LOTS &middot; {{ lots|length }}</h2><button type="button" id="close-lots" aria-controls="lot-panel" aria-expanded="true" title="Close Lot List" aria-label="Close Lot List">&#9664;</button></div>
+<nav class="lot-list" aria-label="Active Lots">{% for item in lots %}<a class="lot-item {{ 'selected' if current and current.ProductionID == item.ProductionID else '' }}" {% if current and current.ProductionID == item.ProductionID %}aria-current="true"{% endif %} href="/?production_id={{ item.ProductionID }}&production_date={{ production_date }}">
+<div class="lot-top"><strong>{{ item.LotNo }}</strong><span class="lot-plan" title="{{ item.PlanName }}">{{ item.PlanName }}</span></div>
+<div class="lot-bottom"><span class="lot-product" title="{{ item.MaterialName }}">{{ item.MaterialName }}</span><span class="lot-qty" aria-label="Plan quantity">{{ '{:,.0f}'.format(item.PlanQty or 0) }}</span></div></a>{% else %}<div class="empty">No active Lots.</div>{% endfor %}</nav></aside>
+<div id="lot-splitter" class="lot-splitter" role="separator" tabindex="0" aria-label="Resize Lot List" aria-orientation="vertical" aria-controls="lot-panel" aria-valuemin="18" aria-valuemax="45" aria-valuenow="25" title="Drag to resize; double-click to reset. Arrow keys resize."></div>
+<div class="right-content"><section class="panel" aria-label="Lot Information">
+{% if current %}<div class="info-heading"><h2>LOT INFORMATION &middot; {{ 'EDIT' if edit else 'VIEW' }}</h2>
+{% if not edit %}<div class="toolbar"><a class="button" href="/?production_id={{ current.ProductionID }}&edit=true&production_date={{ production_date }}">EDIT</a>
+{% if current.CanVoid %}<form method="post" action="/lots/{{ current.ProductionID }}/void" onsubmit="return confirm('VOID this Lot? Its plan and running number will become available again. History will be retained.')"><button class="danger" type="submit">VOID LOT</button></form>{% endif %}</div>{% endif %}</div>
+<dl class="info-fields info-primary">
+<div><dt>Lot No.</dt><dd class="lot-number">{{ current.LotNo }}</dd></div>
+<div><dt>Plan Date <span class="muted locked">&middot; Locked</span></dt><dd>{{ current.ProdDate.strftime('%d/%m/%Y') }}</dd></div>
+<div><dt>Plan No.</dt><dd>{{ current.PlanName }}</dd></div>
+<div><dt>Plan Version</dt><dd>{{ current.VersionNo if current.VersionNo is defined and current.VersionNo is not none else '—' }}</dd></div>
+<div><dt>Product Family</dt><dd>{{ current.ProductFamily or 'Unconfirmed legacy' }}</dd></div>
+<div><dt>Product Code</dt><dd>{{ current.ProductCode }}</dd></div>
+<div><dt>Plan Qty</dt><dd>{{ '{:,.0f}'.format(current.PlanQty or 0) }}</dd></div>
+</dl>
+<dl class="info-fields info-secondary">
+<div><dt>Material Code</dt><dd>{{ current.MaterialCode }}</dd></div>
+<div><dt>Product</dt><dd>{{ current.MaterialName }}</dd></div>
+
+</dl>
+{% if edit %}<form class="workflow" method="post" action="/lots/{{ current.ProductionID }}/plan">
+<div class="plan-control"><label for="replacement_plan">Replacement Plan · {{ current.ProdDate }}</label><select id="replacement_plan" name="plan_id" required><option value="">Select a plan</option>
+{% for plan in edit_plans %}<option value="{{ plan.selection_id }}" {% if plan.used_by %}disabled{% endif %} {% if plan.PlanName == current.PlanName and plan.MaterialCode == current.MaterialCode %}selected{% endif %}>{{ plan.PlanName }} | {{ plan.MaterialName }} | {{ '{:,.0f}'.format(plan.PlanCount or 0) }}{% if plan.used_by %} | USED: {{ plan.used_by }}{% endif %}</option>{% endfor %}
+</select></div><button class="primary" type="submit">SAVE</button><a class="button" href="/?production_id={{ current.ProductionID }}&production_date={{ production_date }}">CANCEL</a></form>{% endif %}
+{% else %}<h2>LOT INFORMATION</h2><div class="empty">Select a Lot from the list, or create a new Lot above.</div>{% endif %}</section>
+<section class="panel production-data" aria-label="Production Input">
+<div class="lot-input-heading"><h2>PRODUCTION INPUT</h2>
+<div id="lot-status-bar" class="lot-status-bar" role="status" aria-live="polite" aria-atomic="true" aria-label="Lot status messages">{% if data_saved and current %}<span class="lot-status lot-status-success" data-status-id="production-save" data-state="success" title="Production data saved.">Production data saved.</span>{% endif %}</div>
+</div>
+{% if current %}
+<form id="production-input" method="post" action="/lots/{{ current.ProductionID }}/production">
+<input type="hidden" name="production_date" value="{{ production_date }}">
+<div><label for="production-shift">Shift</label><input id="production-shift" name="shift" maxlength="10" value="{{ current.Shift or '' }}" required></div>
+<div><label for="production-start">Start</label><input id="production-start" name="start_time" type="time" step="1" value="{{ production_data.get('ProductionStartTime', '') }}" required></div>
+<div><label for="production-end">End</label><input id="production-end" name="end_time" type="time" step="1" value="{{ production_data.get('ProductionEndTime', '') }}" required></div>
+<div><label for="production-counter">Counter</label><input id="production-counter" name="counter" type="number" min="0" max="2147483647" step="1" value="{{ production_data.get('CounterQty', '') }}" required></div>
+<div><label for="production-curing">Curing</label><input id="production-curing" name="curing" type="number" min="0" max="2147483647" step="1" value="{{ production_data.get('CuringQty', '') }}" required></div>
+<div class="production-remark"><label for="production-remark">Remark</label><input id="production-remark" name="remark" maxlength="1000" value="{{ production_data.get('Remark') or '' }}"></div>
+<button class="primary" type="submit">SAVE PRODUCTION</button>
+</form>
+<div class="calculated-data"><h2>CALCULATED DATA</h2>
+<dl class="info-fields" aria-live="polite">
+<div><dt>Wet Reject Qty</dt><dd><output id="wet-reject-qty">{{ calculated.WetRejectQty if calculated.WetRejectQty is not none else '' }}</output></dd></div>
+<div><dt>Wet Reject %</dt><dd><output id="wet-reject-percent">{{ '{:.2f} %'.format(calculated.WetRejectPercent) if calculated.WetRejectPercent is not none else '' }}</output></dd></div>
+</dl></div>
+
+{% if depallet_error %}<script type="application/json" id="depallet-load-error">{{ depallet_error|tojson }}</script>{% endif %}
+{% if depallet %}
+<section class="depallet-section" aria-label="Depallet Input"><h2>DEPALLET INPUT</h2>
+<form id="depallet-input" method="post" action="/lots/{{ current.ProductionID }}/depallet"><fieldset id="depallet-fields">
+<div class="depallet-input-row">
+<div><label for="depallet-date">Depallet Date</label><input id="depallet-date" name="depallet_date" type="date" value="{{ depallet.DepalletDate }}" required></div>
+<div><label for="depallet-shift">Shift</label><input id="depallet-shift" name="shift" maxlength="10" value="{{ depallet.Shift }}" required></div>
+<div><label for="depallet-lot">Depallet Lot</label><input id="depallet-lot" name="lot_no" maxlength="50" value="{{ depallet.LotNo }}" required></div>
+<div><label for="depallet-qty">Depallet Qty</label><input id="depallet-qty" name="depallet_qty" type="number" min="0" max="2147483647" step="1" value="{{ depallet.DepalletQty }}" required></div>
+<div><label for="depallet-good">Good Qty</label><input id="depallet-good" name="good_qty" type="number" min="0" max="2147483647" step="1" value="{{ depallet.GoodQty }}" required></div>
+<div class="depallet-remark"><label for="depallet-remark">Remark</label><input id="depallet-remark" name="remark" maxlength="500" value="{{ depallet.Remark or '' }}"></div>
+<button id="save-depallet" type="submit" class="primary">SAVE DEPALLET</button></div>
+<h2>REJECT DETAIL</h2><div id="depallet-rejects" class="reject-grid">
+{% for reason in reject_reasons %}<div><label for="reject-{{ reason.ReasonCode }}" title="{{ reason.ReasonCode }} {{ reason.ReasonNameTH }}">{{ reason.ReasonCode }} {{ reason.ReasonNameTH }}</label><input id="reject-{{ reason.ReasonCode }}" name="reject_{{ reason.ReasonCode }}" data-reject-code="{{ reason.ReasonCode }}" type="number" min="0" max="2147483647" step="1" value="{{ reject_values.get(reason.ReasonCode, '') }}" aria-label="{{ reason.ReasonCode }} {{ reason.ReasonNameTH }}"></div>{% endfor %}
+{% for reason in inactive_rejects %}<div><label for="reject-{{ reason.ReasonCode }}">{{ reason.ReasonCode }} {{ reason.ReasonNameTH or '' }} (inactive)</label><input id="reject-{{ reason.ReasonCode }}" data-reject-code="{{ reason.ReasonCode }}" type="number" value="{{ reason.Qty }}" readonly aria-label="{{ reason.ReasonCode }} inactive saved quantity"></div>{% endfor %}
+</div><div class="calculated-data"><h2>CALCULATED DEPALLET DATA</h2>
+<dl class="info-fields" aria-live="polite">
+<div><dt>Reject Qty</dt><dd><output id="depallet-reject-qty">{{ depallet.RejectQty|default('') }}</output></dd></div>
+<div><dt>Reject %</dt><dd><output id="depallet-reject-pct">{{ '{:.2f} %'.format(depallet.RejectPct) if depallet.RejectPct is defined and depallet.RejectPct is not none else '' }}</output></dd></div>
+<div><dt>Accounted</dt><dd><output id="depallet-accounted">{{ depallet.AccountedQty|default('') }}</output></dd></div>
+<div><dt>Difference</dt><dd><output id="depallet-difference">{{ depallet.DifferenceQty|default('') }}</output></dd></div>
+<div><dt>Balance</dt><dd><output id="depallet-balance">{{ 'BALANCED' if depallet.IsBalanced else 'NOT BALANCED' if depallet.IsBalanced is defined else '' }}</output></dd></div>
+</dl></div></fieldset></form></section>
+{% endif %}
+{% else %}<p class="muted">Select a Lot to enter production data.</p>{% endif %}
+</section></div></div>
+</main>
+<script>
+(() => {
+  const workspace = document.getElementById('production-workspace');
+  const panel = document.getElementById('lot-panel');
+  const splitter = document.getElementById('lot-splitter');
+  const openButton = document.getElementById('open-lots');
+  const closeButton = document.getElementById('close-lots');
+  const storageKey = 'fittingmes.production.lotLayout';
+  const clamp = value => Math.min(45, Math.max(18, value));
+  let width = 25;
+  let collapsed = false;
+  let pointerId = null;
+  let grabOffset = 0;
+  try {
+    const saved = JSON.parse(localStorage.getItem(storageKey));
+    if (saved && typeof saved.width === 'number' && Number.isFinite(saved.width)) width = clamp(saved.width);
+    if (saved && typeof saved.collapsed === 'boolean') collapsed = saved.collapsed;
+  } catch (_) { /* Layout remains usable when storage is unavailable. */ }
+
+  function persist() {
+    try { localStorage.setItem(storageKey, JSON.stringify({ width, collapsed })); } catch (_) {}
+  }
+  function render() {
+    workspace.style.setProperty('--lot-width', width + '%');
+    workspace.classList.toggle('lots-collapsed', collapsed);
+    panel.hidden = collapsed;
+    splitter.hidden = collapsed;
+    openButton.hidden = !collapsed;
+    closeButton.setAttribute('aria-expanded', String(!collapsed));
+    splitter.setAttribute('aria-valuenow', String(Math.round(width)));
+    splitter.setAttribute('aria-valuetext', Math.round(width) + '% Lot List width');
+  }
+  function finishDrag() {
+    if (pointerId === null) return;
+    const previousId = pointerId;
+    pointerId = null;
+    document.body.classList.remove('resizing-lots');
+    if (splitter.hasPointerCapture(previousId)) splitter.releasePointerCapture(previousId);
+    persist();
+  }
+  splitter.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || collapsed || pointerId !== null) return;
+    event.preventDefault();
+    pointerId = event.pointerId;
+    grabOffset = event.clientX - splitter.getBoundingClientRect().left;
+    splitter.setPointerCapture(pointerId);
+    splitter.focus();
+    document.body.classList.add('resizing-lots');
+  });
+  splitter.addEventListener('pointermove', event => {
+    if (event.pointerId !== pointerId) return;
+    const bounds = workspace.getBoundingClientRect();
+    if (bounds.width <= 0) return;
+    width = clamp((event.clientX - bounds.left - grabOffset) / bounds.width * 100);
+    render();
+  });
+  splitter.addEventListener('pointerup', finishDrag);
+  splitter.addEventListener('pointercancel', finishDrag);
+  splitter.addEventListener('lostpointercapture', finishDrag);
+  window.addEventListener('blur', finishDrag);
+  splitter.addEventListener('dblclick', () => {
+    finishDrag();
+    width = 25;
+    render();
+    persist();
+  });
+  splitter.addEventListener('keydown', event => {
+    const values = { ArrowLeft: width - 1, ArrowRight: width + 1, Home: 18, End: 45 };
+    if (!(event.key in values)) return;
+    event.preventDefault();
+    width = clamp(values[event.key]);
+    render();
+    persist();
+  });
+  closeButton.addEventListener('click', () => {
+    finishDrag();
+    collapsed = true;
+    render();
+    persist();
+    openButton.focus();
+  });
+  openButton.addEventListener('click', () => {
+    collapsed = false;
+    render();
+    persist();
+    closeButton.focus();
+  });
+  render();
+})();
+</script>
+<script>
+(() => {
+  let closeActive = null;
+  document.querySelectorAll('.plan-control select[name=plan_id]').forEach(select => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'plan-dropdown';
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.id = select.id + '-trigger';
+    trigger.className = 'plan-trigger';
+    trigger.setAttribute('role', 'combobox');
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+    trigger.setAttribute('aria-autocomplete', 'none');
+    if (select.required) trigger.setAttribute('aria-required', 'true');
+    const label = document.querySelector('label[for="' + select.id + '"]');
+    if (label) {
+      label.id = label.id || select.id + '-label';
+      label.htmlFor = trigger.id;
+      trigger.setAttribute('aria-labelledby', label.id + ' ' + trigger.id + '-text');
+    }
+    const text = document.createElement('span');
+    text.id = trigger.id + '-text';
+    text.className = 'plan-trigger-text';
+    const arrow = document.createElement('span');
+    arrow.className = 'plan-trigger-arrow';
+    arrow.textContent = '\u25be';
+    arrow.setAttribute('aria-hidden', 'true');
+    trigger.append(text, arrow);
+    const popup = document.createElement('div');
+    popup.id = select.id + '-options';
+    popup.className = 'plan-popup';
+    popup.setAttribute('role', 'listbox');
+    if (label) popup.setAttribute('aria-labelledby', label.id);
+    popup.hidden = true;
+    trigger.setAttribute('aria-controls', popup.id);
+    select.before(wrapper);
+    wrapper.append(trigger, popup);
+    select.hidden = true;
+    select.closest('.plan-control').classList.add('custom-plan-control');
+    let active = -1;
+    let items = [];
+    let typeahead = '';
+    let typeaheadTimer;
+    function sync() {
+      text.textContent = select.selectedOptions[0]?.textContent.trim() || 'Select a plan';
+      trigger.title = text.textContent;
+      items.forEach((item, index) => item.setAttribute('aria-selected', String(index === select.selectedIndex)));
+    }
+    function position() {
+      const rect = trigger.getBoundingClientRect();
+      const margin = 6;
+      // Keep the popup below the control; its intrinsic width includes USED text.
+      popup.style.left = Math.max(margin, rect.left) + 'px';
+      popup.style.top = rect.bottom + 2 + 'px';
+      popup.style.maxWidth = Math.max(0, document.documentElement.clientWidth - Math.max(margin, rect.left) - margin) + 'px';
+      popup.style.maxHeight = Math.max(0, Math.min(300, window.innerHeight - rect.bottom - margin - 2)) + 'px';
+    }
+    function highlight(index) {
+      active = index;
+      items.forEach((item, i) => item.classList.toggle('is-highlighted', i === active));
+      if (active < 0) trigger.removeAttribute('aria-activedescendant');
+      else {
+        trigger.setAttribute('aria-activedescendant', items[active].id);
+        items[active].scrollIntoView({ block: 'nearest' });
+      }
+    }
+    function close() {
+      popup.hidden = true;
+      trigger.setAttribute('aria-expanded', 'false');
+      trigger.removeAttribute('aria-activedescendant');
+      if (closeActive === close) closeActive = null;
+    }
+    function open() {
+      if (closeActive && closeActive !== close) closeActive();
+      closeActive = close;
+      popup.hidden = false;
+      position();
+      trigger.setAttribute('aria-expanded', 'true');
+      const index = select.selectedIndex;
+      highlight(index >= 0 && !select.options[index].disabled ? index : Array.from(select.options).findIndex(option => !option.disabled));
+    }
+    function choose(index) {
+      const option = select.options[index];
+      if (!option || option.disabled) return;
+      select.selectedIndex = index;
+      trigger.removeAttribute('aria-invalid');
+      sync();
+      close();
+      trigger.focus();
+      // Existing onchange submits Create selection; Edit still waits for SAVE.
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    items = Array.from(select.options, (option, index) => {
+      const item = document.createElement('div');
+      item.id = popup.id + '-' + index;
+      item.className = 'plan-option';
+      item.setAttribute('role', 'option');
+      item.setAttribute('aria-disabled', String(option.disabled));
+      item.textContent = option.textContent.trim();
+      item.title = item.textContent;
+      item.addEventListener('pointerdown', event => event.preventDefault());
+      item.addEventListener('pointermove', () => { if (!option.disabled) highlight(index); });
+      item.addEventListener('click', () => choose(index));
+      popup.append(item);
+      return item;
+    });
+    trigger.addEventListener('click', () => popup.hidden ? open() : close());
+    trigger.addEventListener('keydown', event => {
+      if (event.key === 'Escape') { event.preventDefault(); close(); return; }
+      if (event.key === 'Tab') { close(); return; }
+      if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+        event.preventDefault();
+        if (popup.hidden) open();
+        const enabled = Array.from(select.options).flatMap((option, i) => option.disabled ? [] : [i]);
+        if (!enabled.length) return;
+        let index = enabled.indexOf(active);
+        if (event.key === 'Home') index = 0;
+        else if (event.key === 'End') index = enabled.length - 1;
+        else index = (index + (event.key === 'ArrowDown' ? 1 : -1) + enabled.length) % enabled.length;
+        highlight(enabled[index]);
+      } else if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        if (popup.hidden) open(); else choose(active);
+      } else if (event.key.length === 1 && !event.ctrlKey && !event.altKey && !event.metaKey) {
+        clearTimeout(typeaheadTimer);
+        typeahead += event.key.toLocaleLowerCase();
+        typeaheadTimer = setTimeout(() => { typeahead = ''; }, 700);
+        if (popup.hidden) open();
+        const index = Array.from(select.options).findIndex(option => !option.disabled && option.textContent.trim().toLocaleLowerCase().startsWith(typeahead));
+        if (index >= 0) highlight(index);
+      }
+    });
+    document.addEventListener('pointerdown', event => { if (!wrapper.contains(event.target)) close(); });
+    document.addEventListener('focusin', event => { if (!wrapper.contains(event.target)) close(); });
+    window.addEventListener('resize', () => { if (!popup.hidden) position(); });
+    window.addEventListener('scroll', event => {
+      if (!popup.hidden && !popup.contains(event.target)) position();
+    }, true);
+    select.addEventListener('change', sync);
+    select.addEventListener('invalid', event => {
+      event.preventDefault();
+      trigger.setAttribute('aria-invalid', 'true');
+      trigger.focus();
+      open();
+    });
+    select.form.addEventListener('reset', () => setTimeout(() => { sync(); close(); }, 0));
+    sync();
+  });
+})();
+</script><script>
+(() => {
+  const counter = document.getElementById('production-counter');
+  const curing = document.getElementById('production-curing');
+  if (!counter || !curing) return;
+  const qty = document.getElementById('wet-reject-qty');
+  const percent = document.getElementById('wet-reject-percent');
+  function update() {
+    curing.setCustomValidity('');
+    const c = counter.valueAsNumber;
+    const q = curing.valueAsNumber;
+    const valid = counter.value !== '' && curing.value !== '' &&
+      counter.validity.valid && curing.validity.valid &&
+      Number.isInteger(c) && Number.isInteger(q);
+    if (valid && q > c) curing.setCustomValidity('Curing Qty cannot exceed Counter.');
+    if (!valid || q > c) { qty.value = ''; percent.value = ''; return; }
+    qty.value = String(c - q);
+    percent.value = (c ? (c - q) / c * 100 : 0).toFixed(2) + ' %';
+  }
+  counter.addEventListener('input', update);
+  curing.addEventListener('input', update);
+  update();
+})();
+</script><script>
+(() => {
+  const bar = document.getElementById('lot-status-bar');
+  const states = new Set(['success', 'warning', 'error', 'info']);
+  // Generic MES message API: set replaces all; add upserts a keyed status.
+  // Example: lotStatus.add({ id: 'operation', state: 'info', text: 'Working...' });
+  function add({ id, state = 'info', text } = {}) {
+    if (!bar || text == null || String(text).trim() === '') return;
+    const key = id == null ? null : String(id);
+    const item = (key === null ? null : Array.from(bar.children).find(
+      child => child.dataset.statusId === key)) || document.createElement('span');
+    const kind = states.has(state) ? state : 'info';
+    item.className = 'lot-status lot-status-' + kind;
+    item.dataset.state = kind;
+    if (key !== null) item.dataset.statusId = key;
+    item.textContent = String(text);
+    item.title = String(text);
+    item.setAttribute('aria-label', kind + ': ' + String(text));
+    if (!item.parentNode) bar.append(item);
+  }
+  function clear(id) {
+    if (!bar) return;
+    if (id === undefined) bar.replaceChildren();
+    else Array.from(bar.children).forEach(item => {
+      if (item.dataset.statusId === String(id)) item.remove();
+    });
+  }
+  window.lotStatus = Object.freeze({
+    add, clear,
+    set(messages = []) {
+      clear();
+      (Array.isArray(messages) ? messages : [messages]).forEach(add);
+    }
+  });
+})();
+</script><script>
+(() => {
+  const form = document.getElementById('family-product-form');
+  if (!form) return;
+  const selects = Array.from(form.querySelectorAll('.family-product-select'));
+  const previews = JSON.parse(document.getElementById('family-preview-data').textContent);
+  const preview = document.getElementById('family-lot-preview');
+  function update(changed) {
+    selects.forEach(select => {
+      select.setCustomValidity('');
+      if (changed && changed.value && select !== changed) select.value = '';
+    });
+    const chosen = selects.find(select => select.value);
+    const data = chosen ? previews[chosen.dataset.family + '|' + chosen.value] : null;
+    preview.hidden = !data;
+    preview.querySelectorAll('[data-preview]').forEach(output => {
+      output.textContent = data ? data[output.dataset.preview] : '';
+    });
+  }
+  selects.forEach(select => select.addEventListener('change', () => update(select)));
+  form.addEventListener('submit', event => {
+    if (selects.filter(select => select.value).length !== 1) {
+      event.preventDefault();
+      const first = selects.find(select => !select.disabled);
+      if (first) {
+        first.setCustomValidity('Select exactly one product across the four families.');
+        first.reportValidity();
+      }
+    }
+  });
+  update();
+})();
+</script><script>
+(() => {
+  const loadError = document.getElementById('depallet-load-error');
+  if (loadError) window.lotStatus.add({ id: 'depallet', state: 'error', text: JSON.parse(loadError.textContent) });
+  const form = document.getElementById('depallet-input');
+  if (!form) return;
+  const fieldset = document.getElementById('depallet-fields');
+  const date = document.getElementById('depallet-date');
+  const quantity = document.getElementById('depallet-qty');
+  const good = document.getElementById('depallet-good');
+  const rejects = document.getElementById('depallet-rejects');
+  const button = document.getElementById('save-depallet');
+  const outputs = {
+    RejectQty: document.getElementById('depallet-reject-qty'),
+    RejectPct: document.getElementById('depallet-reject-pct'),
+    AccountedQty: document.getElementById('depallet-accounted'),
+    DifferenceQty: document.getElementById('depallet-difference'),
+    IsBalanced: document.getElementById('depallet-balance')
+  };
+  let busy = false;
+  let loadedDate = date.value;
+  function message(state, text) { window.lotStatus.add({ id: 'depallet', state, text }); }
+  function pieces(input, blankZero = false) {
+    if (blankZero && input.value.trim() === '') return 0;
+    if (!/^[0-9]+$/.test(input.value)) return null;
+    const value = Number(input.value);
+    return Number.isSafeInteger(value) && value >= 0 && value <= 2147483647 ? value : null;
+  }
+  function show(data) {
+    for (const [key, output] of Object.entries(outputs)) {
+      output.value = key === 'IsBalanced' ? (data[key] ? 'BALANCED' : 'NOT BALANCED') :
+        key === 'RejectPct' ? Number(data[key]).toFixed(2) + ' %' : String(data[key]);
+    }
+    outputs.IsBalanced.dataset.balanced = String(Boolean(data.IsBalanced));
+  }
+  function calculate() {
+    const total = pieces(quantity), accepted = pieces(good);
+    const values = Array.from(rejects.querySelectorAll('[data-reject-code]'), input => pieces(input, true));
+    if (total === null || accepted === null || values.includes(null)) {
+      Object.values(outputs).forEach(output => { output.value = ''; });
+      outputs.IsBalanced.value = 'ENTER VALID QUANTITIES';
+      outputs.IsBalanced.dataset.balanced = 'false';
+      return false;
+    }
+    const rejected = values.reduce((sum, value) => sum + value, 0);
+    const accounted = accepted + rejected;
+    show({ RejectQty: rejected, RejectPct: total ? rejected / total * 100 : 0,
+      AccountedQty: accounted, DifferenceQty: total - accounted, IsBalanced: total === accounted });
+    return total === accounted;
+  }
+  function setBusy(value) {
+    busy = value; fieldset.disabled = value;
+    button.disabled = value || loadedDate !== date.value;
+  }
+  function populate(data) {
+    const entry = data.depallet;
+    date.value = entry.DepalletDate;
+    document.getElementById('depallet-shift').value = entry.Shift || '';
+    document.getElementById('depallet-lot').value = entry.LotNo;
+    quantity.value = entry.DepalletQty; good.value = entry.GoodQty;
+    document.getElementById('depallet-remark').value = entry.Remark || '';
+    rejects.replaceChildren();
+    const items = data.reject_reasons.map(reason => ({ ...reason, active: true, Qty: data.reject_values[reason.ReasonCode] ?? '' }))
+      .concat(data.inactive_rejects.map(reason => ({ ...reason, active: false })));
+    for (const reason of items) {
+      const row = document.createElement('div'), label = document.createElement('label'), input = document.createElement('input');
+      input.id = 'reject-' + reason.ReasonCode; input.dataset.rejectCode = reason.ReasonCode;
+      input.type = 'number'; input.min = '0'; input.max = '2147483647'; input.step = '1'; input.value = reason.Qty;
+      if (reason.active) input.name = 'reject_' + reason.ReasonCode; else input.readOnly = true;
+      label.htmlFor = input.id;
+      label.textContent = reason.ReasonCode + ' ' + (reason.ReasonNameTH || '') + (reason.active ? '' : ' (inactive)');
+      label.title = label.textContent; input.setAttribute('aria-label', label.textContent);
+      row.append(label, input); rejects.append(row);
+    }
+    calculate();
+  }
+  form.addEventListener('input', event => {
+    if (event.target === quantity || event.target === good || event.target.dataset.rejectCode) calculate();
+  });
+  date.addEventListener('change', async () => {
+    if (!date.validity.valid || !date.value) { loadedDate = null; button.disabled = true; return; }
+    loadedDate = null; setBusy(true); message('info', 'Loading Depallet date...');
+    try {
+      const response = await fetch(form.action + '?depallet_date=' + encodeURIComponent(date.value), { headers: { Accept: 'application/json' }, cache: 'no-store' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Unable to load Depallet date.');
+      populate(data); loadedDate = date.value; window.lotStatus.clear('depallet');
+    } catch (error) { message('error', error.message); }
+    finally { setBusy(false); }
+  });
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (busy || loadedDate !== date.value) { message('error', 'Load the Depallet date before saving.'); return; }
+    if (!calculate()) { message('error', 'NOT BALANCED: Depallet Qty must equal Good Qty + Reject Qty.'); return; }
+    const body = new FormData(form);
+    setBusy(true); message('info', 'Saving Depallet data...');
+    try {
+      const response = await fetch(form.action, { method: 'POST', body, headers: { Accept: 'application/json' } });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Unable to save Depallet data.');
+      show(data.depallet); message('success', data.message);
+    } catch (error) { message('error', error.message); }
+    finally { setBusy(false); }
+  });
+  calculate();
+})();
+</script></body></html>

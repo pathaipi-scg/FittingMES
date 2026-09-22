@@ -1,0 +1,91 @@
+# ----------------------------------
+# Python
+# ----------------------------------
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ----------------------------------
+# Virtual Environment
+# ----------------------------------
+
+venv/
+.venv/
+
+# ----------------------------------
+# Environment Variables
+# ----------------------------------
+
+.env
+config/.env
+# Local standalone deployment profiles contain real site credentials.
+config/.env.sb11
+config/.env.sb12
+!config/.env.example
+
+# ----------------------------------
+# Logs
+# ----------------------------------
+
+log/
+logs/
+
+*.log
+
+# ----------------------------------
+# VS Code
+# ----------------------------------
+
+.vscode/
+
+# ----------------------------------
+# Windows
+# ----------------------------------
+
+Thumbs.db
+Desktop.ini
+
+# ----------------------------------
+# Generated Files
+# ----------------------------------
+
+config/tagmaster.json
+
+# ----------------------------------
+# Temporary
+# ----------------------------------
+
+*.tmp
+*.bak
+
+# ----------------------------------
+# Build
+# ----------------------------------
+
+dist/
+build/
+
+
+# ----------------------------------
+# Dev Run
+# ----------------------------------
+
+run_dev.bat
+CLAUDE.md
+
+# Private profiles and generated local artifacts
+.env.*
+!.env.example
+!config/.env.example
+.pytest_cache/
+*.sqlite
+*.sqlite3
+*.db
+*.jsonl
+
+# Site-specific schema exports and one-off live diagnostic
+/sql/OpcTagMgr_schema_SQL2017_fixed.sql
+/sql/OpcTagMgr_schema_new.sql
+/tools/diagnose_opc_readonly.py
