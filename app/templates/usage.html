@@ -1,0 +1,32 @@
+{% extends 'api_base.html' %}
+{% macro number(value, places=3) -%}{{ ('{:,.3f}' if places == 3 else '{:,.0f}').format(value) if value is not none else '-' }}{%- endmacro %}
+{% macro material_label(material) -%}{{ material.MaterialNameTH or material.MaterialNameEN or material.MaterialUsageCode }}{%- endmacro %}
+{% block content %}
+<h1>USAGE</h1>
+{% if saved %}<p role="status">Material usage saved.</p>{% endif %}
+{% if error %}<div class="error" role="alert">{{ error }}</div>{% else %}
+<section class="panel"><h2>PRODUCTION LOTS</h2>
+<div class="table-scroll"><table><thead><tr><th>Production Date</th><th>Shift</th><th>Start</th><th>End</th><th>Plan</th><th>Version</th><th>Material Code</th><th>Lot No.</th><th>Product</th><th>Plan Qty</th><th>Counter</th><th>Curing</th><th>Wet Reject</th><th>Remark</th></tr></thead><tbody>
+{% for lot in lots %}<tr><td>{{ lot.ProdDate }}</td><td>{{ lot.Shift }}</td><td>{{ lot.ProductionStartTime or '-' }}</td><td>{{ lot.ProductionEndTime or '-' }}</td><td>{{ lot.PlanName }}</td><td>{{ lot.VersionNo or '-' }}</td><td>{{ lot.MaterialCode }}</td><td>{{ lot.LotNo }}</td><td>{{ lot.ProductFamily or '' }} {{ lot.ProductCode or '' }} {{ lot.MaterialName or '' }}</td><td>{{ number(lot.PlanQty,0) }}</td><td>{{ number(lot.CounterQty,0) }}</td><td>{{ number(lot.CuringQty,0) }}</td><td>{{ number(lot.WetRejectQty,0) }}</td><td class="remark">{{ lot.Remark or '' }}</td></tr>
+{% else %}<tr><td colspan="14" class="muted">No active Production Lots for this date.</td></tr>{% endfor %}
+</tbody></table></div></section>
+{% for section in shifts %}
+<section class="panel"><h2>SHIFT {{ section.shift }} MATERIAL USAGE</h2>
+<form method="post" action="/usage/{{ section.shift }}">
+<input type="hidden" name="production_date" value="{{ production_date }}">
+<div class="table-scroll"><table><thead><tr><th>Material</th><th>Unit</th><th>Qty</th></tr></thead><tbody>
+{% for material in section.materials %}<tr><td>{{ material_label(material) }}</td><td>{{ material.Unit or '-' }}</td><td>{% if material.SourceType and material.SourceType != 'MANUAL' %}{{ number(material.RawQty) }} <span class="muted">{{ material.SourceType }}</span>{% else %}<input type="number" name="qty_{{ material.MaterialUsageCode }}" aria-label="Shift {{ section.shift }} {{ material.MaterialNameEN or material.MaterialUsageCode }} quantity" min="0" max="999999999999999.999" step="0.001" value="{{ material.RawQty if material.RawQty is not none else '' }}">{% endif %}</td></tr>{% else %}<tr><td colspan="3">No active materials.</td></tr>{% endfor %}
+</tbody></table></div><button class="primary" type="submit" {% if not section.materials %}disabled{% endif %}>SAVE SHIFT {{ section.shift }} USAGE</button>
+<p class="muted">Enter raw quantities. Blank removes a manual entry; zero is saved as zero.</p></form></section>
+<section class="panel"><h2>SHIFT {{ section.shift }} CALCULATION</h2>
+<p class="muted">Counter: {{ number(section.totals.get('CounterQty'),0) }} &middot; Curing: {{ number(section.totals.get('CuringQty'),0) }} &middot; Lots with Production data: {{ number(section.totals.get('LotCount'),0) }}</p>
+<div class="table-scroll"><table><thead><tr><th>Material</th><th>Unit</th><th>Raw Qty</th><th>Qty / 1000 Counter</th><th>Qty / 1000 Curing</th></tr></thead><tbody>
+{% for material in section.materials %}<tr><td>{{ material_label(material) }}</td><td>{{ material.Unit or '-' }}</td><td>{{ number(material.RawQty) }}</td><td>{{ number(material.QtyPer1000Counter) }}</td><td>{{ number(material.QtyPer1000Curing) }}</td></tr>{% else %}<tr><td colspan="5">No active materials.</td></tr>{% endfor %}
+</tbody></table></div></section>
+{% endfor %}
+<section class="panel"><h2>ALL DAY CALCULATION</h2>
+<div class="table-scroll"><table><thead><tr><th>Material</th><th>Unit</th><th>Total Raw Qty</th><th>Qty / 1000 Counter</th><th>Qty / 1000 Curing</th></tr></thead><tbody>
+{% for material in daily %}<tr><td>{{ material_label(material) }}</td><td>{{ material.Unit or '-' }}</td><td>{{ number(material.RawQty) }}</td><td>{{ number(material.QtyPer1000Counter) }}</td><td>{{ number(material.QtyPer1000Curing) }}</td></tr>{% else %}<tr><td colspan="5">No active materials.</td></tr>{% endfor %}
+</tbody></table></div><p class="muted">Calculations come from the existing SQL views. A dash means no saved value or no available calculation, including a zero production denominator.</p></section>
+{% endif %}
+{% endblock %}

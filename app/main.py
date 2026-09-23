@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from app.database import get_connection
 from app.pis_config import PISConfig
+from app.usage import read_usage_context, save_usage
 from app.prod_api import read_prod_records, build_pis_date_preview, field_mapping, preview_readiness
 from app.depallet import read_context as read_depallet_context, save_depallet
 from app.products import FAMILIES, lot_prefix, read_products, read_mapping, confirm_mapping, selected_product, month_start
@@ -317,3 +318,44 @@ def prod_api_page(request: Request, production_date: date | None = None,
 def reject_api_page(request: Request, production_date: date | None = None):
     return templates.TemplateResponse(request=request, name="reject_api.html", context=dict(
         page_title="REJECT API", active_tab="reject-api", production_date=production_date or date.today()))
+
+
+@app.get('/usage', response_class=HTMLResponse)
+def usage_page(request: Request, production_date: date | None = None, saved: bool = False):
+    production_date = production_date or date.today()
+    context = dict(page_title='USAGE', active_tab='usage', production_date=production_date,
+                   lots=[], shifts=[], daily=[], error=None, saved=saved)
+    status = 200
+    try:
+        with closing(get_connection()) as conn:
+            context.update(read_usage_context(conn.cursor(), production_date))
+    except ValueError as exc:
+        context['error'] = str(exc)
+        status = 400
+    except Exception:
+        context['error'] = 'Unable to load material usage. Please retry.'
+        status = 503
+    return templates.TemplateResponse(request=request, name='usage.html', context=context,
+                                      status_code=status, headers={'Cache-Control':'no-store'})
+
+
+@app.post('/usage/{shift}', response_class=HTMLResponse)
+async def save_usage_route(request: Request, shift: str):
+    form = await request.form()
+    if any(len(form.getlist(key)) != 1 for key in form):
+        return JSONResponse({'error':'Duplicate usage fields are not allowed.'},status_code=400)
+    try:
+        production_date = date.fromisoformat(str(form.get('production_date','')))
+    except ValueError:
+        return JSONResponse({'error':'Enter a valid Production Date.'},status_code=400)
+    raw = {key[len('qty_'):]:value for key,value in form.items() if key.startswith('qty_')}
+    def perform_save():
+        try:
+            with closing(get_connection()) as conn:
+                save_usage(conn,production_date,shift,raw)
+            return RedirectResponse(f'/usage?production_date={production_date}&saved=true',status_code=303)
+        except ValueError as exc:
+            return JSONResponse({'error':str(exc)},status_code=400)
+        except Exception:
+            return JSONResponse({'error':'Unable to save material usage. Nothing was saved.'},status_code=503)
+    return await run_in_threadpool(perform_save)
