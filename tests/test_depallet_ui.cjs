@@ -18,6 +18,8 @@ assert.match(r99Tag, /\breadonly\b/);
 assert.doesNotMatch(r99Tag, /\bname=|data-reject-code=/);
 assert.ok(html.includes('<label for="depallet-r99">R99 อื่นๆ</label>'));
 assert.ok(html.indexOf('id="depallet-r99-row"') > html.indexOf('{% for reason in inactive_rejects %}'));
+nodes['depallet-record'] = element();
+nodes['depallet-date'].dispatchEvent = event => nodes['depallet-date'].handlers[event.type]();
 const form = nodes['depallet-input'];
 form.action = '/lots/7/depallet';
 nodes['depallet-date'].value = '2026-09-22';
@@ -32,6 +34,7 @@ let response;
 vm.runInNewContext(source, {
   document: { getElementById: id => nodes[id], createElement: () => element() },
   window: {lotStatus: { add: m => messages.push(m), clear() {} }},
+  Event: class { constructor(type) { this.type = type; } },
   FormData: class { constructor() { assert.ok(!nodes['depallet-fields'].disabled); } },
   fetch: async (url, options) => { requests.push({url,options}); return response; }
 });
@@ -106,5 +109,38 @@ const submit = () => form.handlers.submit({preventDefault() {}});
   assert.equal(nodes['depallet-r99'].value, '1');
   nodes['depallet-good'].value = '3'; form.handlers.input({target:nodes['depallet-good']});
   assert.equal(nodes['depallet-r99'].value, '2');
+  const savedValues = Object.fromEntries(Array.from({length:24}, (_, i) => ['R' + String(i+1).padStart(2,'0'), i]));
+  const savedReasons = Object.keys(savedValues).map(ReasonCode => ({ReasonCode,ReasonNameTH:ReasonCode}));
+  form.action = '/lots/2/depallet';
+  response = {ok:true,json:async () => ({
+    depallet:{DepalletID:1,ProductionID:2,DepalletDate:'2026-09-22',Shift:'1',LotNo:'B006690902',DepalletQty:1000,GoodQty:600,Remark:'Saved remark'},
+    reject_reasons:savedReasons.slice(0,23),reject_values:savedValues,
+    inactive_rejects:[{...savedReasons[23],Qty:23}]})};
+  nodes['depallet-record'].value = '2026-09-22';
+  nodes['depallet-record'].handlers.change();
+  // Allow the existing asynchronous date loader to finish.
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requests.at(-1).url, '/lots/2/depallet?depallet_date=2026-09-22');
+  assert.equal(requests.at(-1).options.method, undefined);
+  assert.equal(nodes['depallet-date'].value, '2026-09-22');
+  assert.equal(nodes['depallet-shift'].value, '1');
+  assert.equal(nodes['depallet-lot'].value, 'B006690902');
+  assert.equal(nodes['depallet-qty'].value, '1000');
+  assert.equal(nodes['depallet-good'].value, '600');
+  assert.equal(nodes['depallet-remark'].value, 'Saved remark');
+  const loadedInputs = nodes['depallet-rejects'].children.slice(0,24).map(row => row.children[1]);
+  assert.deepEqual(Object.fromEntries(loadedInputs.map(input => [input.dataset.rejectCode,Number(input.value)])), savedValues);
+  assert.equal(loadedInputs[23].readOnly, true);
+  assert.equal(nodes['depallet-r99'].value, '124');
+  assert.equal(nodes['save-depallet'].disabled, false);
+  nodes['depallet-good'].value = '590'; trigger();
+  assert.equal(nodes['depallet-r99'].value, '134');
+  assert.deepEqual(Object.fromEntries(loadedInputs.map(input => [input.dataset.rejectCode,Number(input.value)])), savedValues);
+  nodes['depallet-record'].value = '';
+  const beforeBlank = requests.length;
+  nodes['depallet-record'].handlers.change();
+  assert.equal(nodes['save-depallet'].disabled, true);
+  await submit();
+  assert.equal(requests.length,beforeBlank);
   console.log('Depallet live totals, validation, save statuses, date reload and failed-load protection passed.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

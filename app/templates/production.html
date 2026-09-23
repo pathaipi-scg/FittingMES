@@ -223,13 +223,14 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
 <section class="depallet-section" aria-label="Depallet Input"><h2>DEPALLET INPUT</h2>
 <form id="depallet-input" method="post" action="/lots/{{ current.ProductionID }}/depallet"><fieldset id="depallet-fields">
 <div class="depallet-input-row">
+{% if depallet_dates %}<div><label for="depallet-record">Saved Depallet dates</label><select id="depallet-record"><option value="">Select a saved date</option>{% for saved_date in depallet_dates %}<option value="{{ saved_date }}">{{ saved_date }}</option>{% endfor %}</select><span>Multiple records: select a saved date, or enter a new date.</span></div>{% endif %}
 <div><label for="depallet-date">Depallet Date</label><input id="depallet-date" name="depallet_date" type="date" value="{{ depallet.DepalletDate }}" required></div>
 <div><label for="depallet-shift">Shift</label><input id="depallet-shift" name="shift" maxlength="10" value="{{ depallet.Shift }}" required></div>
 <div><label for="depallet-lot">Depallet Lot</label><input id="depallet-lot" name="lot_no" maxlength="50" value="{{ depallet.LotNo }}" required></div>
 <div><label for="depallet-qty">Depallet Qty</label><input id="depallet-qty" name="depallet_qty" type="number" min="0" max="2147483647" step="1" value="{{ depallet.DepalletQty }}" required></div>
 <div><label for="depallet-good">Good Qty</label><input id="depallet-good" name="good_qty" type="number" min="0" max="2147483647" step="1" value="{{ depallet.GoodQty }}" required></div>
 <div class="depallet-remark"><label for="depallet-remark">Remark</label><input id="depallet-remark" name="remark" maxlength="500" value="{{ depallet.Remark or '' }}"></div>
-<button id="save-depallet" type="submit" class="primary">SAVE DEPALLET</button></div>
+<button id="save-depallet" type="submit" class="primary" {% if not depallet.DepalletDate %}disabled{% endif %}>SAVE DEPALLET</button></div>
 <div id="depallet-rejects" class="reject-grid">
 {% for reason in reject_reasons %}<div><label for="reject-{{ reason.ReasonCode }}" title="{{ reason.ReasonCode }} {{ reason.ReasonNameTH }}">{{ reason.ReasonCode }} {{ reason.ReasonNameTH }}</label><input id="reject-{{ reason.ReasonCode }}" name="reject_{{ reason.ReasonCode }}" data-reject-code="{{ reason.ReasonCode }}" type="number" min="0" max="2147483647" step="1" value="{{ reject_values.get(reason.ReasonCode, '') }}" aria-label="{{ reason.ReasonCode }} {{ reason.ReasonNameTH }}"></div>{% endfor %}
 {% for reason in inactive_rejects %}<div><label for="reject-{{ reason.ReasonCode }}">{{ reason.ReasonCode }} {{ reason.ReasonNameTH or '' }} (inactive)</label><input id="reject-{{ reason.ReasonCode }}" data-reject-code="{{ reason.ReasonCode }}" type="number" value="{{ reason.Qty }}" readonly aria-label="{{ reason.ReasonCode }} inactive saved quantity"></div>{% endfor %}
@@ -658,6 +659,11 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
   }
   form.addEventListener('input', event => {
     if (event.target === quantity || event.target === good || event.target.dataset.rejectCode) calculate();
+  });
+  const record = document.getElementById('depallet-record');
+  if (record) record.addEventListener('change', () => {
+    date.value = record.value;
+    date.dispatchEvent(new Event('change'));
   });
   date.addEventListener('change', async () => {
     if (!date.validity.valid || !date.value) { loadedDate = null; button.disabled = true; return; }

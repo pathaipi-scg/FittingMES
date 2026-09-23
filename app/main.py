@@ -101,7 +101,7 @@ def production_page(request, plan_id=None, product_code=None, confirm=False,
                     return RedirectResponse("/" if void else f"/?production_id={production_id}", status_code=303)
                 # Depallet availability must not block the existing Production workflow.
                 try:
-                    context.update(read_depallet_context(cursor, current, production_date))
+                    context.update(read_depallet_context(cursor, current))
                 except ValueError as exc:
                     context["depallet_error"] = str(exc)
                 except Exception:

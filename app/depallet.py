@@ -2,7 +2,7 @@
 import re
 from datetime import date
 from decimal import Decimal
-from app.lots import rows, lock_lots
+from app.lots import rows, lock_lots, day
 
 MAX_QTY = 2147483647
 MANUAL_CODES = frozenset(f'R{i:02d}' for i in range(1, 25))
@@ -39,14 +39,23 @@ def read_rejects(cursor, depallet_id):
     return rows(cursor)
 
 
-def read_context(cursor, lot, depallet_date):
+def read_context(cursor, lot, depallet_date=None):
     reasons = read_reasons(cursor)
-    cursor.execute("""SELECT * FROM dbo.vw_DepalletValidation
-        WHERE ProductionID=? AND DepalletDate=? ORDER BY DepalletID""", lot['ProductionID'], depallet_date)
+    if depallet_date is None:
+        cursor.execute("""SELECT * FROM dbo.vw_DepalletValidation
+            WHERE ProductionID=? ORDER BY DepalletDate,DepalletID""", lot['ProductionID'])
+    else:
+        cursor.execute("""SELECT * FROM dbo.vw_DepalletValidation
+            WHERE ProductionID=? AND DepalletDate=? ORDER BY DepalletID""", lot['ProductionID'], depallet_date)
     found = rows(cursor)
+    if depallet_date is None and len(found) > 1:
+        # Records are date-keyed: require an explicit date rather than choosing one.
+        return dict(depallet=default_entry(lot, ''), reject_reasons=reasons,
+                    reject_values={}, inactive_rejects=[],
+                    depallet_dates=sorted({day(entry['DepalletDate']) for entry in found}))
     if len(found) > 1:
         raise ValueError('Multiple Depallet records exist for this Lot and date. Resolve the duplicate before editing.')
-    entry = found[0] if found else default_entry(lot, depallet_date)
+    entry = found[0] if found else default_entry(lot, depallet_date if depallet_date is not None else day(lot['ProdDate']))
     rejects = read_rejects(cursor, entry['DepalletID']) if found else []
     if found:
         entry.update(summary(entry['DepalletQty'], entry['GoodQty'],

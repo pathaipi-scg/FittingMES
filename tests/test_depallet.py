@@ -64,7 +64,7 @@ class MemoryCursor:
         elif 'FROM dbo.vw_DepalletValidation' in sql:
             selected=[d for d in c.work['depallets'] if
                       (d['ProductionID']==args[0] and d['DepalletDate']==args[1]) if len(args)==2] if len(args)==2 else [
-                      d for d in c.work['depallets'] if d['DepalletID']==args[0]]
+                      d for d in c.work['depallets'] if d['ProductionID' if 'WHERE ProductionID=?' in sql else 'DepalletID']==args[0]]
             result=[]
             for d in selected:
                 rejects={code:q for (id,code),q in c.work['rejects'].items() if id==d['DepalletID']}
@@ -99,6 +99,80 @@ class MemoryCursor:
 
 
 class DepalletTests(unittest.TestCase):
+    def render_lot(self, conn, lot, **kwargs):
+        with patch('app.main.get_connection',return_value=conn), \
+             patch('app.main.read_lots',return_value=[lot]), \
+             patch('app.main.read_plans',return_value=[PLAN]), \
+             patch('app.main.read_production_data',return_value={'CounterQty':500,'CuringQty':450}):
+            return production_page(request(),production_id=lot['ProductionID'],**kwargs)
+
+    def test_selected_production_2_loads_saved_header_and_all_raw_rejects(self):
+        import re
+        conn=MemoryConnection()
+        lot=dict(LOT,ProductionID=2,LotNo='B006690902')
+        saved=dict(SAVED,DepalletID=1,ProductionID=2,DepalletDate=date(2026,9,22),
+                   Shift='1',LotNo='B006690902',DepalletQty=1000,GoodQty=600,Remark='Saved remark')
+        conn.work['depallets']=[saved,dict(SAVED,ProductionID=99)]
+        quantities={code:i for i,code in enumerate(CODES[:-1])}
+        conn.work['rejects']={(1,code):qty for code,qty in quantities.items()}
+        conn.work['rejects'][(1,'R99')]=999
+        conn.work['reasons'][7]['IsActive']=False
+        before=copy.deepcopy(conn.work)
+        # Both today's page default and an unrelated explicit filter must be ignored.
+        for page_date in (None,date(2030,1,1)):
+            response=self.render_lot(conn,lot,production_date=page_date)
+            self.assertEqual(response.status_code,200)
+            context=response.context
+            for key,value in saved.items():
+                self.assertEqual(context['depallet'][key],value)
+            self.assertEqual(context['reject_values'],quantities)
+            self.assertEqual(context['depallet']['R99'],124)
+            text=response.body.decode()
+            for field,value in [('date','2026-09-22'),('shift','1'),('lot','B006690902'),
+                                ('qty','1000'),('good','600'),('remark','Saved remark')]:
+                tag=re.search(r'<input id="depallet-'+field+r'"[^>]*>',text)[0]
+                self.assertIn('value="'+value+'"',tag)
+            for code,qty in quantities.items():
+                tag=re.search(r'<input id="reject-'+code+r'"[^>]*>',text)[0]
+                self.assertIn('value="'+str(qty)+'"',tag)
+            r99=re.search(r'<input id="depallet-r99"[^>]*>',text)[0]
+            self.assertIn('value="124"',r99)
+            self.assertIn('readonly',r99)
+            self.assertEqual(context['production_data'],{'CounterQty':500,'CuringQty':450})
+            self.assertIn('SAVE PRODUCTION',text)
+        self.assertEqual(conn.work,before)
+        self.assertEqual(conn.commits,0)
+        self.assertTrue(all(sql.lstrip().startswith('SELECT') for sql,_ in conn.sql))
+
+    def test_new_selected_lot_defaults_to_lot_date_not_page_date(self):
+        import re
+        conn=MemoryConnection()
+        response=self.render_lot(conn,LOT,production_date=date(2030,1,1))
+        self.assertEqual(response.context['depallet']['DepalletDate'],LOT['ProdDate'])
+        self.assertEqual(response.context['depallet']['LotNo'],LOT['LotNo'])
+        tag=re.search(r'<input id="depallet-date"[^>]*>',response.body.decode())[0]
+        self.assertIn('value="2026-09-21"',tag)
+        self.assertNotIn('readonly',tag)
+        self.assertNotIn('disabled',tag)
+        self.assertEqual(conn.work['depallets'],[])
+        self.assertEqual(conn.commits,0)
+
+    def test_multiple_dates_require_operator_selection(self):
+        conn=MemoryConnection(existing=True)
+        conn.work['depallets'].append(dict(SAVED,DepalletID=11,DepalletDate=date(2026,9,24),LotNo='SECOND'))
+        response=self.render_lot(conn,LOT)
+        self.assertEqual(response.context['depallet_dates'],[date(2026,9,23),date(2026,9,24)])
+        self.assertEqual(response.context['depallet']['DepalletDate'],'')
+        self.assertEqual(response.context['reject_values'],{})
+        self.assertIn(b'id="depallet-record"',response.body)
+        import re
+        self.assertIn('disabled',re.search(r'<button id="save-depallet"[^>]*>',response.body.decode())[0])
+        with patch('app.main.get_connection',return_value=conn):
+            response=load_depallet(7,date(2026,9,24))
+        self.assertEqual(json.loads(response.body)['depallet']['LotNo'],'SECOND')
+        self.assertEqual(conn.commits,0)
+        self.assertTrue(all(sql.lstrip().startswith('SELECT') for sql,_ in conn.sql))
+
     def test_defaults_keep_independent_date_lot_shift(self):
         lot=dict(LOT,Shift='2')
         defaults=default_entry(lot,date(2026,10,1))
