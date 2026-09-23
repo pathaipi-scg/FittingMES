@@ -12,6 +12,7 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from app.database import get_connection
+from app.prod_api import read_prod_records, build_pis_prodorders_payload, field_mapping
 from app.depallet import read_context as read_depallet_context, save_depallet
 from app.products import FAMILIES, lot_prefix, read_products, read_mapping, confirm_mapping, selected_product, month_start
 from app.production_data import read_production_data, save_production_data, calculate
@@ -256,3 +257,39 @@ async def save_depallet_route(request: Request, production_id: int):
                GoodQty=form.get("good_qty"), Remark=form.get("remark"),
                rejects={key[len("reject_"):]: value for key, value in form.items() if key.startswith("reject_")})
     return await run_in_threadpool(save_depallet_response, production_id, raw)
+
+
+@app.get("/prod-api", response_class=HTMLResponse)
+def prod_api_page(request: Request, production_date: date | None = None,
+                  production_id: int | None = None):
+    production_date = production_date or date.today()
+    context = dict(page_title="PROD API", active_tab="prod-api", production_date=production_date,
+                   records=[], selected=None, preview_json=None, error=None)
+    status = 200
+    try:
+        with closing(get_connection()) as conn:
+            context["records"] = read_prod_records(conn.cursor(), production_date)
+        if production_id is not None:
+            selected = next((row for row in context["records"] if row["ProductionID"] == production_id), None)
+            if selected is None:
+                context["error"] = "This Production Lot is not available for the selected date. Refresh and select a record."
+                status = 400
+            else:
+                context["selected"] = selected
+                context["mapping"] = field_mapping(selected)
+                context["missing"] = [item['field'] for item in context['mapping']
+                                      if item['missing'] and item['field'] != 'remark / itemOutputs.remark']
+                context["preview_json"] = json.dumps(jsonable_encoder(
+                    build_pis_prodorders_payload([selected])), ensure_ascii=False, indent=2)
+    except Exception:
+        context.update(records=[], selected=None, preview_json=None,
+                       error="Unable to load Production records. Please retry.")
+        status = 503
+    return templates.TemplateResponse(request=request, name="prod_api.html", context=context,
+                                      status_code=status, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/reject-api", response_class=HTMLResponse)
+def reject_api_page(request: Request, production_date: date | None = None):
+    return templates.TemplateResponse(request=request, name="reject_api.html", context=dict(
+        page_title="REJECT API", active_tab="reject-api", production_date=production_date or date.today()))

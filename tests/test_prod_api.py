@@ -1,0 +1,217 @@
+import asyncio
+import copy
+import html
+import json
+import re
+import unittest
+from datetime import date, time
+from unittest.mock import patch
+from app.main import app, production_page
+from app.prod_api import read_prod_records, resolve_plan, build_pis_prodorders_payload, field_mapping
+from test_production import LOT, PLAN, request
+
+DAY = date(2026, 9, 22)
+RECORD = dict(ProductionID=2, ProdDate=DAY, Shift='1', MaterialCode='12345678XX',
+              MaterialName='Saved product', LotNo='B006690902', ProductFamily='NeuFit / NeuStile',
+              ProductCode='06', PlanName='MTS033',PlanQty=1800, ProductionStartTime=time(7, 30), ProductionEndTime=time(15, 30),
+              CounterQty=100, CuringQty=90, Remark='Saved <remark>')
+
+
+PLAN_SOURCE = dict(Company='CRTC',Plant='30A1',Machine='SB2-3',PlanWeek='2026W36',
+                   VersionNo='02',PlanName='MTS033',Shift='1',StartTime=DAY,
+                   MaterialCode=RECORD['MaterialCode'],PlanCount=1800,OperationCode='a')
+
+
+class ReadOnlyConnection:
+    def __init__(self, records=None):
+        self.records = copy.deepcopy(records if records is not None else [RECORD])
+        self.sql = []
+        self.closed = False
+    def cursor(self): return self
+    def execute(self, sql, *args):
+        if not sql.lstrip().startswith('SELECT'):
+            raise AssertionError('Viewing must only SELECT')
+        self.sql.append((sql,args))
+        if 'FROM dbo.P_ActivePlan' in sql:
+            self.result = [PLAN_SOURCE] if args[-1] == DAY else []
+            self.description = [(key,) for key in PLAN_SOURCE]
+        else:
+            self.result = [record for record in self.records if record['ProdDate'] == args[0]]
+            self.description = [(key,) for key in RECORD]
+    def fetchall(self): return [tuple(record[key[0]] for key in self.description) for record in self.result]
+    def close(self): self.closed = True
+    def commit(self): raise AssertionError('Viewing must not commit')
+    def rollback(self): raise AssertionError('Viewing must not write')
+
+
+async def get_page(path, query='', method='GET'):
+    messages = []
+    async def receive(): return {'type':'http.request','body':b'', 'more_body':False}
+    async def send(message): messages.append(message)
+    # The event loop is already initialized; block connections during route execution.
+    with patch('socket.socket.connect', side_effect=AssertionError('External request forbidden')):
+        await app({'type':'http','asgi':{'version':'3.0'},'http_version':'1.1','method':method,
+                   'scheme':'http','path':path,'raw_path':path.encode(),'query_string':query.encode(),
+                   'root_path':'','headers':[], 'server':('test',80),'client':('test',1)},receive,send)
+    start = next(message for message in messages if message['type']=='http.response.start')
+    body = b''.join(message.get('body',b'') for message in messages if message['type']=='http.response.body').decode()
+    return start['status'], body
+
+
+class ProdApiTests(unittest.TestCase):
+    def page(self, query='', conn=None):
+        conn = conn or ReadOnlyConnection()
+        before = copy.deepcopy(conn.records)
+        with patch('app.main.get_connection',return_value=conn):
+            status, body = asyncio.run(get_page('/prod-api',query))
+        self.assertEqual(conn.records,before)
+        self.assertTrue(conn.closed)
+        self.assertEqual(len(conn.sql),2)
+        return status, body, conn
+
+    def test_query_uses_existing_tables_parameterized_date_and_active_lots(self):
+        conn = ReadOnlyConnection()
+        self.assertEqual(read_prod_records(conn,DAY)[0]['Plant'],'30A1')
+        sql,args = conn.sql[0]
+        self.assertIn('LEFT JOIN dbo.ProductionData d ON d.ProductionID=p.ProductionID',sql)
+        self.assertIn('WHERE p.IsActive=1 AND p.ProdDate=?',sql)
+        self.assertEqual(args,(DAY,))
+        self.assertNotIn('PIS',sql)
+
+    def test_prod_route_displays_saved_values_and_navigation(self):
+        status, body, _ = self.page('production_date=2026-09-22')
+        self.assertEqual(status,200)
+        for text in ['B006690902','07:30:00','15:30:00','12345678XX','Saved product',
+                     'NeuFit / NeuStile','>100<','>90<','Saved &lt;remark&gt;', 'NOT SENT']:
+            self.assertIn(text,body)
+        self.assertIn('local preview label',body)
+        self.assertEqual(body.count('aria-current="page"'),1)
+        self.assertRegex(body,r'href="/prod-api\?production_date=2026-09-22" aria-current="page"')
+        self.assertIn('href="/reject-api?production_date=2026-09-22"',body)
+        self.assertIn('href="/?production_date=2026-09-22"',body)
+        self.assertNotIn('<script',body)
+        self.assertNotIn('https://',body)
+        self.assertNotIn('method="post"',body)
+        self.assertNotIn('>SEND<',body)
+
+    def test_default_today_and_historical_filter(self):
+        _,_,conn = self.page()
+        self.assertEqual(conn.sql[0][1],(date.today(),))
+        status,body,conn = self.page('production_date=2020-01-01')
+        self.assertEqual(status,200)
+        self.assertEqual(conn.sql[0][1],(date(2020,1,1),))
+        self.assertIn('No active Production Lots',body)
+        self.assertNotIn('B006690902',body)
+
+    def test_preview_is_read_only_exact_available_fields(self):
+        status,body,_ = self.page('production_date=2026-09-22&production_id=2')
+        self.assertEqual(status,200)
+        preview = json.loads(html.unescape(re.search(r'<pre id="prod-preview">(.*?)</pre>',body,re.S)[1]))
+        self.assertEqual(preview['plantCode'],'30A1')
+        self.assertEqual(preview['machineCode'],'SB2-3')
+        self.assertEqual(preview['productionDate'],'2026-09-22')
+        self.assertEqual(preview['shiftCode'],'1')
+        item=preview['productionItems'][0]
+        self.assertEqual(item['dateTimeStart'],'07:30:00')
+        self.assertEqual(item['dateTimeEnd'],'15:30:00')
+        self.assertEqual(item['planName'],'MTS033')
+        self.assertEqual(item['versionNo'],'02')
+        self.assertEqual(item['planWeek'],'2026W36')
+        self.assertEqual(item['operationCode'],'a')
+        self.assertIsNone(item['followPlan'])
+        for key in ('itemDetails','itemInputs','itemProperties'):
+            self.assertEqual(item[key],[])
+        output=item['itemOutputs'][0]
+        self.assertEqual(output['gross0'],90)
+        self.assertEqual(output['lotNo'],RECORD['LotNo'])
+        self.assertEqual(output['materialCode'],RECORD['MaterialCode'])
+        detail=output['outputDetails'][0]
+        self.assertEqual(detail['count'],90)
+        self.assertEqual(detail['effectiveDate'],'2026-09-22')
+        self.assertEqual(detail['statusCode'],'Curing')
+        self.assertIn('FIELD MAPPING',body)
+        self.assertIn('PIS JSON PREVIEW',body)
+        self.assertIn('Missing: followPlan',body)
+        for column in ('Plan','Version','Wet Reject'):
+            self.assertIn('<th>'+column+'</th>',body)
+        self.assertIn('Saved &lt;remark&gt;',body)
+
+    def test_missing_measurements_remain_null_and_zero_is_displayed(self):
+        record = dict(RECORD,CounterQty=0,CuringQty=None,ProductionStartTime=None,ProductionEndTime=None,Remark=None)
+        status,body,_ = self.page('production_date=2026-09-22&production_id=2',ReadOnlyConnection([record]))
+        self.assertEqual(status,200)
+        self.assertIn('>0<',body)
+        self.assertIn('"gross0": null',html.unescape(body))
+
+    def test_wrong_date_or_missing_record_cannot_preview(self):
+        for query in ('production_date=2026-09-21&production_id=2','production_date=2026-09-22&production_id=999'):
+            status,body,_ = self.page(query)
+            self.assertEqual(status,400)
+            self.assertIn('not available for the selected date',body)
+            self.assertNotIn('id="prod-preview"',body)
+
+    def test_routes_reject_invalid_dates_and_posts_without_database_access(self):
+        with patch('app.main.get_connection') as connection:
+            for path in ('/prod-api','/reject-api'):
+                self.assertEqual(asyncio.run(get_page(path,'production_date=invalid'))[0],422)
+                self.assertEqual(asyncio.run(get_page(path,method='POST'))[0],405)
+            connection.assert_not_called()
+
+    def test_reject_placeholder_has_navigation_without_database_access(self):
+        with patch('app.main.get_connection') as connection:
+            status,body = asyncio.run(get_page('/reject-api','production_date=2026-09-22'))
+        connection.assert_not_called()
+        self.assertEqual(status,200)
+        self.assertIn('Coming next',body)
+        self.assertRegex(body,r'href="/reject-api\?production_date=2026-09-22" aria-current="page"')
+        self.assertNotIn('<script',body)
+
+    def test_database_failure_shows_safe_error(self):
+        with patch('app.main.get_connection',side_effect=RuntimeError('private details')):
+            status,body = asyncio.run(get_page('/prod-api'))
+        self.assertEqual(status,503)
+        self.assertIn('Unable to load Production records',body)
+        self.assertNotIn('private details',body)
+
+    def test_production_navigation_uses_selected_lot_date(self):
+        from unittest.mock import MagicMock
+        with patch('app.main.get_connection',return_value=MagicMock()), \
+             patch('app.main.read_lots',return_value=[LOT]), \
+             patch('app.main.read_plans',return_value=[PLAN]):
+            response=production_page(request(),production_id=7,production_date=date(2030,1,1))
+        body=response.body.decode()
+        self.assertIn('href="/prod-api?production_date=2026-09-21"',body)
+        self.assertRegex(body,r'href="/\?production_date=2026-09-21" aria-current="page"')
+        self.assertIn('SAVE PRODUCTION',body)
+
+    def test_unresolved_and_ambiguous_sources_are_not_guessed(self):
+        missing=resolve_plan(RECORD,[])
+        payload=build_pis_prodorders_payload([dict(RECORD,**missing)])
+        self.assertIsNone(payload['plantCode'])
+        self.assertIsNone(payload['machineCode'])
+        self.assertIsNone(payload['productionItems'][0]['operationCode'])
+        changed=dict(PLAN_SOURCE,VersionNo='03',OperationCode='b')
+        resolved=resolve_plan(RECORD,[PLAN_SOURCE,changed])
+        self.assertEqual(resolved['Plant'],'30A1')
+        self.assertEqual(resolved['Machine'],'SB2-3')
+        self.assertIsNone(resolved['VersionNo'])
+        self.assertIsNone(resolved['OperationCode'])
+        for key,value in [('PlanName','other'),('MaterialCode','other'),('PlanCount',99),('StartTime',date(2020,1,1))]:
+            self.assertIsNone(resolve_plan(RECORD,[dict(PLAN_SOURCE,**{key:value})])['Plant'])
+
+    def test_builder_supports_grouped_items_without_hardcoded_context(self):
+        row=dict(RECORD,Plant='actual-plant',Machine='actual-machine')
+        payload=build_pis_prodorders_payload([row,dict(row,ProductionID=3,LotNo='OTHER')])
+        self.assertEqual(payload['plantCode'],'actual-plant')
+        self.assertEqual(payload['machineCode'],'actual-machine')
+        self.assertEqual(len(payload['productionItems']),2)
+        for key,value in [('ProdDate',date(2020,1,1)),('Shift','2'),('Plant','other'),('Machine','other')]:
+            with self.assertRaises(ValueError):
+                build_pis_prodorders_payload([row,dict(row,**{key:value})])
+        with self.assertRaises(ValueError): build_pis_prodorders_payload([])
+
+    def test_zero_curing_and_false_like_values_are_not_missing(self):
+        row=dict(RECORD,CuringQty=0,**resolve_plan(RECORD,[PLAN_SOURCE]))
+        payload=build_pis_prodorders_payload([row])
+        self.assertEqual(payload['productionItems'][0]['itemOutputs'][0]['gross0'],0)
+        self.assertFalse(next(item for item in field_mapping(row) if item['field']=='gross0')['missing'])

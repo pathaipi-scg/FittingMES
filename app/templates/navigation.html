@@ -1,0 +1,12 @@
+<style>
+.page-tabs{display:flex;gap:3px;margin:0 0 4.5px;flex-shrink:0}
+.page-tabs a{display:inline-flex;align-items:center;height:22.5px;padding:1.5px 7px;border:0.75px solid #c7d2df;border-radius:2.25px;background:white;color:#243348;text-decoration:none;font:500 9.75px/1.2 system-ui,sans-serif}
+.page-tabs a[aria-current=page]{background:#1765ad;border-color:#1765ad;color:white}
+.page-tabs a:focus-visible{outline:1.5px solid #63acec;outline-offset:0.75px}
+</style>
+{% set tab_date = current.ProdDate if current is defined and current else production_date %}
+<nav class="page-tabs" aria-label="Main navigation">
+{% for key, label, path in [('production','PRODUCTION','/'),('prod-api','PROD API','/prod-api'),('reject-api','REJECT API','/reject-api')] %}
+<a href="{{ path }}?production_date={{ tab_date }}" {% if active_tab|default('production') == key %}aria-current="page"{% endif %}>{{ label }}</a>
+{% endfor %}
+</nav>
