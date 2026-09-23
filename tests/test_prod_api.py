@@ -7,7 +7,7 @@ import unittest
 from datetime import date, time
 from unittest.mock import patch
 from app.main import app, production_page
-from app.prod_api import read_prod_records, resolve_plan, build_pis_prodorders_payload, field_mapping
+from app.prod_api import read_prod_records, resolve_plan, build_pis_prodorders_payload, field_mapping, build_pis_date_preview, preview_readiness
 from test_production import LOT, PLAN, request
 
 DAY = date(2026, 9, 22)
@@ -104,16 +104,16 @@ class ProdApiTests(unittest.TestCase):
         self.assertNotIn('B006690902',body)
 
     def test_preview_is_read_only_exact_available_fields(self):
-        status,body,_ = self.page('production_date=2026-09-22&production_id=2')
+        status,body,_ = self.page('production_date=2026-09-22&preview_all=true')
         self.assertEqual(status,200)
-        preview = json.loads(html.unescape(re.search(r'<pre id="prod-preview">(.*?)</pre>',body,re.S)[1]))
+        preview = json.loads(html.unescape(re.search(r'<pre id="prod-preview-1" class="prod-preview">(.*?)</pre>',body,re.S)[1]))
         self.assertEqual(preview['plantCode'],'30A1')
         self.assertEqual(preview['machineCode'],'SB2-3')
         self.assertEqual(preview['productionDate'],'2026-09-22')
         self.assertEqual(preview['shiftCode'],'1')
         item=preview['productionItems'][0]
-        self.assertEqual(item['dateTimeStart'],'07:30:00')
-        self.assertEqual(item['dateTimeEnd'],'15:30:00')
+        self.assertEqual(item['dateTimeStart'],'2026-09-22T07:30')
+        self.assertEqual(item['dateTimeEnd'],'2026-09-22T15:30')
         self.assertEqual(item['planName'],'MTS033')
         self.assertEqual(item['versionNo'],'02')
         self.assertEqual(item['planWeek'],'2026W36')
@@ -131,24 +131,61 @@ class ProdApiTests(unittest.TestCase):
         self.assertEqual(detail['statusCode'],'Curing')
         self.assertIn('FIELD MAPPING',body)
         self.assertIn('PIS JSON PREVIEW',body)
-        self.assertIn('Missing: followPlan',body)
+        self.assertIn('Unresolved: followPlan source not implemented (nonfatal)',body)
         for column in ('Plan','Version','Wet Reject'):
             self.assertIn('<th>'+column+'</th>',body)
         self.assertIn('Saved &lt;remark&gt;',body)
 
     def test_missing_measurements_remain_null_and_zero_is_displayed(self):
         record = dict(RECORD,CounterQty=0,CuringQty=None,ProductionStartTime=None,ProductionEndTime=None,Remark=None)
-        status,body,_ = self.page('production_date=2026-09-22&production_id=2',ReadOnlyConnection([record]))
+        status,body,_ = self.page('production_date=2026-09-22&preview_all=true',ReadOnlyConnection([record]))
         self.assertEqual(status,200)
         self.assertIn('>0<',body)
         self.assertIn('"gross0": null',html.unescape(body))
 
-    def test_wrong_date_or_missing_record_cannot_preview(self):
-        for query in ('production_date=2026-09-21&production_id=2','production_date=2026-09-22&production_id=999'):
-            status,body,_ = self.page(query)
-            self.assertEqual(status,400)
-            self.assertIn('not available for the selected date',body)
-            self.assertNotIn('id="prod-preview"',body)
+    def test_empty_date_has_no_request(self):
+        status,body,_ = self.page('production_date=2020-01-01&preview_all=true')
+        self.assertEqual(status,200)
+        self.assertIn('Nothing to preview',body)
+        self.assertNotIn('class="prod-preview"',body)
+
+    def test_all_lots_included_once_and_selection_cannot_filter_all(self):
+        other=dict(RECORD,ProductionID=3,LotNo='SECOND',CuringQty=80)
+        historical=dict(RECORD,ProductionID=4,LotNo='HISTORICAL',ProdDate=date(2020,1,1))
+        status,body,_=self.page('production_date=2026-09-22&preview_all=true&production_id=2',
+                               ReadOnlyConnection([RECORD,other,historical]))
+        self.assertEqual(status,200)
+        preview=json.loads(html.unescape(re.search(r'<pre id="prod-preview-1" class="prod-preview">(.*?)</pre>',body,re.S)[1]))
+        self.assertEqual([item['itemOutputs'][0]['lotNo'] for item in preview['productionItems']],
+                         ['B006690902','SECOND'])
+        self.assertNotIn('HISTORICAL',body)
+        self.assertIn('type="radio"',body)
+        self.assertIn('name="production_id"',body)
+        self.assertIn('PREVIEW ALL PROD',body)
+        self.assertIn('>REFRESH<',body)
+        self.assertIn('>PREVIEW PROD<',body)
+        self.assertIn('2 lots included',body)
+
+    def test_multiple_groups_preserve_all_lots_without_inventing_request_wrapper(self):
+        other=dict(RECORD,ProductionID=3,LotNo='SECOND',Shift='2',CuringQty=None)
+        status,body,_=self.page('production_date=2026-09-22&preview_all=true',ReadOnlyConnection([RECORD,other]))
+        self.assertEqual(status,200)
+        groups=[json.loads(html.unescape(value)) for value in re.findall(r'<pre id="prod-preview-\d+" class="prod-preview">(.*?)</pre>',body,re.S)]
+        self.assertEqual([group['shiftCode'] for group in groups],['1','2'])
+        self.assertEqual(sum(len(group['productionItems']) for group in groups),2)
+        self.assertIsNone(groups[1]['productionItems'][0]['itemOutputs'][0]['gross0'])
+        self.assertIn('Each group below is a separate ProdOrders request body',body)
+        self.assertIn('no batch wrapper',body)
+        self.assertEqual(len(groups),2)
+
+    def test_date_builder_checks_date_and_keeps_unmapped_records(self):
+        rows=[dict(RECORD,Plant='30A1',Machine='SB2-3'),dict(RECORD,ProductionID=3,LotNo='UNMAPPED')]
+        groups=build_pis_date_preview(rows,DAY)
+        self.assertEqual(len(groups),2)
+        self.assertIsNone(groups[1]['plantCode'])
+        self.assertEqual(groups[1]['productionItems'][0]['itemOutputs'][0]['lotNo'],'UNMAPPED')
+        self.assertEqual(build_pis_date_preview([],DAY),[])
+        with self.assertRaises(ValueError): build_pis_date_preview(rows,date(2020,1,1))
 
     def test_routes_reject_invalid_dates_and_posts_without_database_access(self):
         with patch('app.main.get_connection') as connection:
@@ -215,3 +252,129 @@ class ProdApiTests(unittest.TestCase):
         payload=build_pis_prodorders_payload([row])
         self.assertEqual(payload['productionItems'][0]['itemOutputs'][0]['gross0'],0)
         self.assertFalse(next(item for item in field_mapping(row) if item['field']=='gross0')['missing'])
+
+    def test_selected_lot_preview_only_contains_selection_and_no_external_request(self):
+        other=dict(RECORD,ProductionID=3,LotNo='SECOND',CuringQty=80)
+        status,body,_=self.page('production_date=2026-09-22&preview_one=true&production_id=3',
+                               ReadOnlyConnection([RECORD,other]))
+        self.assertEqual(status,200)
+        groups=[json.loads(html.unescape(value)) for value in re.findall(
+            r'<pre id="prod-preview-\d+" class="prod-preview">(.*?)</pre>',body,re.S)]
+        self.assertEqual(len(groups),1)
+        self.assertEqual(len(groups[0]['productionItems']),1)
+        self.assertEqual(groups[0]['productionItems'][0]['itemOutputs'][0]['lotNo'],'SECOND')
+        self.assertEqual(groups[0]['productionItems'][0]['itemOutputs'][0]['gross0'],80)
+        self.assertIn('1 lots included',body)
+        self.assertIn('SELECTED LOT',body)
+        self.assertNotIn('<script',body)
+        self.assertNotIn('method="post"',body)
+        # get_page blocks socket connections throughout route execution.
+        self.assertNotIn('Unable to load',body)
+
+    def test_single_preview_requires_valid_selection_from_date(self):
+        for query in ('preview_one=true','preview_one=true&production_id=999'):
+            status,body,_=self.page('production_date=2026-09-22&'+query)
+            self.assertEqual(status,400)
+            self.assertIn('Select a Production Lot from this date',body)
+            self.assertNotIn('class="prod-preview"',body)
+
+    def test_all_preview_without_selection_and_several_items_per_group(self):
+        records=[RECORD,dict(RECORD,ProductionID=3,LotNo='SECOND'),
+                 dict(RECORD,ProductionID=4,LotNo='THIRD',Shift='2')]
+        status,body,_=self.page('production_date=2026-09-22&preview_all=true',ReadOnlyConnection(records))
+        self.assertEqual(status,200)
+        groups=[json.loads(html.unescape(value)) for value in re.findall(
+            r'<pre id="prod-preview-\d+" class="prod-preview">(.*?)</pre>',body,re.S)]
+        self.assertEqual([len(group['productionItems']) for group in groups],[2,1])
+        self.assertEqual([item['itemOutputs'][0]['lotNo'] for group in groups for item in group['productionItems']],
+                         ['B006690902','SECOND','THIRD'])
+        self.assertRegex(body,r'name="preview_all"[^>]*formnovalidate')
+
+    def test_no_production_send_action_or_endpoint(self):
+        status,body,_=self.page('production_date=2026-09-22')
+        self.assertEqual(status,200)
+        self.assertNotIn('SEND PROD',body)
+        self.assertNotIn('SEND LOT PROD',body)
+        self.assertNotIn('SEND ALL PROD',body)
+        self.assertNotIn('method="post"',body)
+        self.assertFalse(any('send' in route.path.lower() for route in app.routes))
+        self.assertEqual(next(route for route in app.routes if route.path=='/prod-api').methods,{'GET'})
+        with patch('app.main.get_connection') as connection:
+            for path in ('/prod-api','/prod-api/2/send','/lots/2/send-prod'):
+                self.assertIn(asyncio.run(get_page(path,method='POST'))[0],(404,405))
+            connection.assert_not_called()
+
+    def test_local_same_day_overnight_and_calendar_boundaries(self):
+        for production_date,start,end,expected_start,expected_end in [
+            (DAY,time(7,30,59),time(15,30,22),'2026-09-22T07:30','2026-09-22T15:30'),
+            (DAY,time(22,10),time(6,5),'2026-09-22T22:10','2026-09-23T06:05'),
+            (date(2026,12,31),time(23),time(0),'2026-12-31T23:00','2027-01-01T00:00'),
+            (DAY,time(7),time(7),'2026-09-22T07:00','2026-09-22T07:00')]:
+            with self.subTest(end=expected_end):
+                row=dict(RECORD,ProdDate=production_date,ProductionStartTime=start,ProductionEndTime=end)
+                before=copy.deepcopy(row)
+                payload=build_pis_prodorders_payload([row])
+                item=payload['productionItems'][0]
+                self.assertEqual(item['dateTimeStart'],expected_start)
+                self.assertEqual(item['dateTimeEnd'],expected_end)
+                self.assertEqual(item['itemOutputs'][0]['outputDetails'][0]['effectiveDate'],production_date)
+                self.assertEqual(row,before)
+
+    def test_trimmed_fields_group_together_without_defaults(self):
+        base=dict(RECORD,**resolve_plan(RECORD,[PLAN_SOURCE]))
+        padded={key:('  '+value+'  ' if isinstance(value,str) else value) for key,value in base.items()}
+        padded.update(ProductionID=3,LotNo=' SECOND ')
+        groups=build_pis_date_preview([padded,base],DAY)
+        self.assertEqual(len(groups),1)
+        self.assertEqual(groups[0]['plantCode'],'30A1')
+        self.assertEqual(groups[0]['shiftCode'],'1')
+        self.assertEqual(len(groups[0]['productionItems']),2)
+        for item in groups[0]['productionItems']:
+            self.assertEqual(item['versionNo'],'02')
+            self.assertEqual(item['remark'],'Saved <remark>')
+            self.assertEqual(item['itemOutputs'][0]['materialCode'],'12345678XX')
+        self.assertEqual(groups[0]['productionItems'][1]['itemOutputs'][0]['lotNo'],'SECOND')
+
+    def test_required_missing_values_remain_null_and_are_reported(self):
+        base=dict(RECORD,**resolve_plan(RECORD,[PLAN_SOURCE]))
+        cases={'Plant':'plantCode','Machine':'machineCode','OperationCode':'operationCode',
+               'PlanWeek':'planWeek','VersionNo':'versionNo','ProductionStartTime':'dateTimeStart',
+               'ProductionEndTime':'dateTimeEnd','MaterialCode':'materialCode','LotNo':'lotNo','CuringQty':'gross0'}
+        for key,field in cases.items():
+            with self.subTest(key=key):
+                row=dict(base,**{key:None})
+                payload=build_pis_prodorders_payload([row])
+                readiness=preview_readiness(payload)
+                self.assertFalse(readiness['ready'])
+                self.assertTrue(any(field in missing for missing in readiness['missing']))
+                mapping=next(item for item in field_mapping(row) if item['field']==field)
+                self.assertIsNone(mapping['value'])
+                self.assertEqual(mapping['severity'],'required')
+        payload=build_pis_prodorders_payload([dict(base,Plant='  ',Machine=' ',VersionNo=' ',MaterialCode=' ')])
+        self.assertIsNone(payload['plantCode'])
+        self.assertIsNone(payload['machineCode'])
+        self.assertIsNone(payload['productionItems'][0]['versionNo'])
+        self.assertIsNone(payload['productionItems'][0]['itemOutputs'][0]['materialCode'])
+
+    def test_followplan_unresolved_is_nonfatal_for_lot_and_group(self):
+        row=dict(RECORD,CuringQty=0,**resolve_plan(RECORD,[PLAN_SOURCE]))
+        payload=build_pis_prodorders_payload([row])
+        self.assertTrue(preview_readiness(payload)['ready'])
+        self.assertEqual(preview_readiness(payload)['missing'],[])
+        self.assertIsNone(payload['productionItems'][0]['followPlan'])
+        self.assertEqual(next(item for item in field_mapping(row) if item['field']=='followPlan')['severity'],'unresolved')
+        status,body,_=self.page('production_date=2026-09-22&preview_one=true&production_id=2')
+        self.assertEqual(status,200)
+        self.assertIn('READY FOR PIS PREVIEW',body)
+        self.assertIn('DRY RUN / NO PIS SEND',body)
+        self.assertNotIn('MISSING REQUIRED DATA',body)
+        self.assertIn('Unresolved (nonfatal): followPlan source not implemented',body)
+
+    def test_group_missing_fields_do_not_omit_lots(self):
+        status,body,_=self.page('production_date=2026-09-22&preview_all=true',ReadOnlyConnection([
+            RECORD,dict(RECORD,ProductionID=3,LotNo='SECOND',CuringQty=None,ProductionEndTime=None)]))
+        self.assertEqual(status,200)
+        self.assertIn('2 lots included',body)
+        self.assertIn('Item 2: gross0 (CuringQty)',body)
+        self.assertIn('Item 2: dateTimeEnd',body)
+        self.assertIn('MISSING REQUIRED DATA',body)

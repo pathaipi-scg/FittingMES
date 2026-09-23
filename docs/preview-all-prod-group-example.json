@@ -1,0 +1,78 @@
+{
+  "productionDate": "2026-09-22",
+  "shiftCode": "1",
+  "plantCode": "30A1",
+  "machineCode": "SB2-3",
+  "operatorName": "",
+  "resources": [],
+  "productionItems": [
+    {
+      "operationCode": "a",
+      "dateTimeStart": "2026-09-22T07:30",
+      "dateTimeEnd": "2026-09-22T15:30",
+      "planWeek": "2026W36",
+      "planName": "MTS033",
+      "versionNo": "02",
+      "followPlan": null,
+      "remark": "Saved <remark>",
+      "itemDetails": [],
+      "itemOutputs": [
+        {
+          "materialCode": "12345678XX",
+          "lotNo": "B006690902",
+          "gross0": 90,
+          "tool": "",
+          "remark": "Saved <remark>",
+          "outputDetails": [
+            {
+              "statusCode": "Curing",
+              "lockProdOrderNo": "",
+              "reasonCode": "",
+              "reasonCode2": "",
+              "effectiveDate": "2026-09-22",
+              "lockId": "",
+              "count": 90,
+              "remark": ""
+            }
+          ]
+        }
+      ],
+      "itemInputs": [],
+      "itemProperties": []
+    },
+    {
+      "operationCode": "a",
+      "dateTimeStart": "2026-09-22T22:00",
+      "dateTimeEnd": "2026-09-23T06:00",
+      "planWeek": "2026W36",
+      "planName": "MTS033",
+      "versionNo": "02",
+      "followPlan": null,
+      "remark": "Overnight example",
+      "itemDetails": [],
+      "itemOutputs": [
+        {
+          "materialCode": "12345678XX",
+          "lotNo": "B006690903",
+          "gross0": 80,
+          "tool": "",
+          "remark": "Overnight example",
+          "outputDetails": [
+            {
+              "statusCode": "Curing",
+              "lockProdOrderNo": "",
+              "reasonCode": "",
+              "reasonCode2": "",
+              "effectiveDate": "2026-09-22",
+              "lockId": "",
+              "count": 80,
+              "remark": ""
+            }
+          ]
+        }
+      ],
+      "itemInputs": [],
+      "itemProperties": []
+    }
+  ]
+}

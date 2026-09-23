@@ -1,79 +1,30 @@
-# PIS production dry-run preview
+# PIS production previews: DRY RUN / NO PIS SEND
 
-No HTTP client, credentials, send action, schema change, or save-rule change is introduced.
+PREVIEW PROD uses only the selected lot for inspection. PREVIEW ALL PROD includes every active lot for the selected date, even when measurements or mappings are missing. Grouping is productionDate + trimmed shiftCode + trimmed plantCode + trimmed machineCode. Each group is one separate ProdOrders request body; no batch wrapper is added. Group keys are sorted and items are ordered by start time and lot number. No send endpoint, HTTP client, credentials, schema change or save-rule change is introduced. Future real production sending must be SEND ALL PROD only.
 
-## Confirmed sources
+## Sources and transformations
 
-ProductionLot does not persist Plant, Machine or VersionNo. Lot creation stores ProdDate, PlanName, MaterialCode and PlanQty from the selected plan. Plan edits update the saved name/material/quantity. Shift is editable through Production save, so it is not used as a plan identity key.
+- ProductionLot.ProdDate supplies productionDate and effectiveDate.
+- ProductionLot.Shift supplies the saved Production shift, as a trimmed string.
+- ProductionLot.PlanName, MaterialCode and LotNo supply the corresponding trimmed PIS strings.
+- ProductionData.CuringQty supplies gross0 and outputDetails.count; zero stays zero, missing stays null.
+- ProductionData.Remark supplies item and output remarks, trimmed; missing/blank remains null.
+- ProductionData.Start/End times are combined with ProductionLot.ProdDate as factory-local values. End advances one calendar day only when earlier than Start. Equal times remain on the same day. Both format as YYYY-MM-DDTHH:mm without UTC conversion or timezone suffix. Seconds are dropped after comparing the saved times. Missing times remain null; if Start is missing, End uses the lot date and the missing Start is flagged.
+- P_ActivePlan supplies Plant, Machine, OperationCode, PlanWeek and VersionNo. The read-only resolver uses the existing installation scope Company=CRTC, Plant=30A1, Machine=SB2-3 and date. It matches saved date, trimmed plan name/material and plan quantity. Only values shared by every matching candidate are accepted, after trimming.
 
-The read-only resolver queries dbo.P_ActivePlan with the same installation scope as the existing Production plan reader: Company=CRTC, Plant=30A1, Machine=SB2-3, StartTime=selected date. It matches the saved date/name/material/quantity. Each plan field is mapped only if all candidate rows agree. It never selects the newest version arbitrarily. Missing candidates or conflicting values remain null. This is recovery from the currently available plan source, not proof of the original historical version. A deleted or revised historical source cannot be reconstructed from the lot schema.
+ProductionLot does not persist Plant, Machine or VersionNo. Source resolution cannot prove the original historical plan version if that source changed or disappeared. No CB plant/machine/material/version defaults are substituted.
 
-| PIS field | Source |
-| --- | --- |
-| productionDate / outputDetails.effectiveDate | ProductionLot.ProdDate |
-| shiftCode | ProductionLot.Shift, saved string preserved |
-| plantCode / machineCode | Matching P_ActivePlan.Plant / Machine |
-| operationCode | Matching P_ActivePlan.OperationCode |
-| planWeek / versionNo | Matching P_ActivePlan.PlanWeek / VersionNo |
-| planName | ProductionLot.PlanName |
-| dateTimeStart / dateTimeEnd | ProductionData.ProductionStartTime / ProductionEndTime, time-only values preserved |
-| materialCode / lotNo | ProductionLot.MaterialCode / LotNo |
-| gross0 / outputDetails.count | ProductionData.CuringQty |
-| item remark / output remark | ProductionData.Remark |
-| outputDetails.statusCode | Requested constant Curing |
-| followPlan | null: no confirmed field or equivalent |
+## Readiness
 
-Live cursor metadata confirms ActivePlan StartTime is a date and no EndTime or followPlan column exists. No calendar week, timestamp, timezone, overnight duration or follow-plan rule is inferred. The datetime wire format and shift type still need future PIS contract validation; READY FOR PIS PREVIEW only describes mapping availability, not send readiness.
+Per-lot field mappings distinguish required missing values, unresolved mappings and optional remarks. Per-request-group readiness checks date, shift, plant, machine, operation, plan week/name/version, start/end, material, lot and CuringQty. Missing required values do not prevent inspection or silently exclude lots.
 
-The reference supplies empty resources/itemDetails/itemInputs/itemProperties and blank operator/tool/lock/reason fields. They are structural placeholders, not invented measurements. The payload builder accepts multiple records sharing date, shift, plant and machine, but no SEND ALL action is implemented. Wet Reject uses the existing Counter minus Curing calculation. NOT SENT remains display-only.
+followPlan remains null and is reported as unresolved/nonfatal. itemDetails, itemInputs, itemProperties and resources remain empty arrays; no downtime/tasks/properties are invented. These omissions are displayed. READY FOR PIS PREVIEW describes the currently agreed preview fields, not authorization or readiness to send to PIS.
 
-## Live read-only example: ProductionID 2
+## Generated examples
 
-Captured from MSSQL during verification. The lot currently has ProdDate 2026-09-14. Its Depallet date is a separate field and is not used here.
+These are synthetic regression-fixture examples, not live MSSQL records:
 
-```json
-{
-  "productionDate": "2026-09-14",
-  "shiftCode": "1",
-  "plantCode": "30A1",
-  "machineCode": "SB2-3",
-  "operatorName": "",
-  "resources": [],
-  "productionItems": [
-    {
-      "operationCode": "a",
-      "dateTimeStart": "09:27:13",
-      "dateTimeEnd": "00:28:31",
-      "planWeek": "2026W34",
-      "planName": "MTS033",
-      "versionNo": "01",
-      "followPlan": null,
-      "remark": "",
-      "itemDetails": [],
-      "itemOutputs": [
-        {
-          "materialCode": "ZCB30005STDA000A11",
-          "lotNo": "B006690902",
-          "gross0": 1790,
-          "tool": "",
-          "remark": "",
-          "outputDetails": [
-            {
-              "statusCode": "Curing",
-              "lockProdOrderNo": "",
-              "reasonCode": "",
-              "reasonCode2": "",
-              "effectiveDate": "2026-09-14",
-              "lockId": "",
-              "count": 1790,
-              "remark": ""
-            }
-          ]
-        }
-      ],
-      "itemInputs": [],
-      "itemProperties": []
-    }
-  ]
-}
-```
+- [Selected-lot PREVIEW PROD](preview-prod-example.json)
+- [PREVIEW ALL PROD request group with two lots](preview-all-prod-group-example.json), including an overnight item.
+
+Validation: python -m unittest discover -s tests; node tests/test_family_ui.cjs; node tests/test_depallet_ui.cjs.

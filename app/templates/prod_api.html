@@ -1,31 +1,47 @@
 {% extends 'api_base.html' %}
 {% block content %}
 <section class="panel"><h1>PROD API</h1>
+<p class="muted">PIS endpoint: {{ 'configured' if pis_config.endpoint_configured else 'NOT CONFIGURED' }} &middot; PIS authentication: {{ 'configured' if pis_config.authentication_configured else 'NOT CONFIGURED' }}. DRY RUN / NO PIS SEND.</p>
 <form class="toolbar" method="get" action="/prod-api">
-<label for="api-date">Production Date</label><input id="api-date" name="production_date" type="date" value="{{ production_date }}" required><button type="submit">Refresh</button>
-</form><p class="muted">Production review only. NOT SENT is a local preview label; delivery status is not tracked here.</p></section>
+<label for="api-date">Production Date</label><input id="api-date" name="production_date" type="date" value="{{ production_date }}" required><button type="submit">REFRESH</button>
+</form><p class="muted">DRY RUN / NO PIS SEND. Production review only. NOT SENT is a local preview label; delivery status is not tracked here.</p></section>
 {% if error %}<div class="error" role="alert">{{ error }}</div>{% endif %}
 <section class="panel" aria-label="Production records">
 <form method="get" action="/prod-api">
 <input type="hidden" name="production_date" value="{{ production_date }}">
 <div class="table-scroll"><table><thead><tr><th>Select</th><th>Production Date</th><th>Shift</th><th>Start</th><th>End</th><th>Plan</th><th>Version</th><th>Material Code</th><th>Lot No.</th><th>Product</th><th>Counter</th><th>Curing</th><th>Wet Reject</th><th>Remark</th><th>Local status</th></tr></thead><tbody>
 {% for row in records %}<tr>
-<td><input type="radio" name="production_id" value="{{ row.ProductionID }}" aria-label="Select {{ row.LotNo }}" required {% if selected and selected.ProductionID == row.ProductionID %}checked{% endif %}></td>
+<td><input type="radio" name="production_id" value="{{ row.ProductionID }}" aria-label="Select {{ row.LotNo }}" required {% if selected_id == row.ProductionID %}checked{% endif %}></td>
 {% for key in ['ProdDate','Shift','ProductionStartTime','ProductionEndTime','PlanName','VersionNo','MaterialCode','LotNo'] %}<td>{{ row[key] if row[key] is not none else '-' }}</td>{% endfor %}
 <td>{{ row.ProductFamily or '' }} {{ row.ProductCode or '' }}{% if row.MaterialName %} &middot; {{ row.MaterialName }}{% endif %}</td>
 <td>{{ row.CounterQty if row.CounterQty is not none else '-' }}</td><td>{{ row.CuringQty if row.CuringQty is not none else '-' }}</td><td>{{ row.WetRejectQty if row.WetRejectQty is not none else '-' }}</td><td class="remark">{{ row.Remark or '' }}</td><td class="status">NOT SENT</td>
 </tr>{% else %}<tr><td colspan="15" class="muted">No active Production Lots for this date.</td></tr>{% endfor %}
-</tbody></table></div><button class="primary" type="submit" {% if not records %}disabled{% endif %}>PREVIEW PROD</button>
+</tbody></table></div>
+<button class="primary" type="submit" name="preview_one" value="true" {% if not records %}disabled{% endif %}>PREVIEW PROD</button>
+<button class="primary" type="submit" name="preview_all" value="true" formnovalidate {% if not records %}disabled{% endif %}>PREVIEW ALL PROD</button>
 </form></section>
-{% if selected %}
-<section class="panel" aria-label="Field mapping"><h2>FIELD MAPPING</h2><p class="muted">{{ selected.PlanResolution }}</p>
-<p class="muted">Saved shift and time values are preserved. Time-only values do not imply a date, timezone or overnight rule.</p>
+{% if previews %}
+{% for diagnostic in diagnostics %}
+<section class="panel" aria-label="Field mapping"><h2>FIELD MAPPING</h2><p class="muted">{{ diagnostic.record.LotNo }}: {{ diagnostic.record.PlanResolution }}</p>
+<p class="muted">DRY RUN / NO PIS SEND. Timestamps use the lot date and factory-local times; End moves to the next day only when earlier than Start. No UTC conversion.</p>
 <div class="table-scroll"><table><thead><tr><th>PIS Field</th><th>FittingMES Source</th><th>Value</th><th>Mapping</th></tr></thead><tbody>
-{% for item in mapping %}<tr><td>{{ item.field }}</td><td>{{ item.source }}</td><td>{{ item.value if item.value is not none else 'null' }}</td><td>{{ 'UNMAPPED / MISSING' if item.missing else 'MAPPED' }}</td></tr>{% endfor %}
-</tbody></table></div></section>
-<section class="panel" aria-label="Production preview"><h2>PIS JSON PREVIEW &middot; {{ selected.LotNo }}</h2>
-<p>{{ 'MISSING PIS MAPPING' if missing else 'READY FOR PIS PREVIEW' }}</p>
-{% if missing %}<p>Missing: {{ missing|join(', ') }}</p>{% endif %}
+{% for item in diagnostic.mapping %}<tr><td>{{ item.field }}</td><td>{{ item.source }}</td><td>{{ item.value if item.value is not none else 'null' }}</td><td>{{ item.severity|upper }}</td></tr>{% endfor %}
+</tbody></table></div>
+<p>{{ 'MISSING REQUIRED DATA' if diagnostic.missing else 'READY FOR PIS PREVIEW' }} &middot; Unresolved: followPlan source not implemented (nonfatal).</p>
+</section>
+{% endfor %}
+<section class="panel" aria-label="Production preview"><h2>PIS JSON PREVIEW &middot; {{ 'ALL PROD' if preview_all else 'SELECTED LOT' }} &middot; {{ production_date }}</h2>
+<p>{{ 'MISSING REQUIRED DATA' if missing else 'READY FOR PIS PREVIEW' }}</p>
+{% for diagnostic in diagnostics %}{% if diagnostic.missing %}<p>{{ diagnostic.record.LotNo }} &mdash; Missing: {{ diagnostic.missing|join(', ') }}</p>{% endif %}{% endfor %}
+<p>{{ preview_count }} lots included across {{ group_count }} date/shift/plant/machine group(s). No lots are omitted for missing mappings or measurements.</p>
+<p>Each group below is a separate ProdOrders request body. PREVIEW ALL PROD covers the complete date-level operation; no batch wrapper is added.</p>
 <p class="muted">Dry run only. No request is sent. Empty arrays and blank structural fields follow the supplied reference; they are not measured values.</p>
-<pre id="prod-preview">{{ preview_json }}</pre></section>{% endif %}
+{% for preview in previews %}
+<h2>Request group {{ loop.index }} &middot; {{ preview.payload.productionDate }} | {{ preview.payload.shiftCode }} | {{ preview.payload.plantCode }} | {{ preview.payload.machineCode }}</h2>
+<p>{{ 'READY FOR PIS PREVIEW' if preview.readiness.ready else 'MISSING REQUIRED DATA' }} &middot; DRY RUN / NO PIS SEND</p>
+{% if preview.readiness.missing %}<p>Missing required: {{ preview.readiness.missing|join(', ') }}</p>{% endif %}
+<p>Unresolved (nonfatal): {{ preview.readiness.unresolved|join(', ') }}</p>
+<p class="muted">{{ preview.readiness.notes|join(' ') }}</p>
+<pre id="prod-preview-{{ loop.index }}" class="prod-preview">{{ preview.json }}</pre>
+{% endfor %}</section>{% endif %}
 {% endblock %}

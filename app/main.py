@@ -12,7 +12,8 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from app.database import get_connection
-from app.prod_api import read_prod_records, build_pis_prodorders_payload, field_mapping
+from app.pis_config import PISConfig
+from app.prod_api import read_prod_records, build_pis_date_preview, field_mapping, preview_readiness
 from app.depallet import read_context as read_depallet_context, save_depallet
 from app.products import FAMILIES, lot_prefix, read_products, read_mapping, confirm_mapping, selected_product, month_start
 from app.production_data import read_production_data, save_production_data, calculate
@@ -261,28 +262,38 @@ async def save_depallet_route(request: Request, production_id: int):
 
 @app.get("/prod-api", response_class=HTMLResponse)
 def prod_api_page(request: Request, production_date: date | None = None,
+                  preview_all: bool = False, preview_one: bool = False,
                   production_id: int | None = None):
     production_date = production_date or date.today()
     context = dict(page_title="PROD API", active_tab="prod-api", production_date=production_date,
-                   records=[], selected=None, preview_json=None, error=None)
+                   records=[], previews=[], selected_id=production_id, error=None, diagnostics=[], group_count=0,
+                   preview_all=preview_all, preview_count=0, pis_config=PISConfig.from_environment().diagnostics())
     status = 200
     try:
         with closing(get_connection()) as conn:
             context["records"] = read_prod_records(conn.cursor(), production_date)
-        if production_id is not None:
-            selected = next((row for row in context["records"] if row["ProductionID"] == production_id), None)
-            if selected is None:
-                context["error"] = "This Production Lot is not available for the selected date. Refresh and select a record."
-                status = 400
+        if preview_all or preview_one:
+            if not context["records"]:
+                context["error"] = "No active Production Lots for this date. Nothing to preview."
             else:
-                context["selected"] = selected
-                context["mapping"] = field_mapping(selected)
-                context["missing"] = [item['field'] for item in context['mapping']
-                                      if item['missing'] and item['field'] != 'remark / itemOutputs.remark']
-                context["preview_json"] = json.dumps(jsonable_encoder(
-                    build_pis_prodorders_payload([selected])), ensure_ascii=False, indent=2)
+                preview_records = context['records'] if preview_all else [
+                    row for row in context['records'] if row['ProductionID'] == production_id]
+                if not preview_records:
+                    context['error'] = 'Select a Production Lot from this date to preview.'
+                    status = 400
+                for record in preview_records:
+                    mapping = field_mapping(record)
+                    context['diagnostics'].append(dict(record=record, mapping=mapping,
+                        missing=[item['field'] for item in mapping
+                                 if item['severity'] == 'required']))
+                groups = build_pis_date_preview(preview_records, production_date)
+                context['preview_count'] = len(preview_records)
+                context['group_count'] = len(groups)
+                context['missing'] = any(item['missing'] for item in context['diagnostics'])
+                context['previews'] = [dict(payload=group, readiness=preview_readiness(group), json=json.dumps(
+                    jsonable_encoder(group), ensure_ascii=False, indent=2)) for group in groups]
     except Exception:
-        context.update(records=[], selected=None, preview_json=None,
+        context.update(records=[], previews=[], diagnostics=[],
                        error="Unable to load Production records. Please retry.")
         status = 503
     return templates.TemplateResponse(request=request, name="prod_api.html", context=context,
