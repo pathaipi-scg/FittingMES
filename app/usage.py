@@ -6,7 +6,7 @@ from app.prod_api import read_prod_records
 
 
 def read_usage_context(cursor, production_date):
-    cursor.execute("""SELECT MaterialUsageCode,MaterialNameTH,MaterialNameEN,Unit,SortOrder
+    cursor.execute("""SELECT MaterialUsageCode,MaterialNameTH,MaterialNameEN,Unit,SortOrder,UsageType
         FROM dbo.MaterialUsageMaster WHERE IsActive=1 ORDER BY SortOrder,MaterialUsageCode""")
     materials = rows(cursor)
     lots = read_prod_records(cursor, production_date)
@@ -23,10 +23,10 @@ def read_usage_context(cursor, production_date):
     daily_values = {row['MaterialUsageCode']: row for row in rows(cursor)}
     shifts = [dict(shift=shift, totals=quantities.get(shift, {}), materials=[
         dict(material, **{key: shift_values.get((shift, material['MaterialUsageCode']), {}).get(key)
-             for key in ('RawQty', 'QtyPer1000Counter', 'QtyPer1000Curing', 'SourceType')})
+             for key in ('RawQty', 'QtyPer1000Counter', 'QtyPer1000Curing', 'CounterPerUnit', 'SourceType')})
         for material in materials]) for shift in ('1', '2')]
     daily = [dict(material, **{key: daily_values.get(material['MaterialUsageCode'], {}).get(key)
-             for key in ('RawQty', 'QtyPer1000Counter', 'QtyPer1000Curing')}) for material in materials]
+             for key in ('RawQty', 'QtyPer1000Counter', 'QtyPer1000Curing', 'CounterPerUnit')}) for material in materials]
     return dict(lots=lots, shifts=shifts, daily=daily)
 
 

@@ -10,23 +10,46 @@
 {% for lot in lots %}<tr><td>{{ lot.ProdDate }}</td><td>{{ lot.Shift }}</td><td>{{ lot.ProductionStartTime or '-' }}</td><td>{{ lot.ProductionEndTime or '-' }}</td><td>{{ lot.PlanName }}</td><td>{{ lot.VersionNo or '-' }}</td><td>{{ lot.MaterialCode }}</td><td>{{ lot.LotNo }}</td><td>{{ lot.ProductFamily or '' }} {{ lot.ProductCode or '' }} {{ lot.MaterialName or '' }}</td><td>{{ number(lot.PlanQty,0) }}</td><td>{{ number(lot.CounterQty,0) }}</td><td>{{ number(lot.CuringQty,0) }}</td><td>{{ number(lot.WetRejectQty,0) }}</td><td class="remark">{{ lot.Remark or '' }}</td></tr>
 {% else %}<tr><td colspan="14" class="muted">No active Production Lots for this date.</td></tr>{% endfor %}
 </tbody></table></div></section>
+<style>
+.usage-sheet-scroll{overflow-x:auto;max-width:100%;margin:4px 0}
+.usage-sheet{width:max-content;min-width:100%;border-collapse:separate;border-spacing:0;border-top:1px solid #c7d2df;border-left:1px solid #c7d2df;font-variant-numeric:tabular-nums}
+.usage-sheet th,.usage-sheet td{padding:3px 4px;border-right:1px solid #c7d2df;border-bottom:1px solid #c7d2df}
+.usage-sheet thead th{text-align:center;min-width:94px;max-width:140px;white-space:normal;background:#eaf0f6}
+.usage-sheet .usage-unit{display:block;font-weight:400;color:#718096;font-size:9px}
+.usage-sheet tbody td{text-align:right;min-width:94px}
+.usage-sheet th:first-child{position:sticky;left:0;z-index:1;text-align:left;min-width:165px;background:#f4f6f8}
+.usage-sheet thead th:first-child{z-index:2;background:#eaf0f6}
+.usage-sheet .usage-raw th,.usage-sheet .usage-raw td{border-top:2px solid #aebdd0;background:#edf4fc}
+.usage-sheet input[type=number]{width:90px;max-width:100%;height:21px;padding:1px 3px;text-align:right}
+.usage-actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:4px 0}
+</style>
+<section class="panel" aria-label="Material usage spreadsheet">
+<h2>MATERIAL USAGE</h2>
 {% for section in shifts %}
-<section class="panel"><h2>SHIFT {{ section.shift }} MATERIAL USAGE</h2>
-<form method="post" action="/usage/{{ section.shift }}">
+<form id="usage-shift-{{ section.shift }}" method="post" action="/usage/{{ section.shift }}">
 <input type="hidden" name="production_date" value="{{ production_date }}">
-<div class="table-scroll"><table><thead><tr><th>Material</th><th>Unit</th><th>Qty</th></tr></thead><tbody>
-{% for material in section.materials %}<tr><td>{{ material_label(material) }}</td><td>{{ material.Unit or '-' }}</td><td>{% if material.SourceType and material.SourceType != 'MANUAL' %}{{ number(material.RawQty) }} <span class="muted">{{ material.SourceType }}</span>{% else %}<input type="number" name="qty_{{ material.MaterialUsageCode }}" aria-label="Shift {{ section.shift }} {{ material.MaterialNameEN or material.MaterialUsageCode }} quantity" min="0" max="999999999999999.999" step="0.001" value="{{ material.RawQty if material.RawQty is not none else '' }}">{% endif %}</td></tr>{% else %}<tr><td colspan="3">No active materials.</td></tr>{% endfor %}
-</tbody></table></div><button class="primary" type="submit" {% if not section.materials %}disabled{% endif %}>SAVE SHIFT {{ section.shift }} USAGE</button>
-<p class="muted">Enter raw quantities. Blank removes a manual entry; zero is saved as zero.</p></form></section>
-<section class="panel"><h2>SHIFT {{ section.shift }} CALCULATION</h2>
-<p class="muted">Counter: {{ number(section.totals.get('CounterQty'),0) }} &middot; Curing: {{ number(section.totals.get('CuringQty'),0) }} &middot; Lots with Production data: {{ number(section.totals.get('LotCount'),0) }}</p>
-<div class="table-scroll"><table><thead><tr><th>Material</th><th>Unit</th><th>Raw Qty</th><th>Qty / 1000 Counter</th><th>Qty / 1000 Curing</th></tr></thead><tbody>
-{% for material in section.materials %}<tr><td>{{ material_label(material) }}</td><td>{{ material.Unit or '-' }}</td><td>{{ number(material.RawQty) }}</td><td>{{ number(material.QtyPer1000Counter) }}</td><td>{{ number(material.QtyPer1000Curing) }}</td></tr>{% else %}<tr><td colspan="5">No active materials.</td></tr>{% endfor %}
-</tbody></table></div></section>
+</form>
 {% endfor %}
-<section class="panel"><h2>ALL DAY CALCULATION</h2>
-<div class="table-scroll"><table><thead><tr><th>Material</th><th>Unit</th><th>Total Raw Qty</th><th>Qty / 1000 Counter</th><th>Qty / 1000 Curing</th></tr></thead><tbody>
-{% for material in daily %}<tr><td>{{ material_label(material) }}</td><td>{{ material.Unit or '-' }}</td><td>{{ number(material.RawQty) }}</td><td>{{ number(material.QtyPer1000Counter) }}</td><td>{{ number(material.QtyPer1000Curing) }}</td></tr>{% else %}<tr><td colspan="5">No active materials.</td></tr>{% endfor %}
-</tbody></table></div><p class="muted">Calculations come from the existing SQL views. A dash means no saved value or no available calculation, including a zero production denominator.</p></section>
+<div class="usage-sheet-scroll" tabindex="0" role="region" aria-label="Material usage columns">
+<table class="usage-sheet" id="usage-spreadsheet">
+<thead><tr><th scope="col">Description</th>{% for material in daily %}<th scope="col" data-usage-type="{{ material.UsageType or 'UNCLASSIFIED' }}" data-material-code="{{ material.MaterialUsageCode }}">{{ material_label(material) }}<span class="usage-unit">{{ material.Unit or '-' }}</span></th>{% endfor %}</tr></thead>
+<tbody>
+{% for section in shifts %}
+<tr class="usage-raw"><th scope="row">Shift {{ section.shift }} Raw Qty</th>
+{% for material in section.materials %}<td>{% if material.SourceType and material.SourceType != 'MANUAL' %}{{ number(material.RawQty) }} <span class="muted">{{ material.SourceType }}</span>{% else %}<input form="usage-shift-{{ section.shift }}" type="number" name="qty_{{ material.MaterialUsageCode }}" aria-label="Shift {{ section.shift }} {{ material_label(material) }} quantity" min="0" max="999999999999999.999" step="0.001" value="{{ material.RawQty if material.RawQty is not none else '' }}">{% endif %}</td>{% endfor %}</tr>
+<tr><th scope="row">Qty / 1000 Counter</th>{% for material in section.materials %}<td>{{ number(material.QtyPer1000Counter) if material.UsageType == 'MATERIAL' else '-' }}</td>{% endfor %}</tr>
+<tr><th scope="row">Qty / 1000 Curing</th>{% for material in section.materials %}<td>{{ number(material.QtyPer1000Curing) if material.UsageType == 'MATERIAL' else '-' }}</td>{% endfor %}</tr>
+<tr><th scope="row">Counter / Unit</th>{% for material in section.materials %}<td>{{ number(material.CounterPerUnit) if material.UsageType == 'CONSUMABLE' else '-' }}</td>{% endfor %}</tr>
+{% endfor %}
+<tr class="usage-raw"><th scope="row">ALL DAY Raw Qty</th>{% for material in daily %}<td>{{ number(material.RawQty) }}</td>{% endfor %}</tr>
+<tr><th scope="row">Qty / 1000 Counter</th>{% for material in daily %}<td>{{ number(material.QtyPer1000Counter) if material.UsageType == 'MATERIAL' else '-' }}</td>{% endfor %}</tr>
+<tr><th scope="row">Qty / 1000 Curing</th>{% for material in daily %}<td>{{ number(material.QtyPer1000Curing) if material.UsageType == 'MATERIAL' else '-' }}</td>{% endfor %}</tr>
+<tr><th scope="row">Counter / Unit</th>{% for material in daily %}<td>{{ number(material.CounterPerUnit) if material.UsageType == 'CONSUMABLE' else '-' }}</td>{% endfor %}</tr>
+</tbody></table></div>
+{% if not daily %}<p class="muted">No active materials.</p>{% endif %}
+<div class="usage-actions">{% for section in shifts %}<button class="primary" type="submit" form="usage-shift-{{ section.shift }}" {% if not section.materials %}disabled{% endif %}>SAVE SHIFT {{ section.shift }}</button>{% endfor %}</div>
+{% for section in shifts %}<p class="muted">Shift {{ section.shift }} &middot; Counter: {{ number(section.totals.get('CounterQty'),0) }} &middot; Curing: {{ number(section.totals.get('CuringQty'),0) }} &middot; Lots with Production data: {{ number(section.totals.get('LotCount'),0) }}</p>{% endfor %}
+<p class="muted">Enter raw quantities. Blank removes a manual entry; zero is saved as zero. Calculations come from the existing SQL views. MATERIAL uses Qty / 1000; CONSUMABLE uses Counter / Unit; RAW has no calculated rate. A dash means not applicable, no saved value, or no available calculation (including a zero denominator).</p>
+</section>
 {% endif %}
 {% endblock %}

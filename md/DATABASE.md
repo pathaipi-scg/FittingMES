@@ -63,6 +63,18 @@ Known views:
 
 -   `dbo.vw_DailyMaterialUsage`
 -   `dbo.vw_DailyMaterialUsageTotal`
+-   `dbo.vw_DailyProductionQty`: production denominators from ProductionLot
+    and ProductionData.
+-   `dbo.vw_DailyMaterialUsageCalc`: shift RawQty, UsageType,
+    QtyPer1000Counter, QtyPer1000Curing, CounterPerUnit.
+-   `dbo.vw_DailyMaterialUsageTotalCalc`: ALL DAY RawQty, UsageType and the
+    same three calculated rate columns, based on daily aggregated quantities.
+
+The two calculation views join MaterialUsageMaster by MaterialUsageCode.
+They return QtyPer1000Counter/QtyPer1000Curing only for MATERIAL, and
+CounterPerUnit only for CONSUMABLE; other rates are NULL.
+`app.usage.read_usage_context` consumes these views directly, using the
+active master to retain all columns even before the first usage save.
 -   `dbo.vw_DepalletSummary`
 -   `dbo.vw_DepalletValidation`
 
@@ -272,7 +284,7 @@ Do **not**:
 -   create one SQL column per material;
 -   use Thai material names as database/application keys;
 -   hard-code the current material list in Python, HTML, or JavaScript;
--   assume the current 10 materials will remain fixed.
+-   assume the current 16 active materials will remain fixed.
 
 The active material list comes from:
 
@@ -280,7 +292,7 @@ The active material list comes from:
 dbo.MaterialUsageMaster
 ```
 
-ordered by `SortOrder`.
+filtered by `IsActive = 1` and ordered by `SortOrder, MaterialUsageCode`.
 
 ------------------------------------------------------------------------
 
@@ -321,7 +333,16 @@ Actual schema confirmed on 2026-09-23:
   `UpdatedAt`                         update timestamp.
   -----------------------------------------------------------------------
 
-Current master rows:
+`UsageType` is `varchar(20) NOT NULL` with the valid classifications:
+`MATERIAL` (material consumption), `RAW` (operational usage/loss), and
+`CONSUMABLE` (production consumable units). It controls display behavior;
+material codes and names never determine formulas.
+
+The final live SB23 schema, confirmed by the database owner on 2026-09-23,
+requires `UsageType` to be non-null. All 16 active records have valid
+classifications.
+
+Current master rows (the first ten are MATERIAL):
 
   MaterialUsageCode   MaterialNameTH     MaterialNameEN     Unit
   ------------------- ------------------ ------------------ ------
@@ -336,7 +357,19 @@ Current master rows:
   `baseColor`         สีพื้น                Base Color         kg
   `effectColor`       สีเหลือบ             Effect Color       kg
 
-These are configuration rows, **not application schema**. Future
+Six additional active configuration records are present:
+
+| MaterialUsageCode | UsageType | Unit |
+| --- | --- | --- |
+| cementBatchUsed | RAW | Batch |
+| cementBatchDiscarded | RAW | Batch |
+| baseColorDiscarded | RAW | Bucket |
+| effectColorDiscarded | RAW | Bucket |
+| clothUsed | CONSUMABLE | Piece |
+| screenUsed | CONSUMABLE | Sheet |
+
+All 16 active records are configuration data, **not application schema**.
+The application must not hard-code this list or hide the six newer records. Future
 materials can be added/disabled without changing the table or
 application structure.
 
@@ -428,7 +461,7 @@ FittingMES production data.
 
 ### Shift calculation
 
-For each active material:
+For each active `MATERIAL` record (calculated by SQL):
 
 ``` text
 UsagePer1000Counter = RawQty * 1000 / ShiftCounter
@@ -451,6 +484,7 @@ Then aggregate production quantities for the whole selected production
 date:
 
 ``` text
+For MATERIAL only:
 AllDayPer1000Counter = TotalRawQty * 1000 / TotalCounter
 AllDayPer1000Curing  = TotalRawQty * 1000 / TotalCuring
 ```
@@ -458,6 +492,17 @@ AllDayPer1000Curing  = TotalRawQty * 1000 / TotalCuring
 **Do not** calculate ALL DAY by adding Shift 1 and Shift 2 normalized
 `/1000` values.
 
+For `RAW`, raw quantities remain editable per shift and ALL DAY shows the
+SQL total raw quantity. All calculated rate cells display `-`.
+
+For `CONSUMABLE`, SQL exposes `CounterPerUnit`: shift CounterQty / raw Qty,
+and ALL DAY total CounterQty / total raw Qty. The views use `NULLIF` on the
+usage quantity denominator and return `decimal(18,3)`. Display these values
+in a dedicated **Counter / Unit** row. Do not show Qty/1000 rates for these
+columns. MATERIAL and RAW show `-` in Counter / Unit cells.
+
+Neither Python nor JavaScript recomputes these calculations. Zero/null
+SQL results retain their existing display semantics (zero versus `-`).
 Calculated values should be derived, not persisted, unless this contract
 is explicitly changed.
 
@@ -469,6 +514,18 @@ Known existing views:
 
 -   `dbo.vw_DailyMaterialUsage`
 -   `dbo.vw_DailyMaterialUsageTotal`
+-   `dbo.vw_DailyProductionQty`: production denominators from ProductionLot
+    and ProductionData.
+-   `dbo.vw_DailyMaterialUsageCalc`: shift RawQty, UsageType,
+    QtyPer1000Counter, QtyPer1000Curing, CounterPerUnit.
+-   `dbo.vw_DailyMaterialUsageTotalCalc`: ALL DAY RawQty, UsageType and the
+    same three calculated rate columns, based on daily aggregated quantities.
+
+The two calculation views join MaterialUsageMaster by MaterialUsageCode.
+They return QtyPer1000Counter/QtyPer1000Curing only for MATERIAL, and
+CounterPerUnit only for CONSUMABLE; other rates are NULL.
+`app.usage.read_usage_context` consumes these views directly, using the
+active master to retain all columns even before the first usage save.
 
 Before changing these views, inspect their current SQL definitions.
 
@@ -501,13 +558,13 @@ Target page structure:
 The production-lot section can resemble the PROD API lot table, but **no
 lot radio selection is required** for USAGE.
 
-Material rows must be generated dynamically:
+Horizontal material columns must be generated dynamically:
 
 ``` sql
 SELECT ...
 FROM dbo.MaterialUsageMaster
 WHERE IsActive = 1
-ORDER BY SortOrder;
+ORDER BY SortOrder, MaterialUsageCode;
 ```
 
 Do not hard-code `flyAsh`, `cementBody`, etc. as HTML/Python/JavaScript
