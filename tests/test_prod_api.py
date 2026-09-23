@@ -118,7 +118,7 @@ class ProdApiTests(unittest.TestCase):
         self.assertEqual(item['versionNo'],'02')
         self.assertEqual(item['planWeek'],'2026W36')
         self.assertEqual(item['operationCode'],'a')
-        self.assertIsNone(item['followPlan'])
+        self.assertFalse(item['followPlan'])
         for key in ('itemDetails','itemInputs','itemProperties'):
             self.assertEqual(item[key],[])
         output=item['itemOutputs'][0]
@@ -131,7 +131,7 @@ class ProdApiTests(unittest.TestCase):
         self.assertEqual(detail['statusCode'],'Curing')
         self.assertIn('FIELD MAPPING',body)
         self.assertIn('PIS JSON PREVIEW',body)
-        self.assertIn('Unresolved: followPlan source not implemented (nonfatal)',body)
+        self.assertIn('ProductionData.CuringQty &gt;= ProductionLot.PlanQty',body)
         for column in ('Plan','Version','Wet Reject'):
             self.assertIn('<th>'+column+'</th>',body)
         self.assertIn('Saved &lt;remark&gt;',body)
@@ -215,10 +215,10 @@ class ProdApiTests(unittest.TestCase):
         with patch('app.main.get_connection',return_value=MagicMock()), \
              patch('app.main.read_lots',return_value=[LOT]), \
              patch('app.main.read_plans',return_value=[PLAN]):
-            response=production_page(request(),production_id=7,production_date=date(2030,1,1))
+            response=production_page(request(),production_id=7)
         body=response.body.decode()
         self.assertIn('href="/prod-api?production_date=2026-09-21"',body)
-        self.assertRegex(body,r'href="/\?production_date=2026-09-21" aria-current="page"')
+        self.assertRegex(body,r'href="/\?production_date=2026-09-21&amp;production_id=7" aria-current="page"')
         self.assertIn('SAVE PRODUCTION',body)
 
     def test_unresolved_and_ambiguous_sources_are_not_guessed(self):
@@ -356,19 +356,19 @@ class ProdApiTests(unittest.TestCase):
         self.assertIsNone(payload['productionItems'][0]['versionNo'])
         self.assertIsNone(payload['productionItems'][0]['itemOutputs'][0]['materialCode'])
 
-    def test_followplan_unresolved_is_nonfatal_for_lot_and_group(self):
+    def test_followplan_false_is_ready_for_lot_and_group(self):
         row=dict(RECORD,CuringQty=0,**resolve_plan(RECORD,[PLAN_SOURCE]))
         payload=build_pis_prodorders_payload([row])
         self.assertTrue(preview_readiness(payload)['ready'])
         self.assertEqual(preview_readiness(payload)['missing'],[])
-        self.assertIsNone(payload['productionItems'][0]['followPlan'])
-        self.assertEqual(next(item for item in field_mapping(row) if item['field']=='followPlan')['severity'],'unresolved')
+        self.assertFalse(payload['productionItems'][0]['followPlan'])
+        self.assertEqual(next(item for item in field_mapping(row) if item['field']=='followPlan')['severity'],'mapped')
         status,body,_=self.page('production_date=2026-09-22&preview_one=true&production_id=2')
         self.assertEqual(status,200)
         self.assertIn('READY FOR PIS PREVIEW',body)
         self.assertIn('DRY RUN / NO PIS SEND',body)
         self.assertNotIn('MISSING REQUIRED DATA',body)
-        self.assertIn('Unresolved (nonfatal): followPlan source not implemented',body)
+        self.assertNotIn('followPlan source not implemented',body)
 
     def test_group_missing_fields_do_not_omit_lots(self):
         status,body,_=self.page('production_date=2026-09-22&preview_all=true',ReadOnlyConnection([
@@ -378,3 +378,65 @@ class ProdApiTests(unittest.TestCase):
         self.assertIn('Item 2: gross0 (CuringQty)',body)
         self.assertIn('Item 2: dateTimeEnd',body)
         self.assertIn('MISSING REQUIRED DATA',body)
+
+    def test_followplan_uses_saved_plan_per_lot_not_counter_or_aggregate(self):
+        from decimal import Decimal
+        rows=[dict(RECORD,ProductionID=i+2,LotNo='LOT'+str(i),PlanQty=Decimal(str(plan)),
+                   CuringQty=curing,CounterQty=99999,**resolve_plan(RECORD,[PLAN_SOURCE]))
+              for i,(plan,curing) in enumerate([(1800,1790),(1800,1800),(1000,1050),(0,0)])]
+        payload=build_pis_date_preview(rows,DAY)[0]
+        self.assertEqual([item['followPlan'] for item in payload['productionItems']],[False,True,True,True])
+        for row,expected in zip(rows,[False,True,True,True]):
+            mapping=next(item for item in field_mapping(row) if item['field']=='followPlan')
+            self.assertEqual(mapping['source'],'ProductionData.CuringQty >= ProductionLot.PlanQty')
+            self.assertEqual(mapping['value'],expected)
+            self.assertFalse(mapping['missing'])
+            self.assertEqual(build_pis_prodorders_payload([row])['productionItems'][0]['followPlan'],expected)
+
+    def test_missing_followplan_sources_are_null_and_named(self):
+        base=dict(RECORD,**resolve_plan(RECORD,[PLAN_SOURCE]))
+        for changes,expected in [({'CuringQty':None},['ProductionData.CuringQty']),
+                                 ({'PlanQty':None},['ProductionLot.PlanQty']),
+                                 ({'CuringQty':None,'PlanQty':None},['ProductionData.CuringQty','ProductionLot.PlanQty'])]:
+            row=dict(base,**changes)
+            payload=build_pis_prodorders_payload([row])
+            self.assertIsNone(payload['productionItems'][0]['followPlan'])
+            mapping=next(item for item in field_mapping(row) if item['field']=='followPlan')
+            self.assertEqual(mapping['missing_sources'],expected)
+            readiness=preview_readiness(payload,[row])
+            self.assertFalse(readiness['ready'])
+            for source in expected:
+                self.assertTrue(any(source in message for message in readiness['missing']))
+            for mode in ('preview_one=true&production_id=2','preview_all=true'):
+                status,body,_=self.page('production_date=2026-09-22&'+mode,ReadOnlyConnection([row]))
+                self.assertEqual(status,200)
+                self.assertIn('"followPlan": null',html.unescape(body))
+                for source in expected: self.assertIn(source,body)
+
+    def test_both_preview_modes_use_each_saved_plan_quantity(self):
+        records=[dict(RECORD,PlanQty=1800,CuringQty=1790,CounterQty=5000),
+                 dict(RECORD,ProductionID=3,LotNo='SECOND',PlanQty=1000,CuringQty=1050,CounterQty=5000)]
+        for mode,expected in [('preview_one=true&production_id=2',[False]),
+                              ('preview_one=true&production_id=3',[True]),('preview_all=true',[False,True])]:
+            status,body,_=self.page('production_date=2026-09-22&'+mode,ReadOnlyConnection(records))
+            self.assertEqual(status,200)
+            groups=[json.loads(html.unescape(value)) for value in re.findall(
+                r'<pre id="prod-preview-\d+" class="prod-preview">(.*?)</pre>',body,re.S)]
+            self.assertEqual([item['followPlan'] for group in groups for item in group['productionItems']],expected)
+
+    def test_plan_quantity_column_uses_saved_value_and_integer_format(self):
+        from decimal import Decimal
+        for value,display in [(Decimal('1234567.000'),'1,234,567'),(Decimal('1800.000'),'1,800'),
+                              (0,'0'),(None,'-')]:
+            with self.subTest(value=value):
+                status,body,_=self.page('production_date=2026-09-22',
+                    ReadOnlyConnection([dict(RECORD,PlanQty=value)]))
+                self.assertEqual(status,200)
+                self.assertIn('<th>Product</th><th>Plan Qty</th><th>Counter</th><th>Curing</th>'
+                              '<th>Wet Reject</th><th>Remark</th><th>Local status</th>',body)
+                table=re.search(r'<table>(.*?)</table>',body,re.S)[1]
+                cells=re.findall(r'<td[^>]*>(.*?)</td>',table,re.S)
+                self.assertEqual(cells[10],display)
+                self.assertEqual(cells[11],'100')
+        _,body,_=self.page('production_date=2020-01-01')
+        self.assertIn('colspan="16"',body)

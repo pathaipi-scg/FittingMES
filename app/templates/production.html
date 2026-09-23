@@ -135,7 +135,7 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
 {% if error %}<div class="error" role="alert">{{ error }}</div>{% endif %}
 <section class="panel" aria-label="Create a new Lot">
 <form class="top-controls" method="get" action="/">
-<div><label for="production_date">Production Date</label><input id="production_date" name="production_date" type="date" value="{{ production_date }}" required onchange="this.form.plan_id.value='';this.form.requestSubmit()"></div>
+<input type="hidden" name="production_date" value="{{ production_date }}">
 <div class="plan-control"><label for="plan_id">Production Plan</label><select id="plan_id" name="plan_id" onchange="this.form.requestSubmit()">
 <option value="">{{ 'Select a plan' if plans else 'No plans for this date' }}</option>
 {% for plan in plans %}<option value="{{ plan.selection_id }}" {% if plan.used_by %}disabled{% endif %} {% if selected and selected.selection_id == plan.selection_id %}selected{% endif %}>{{ plan.PlanName }} | {{ plan.MaterialName }} | {{ '{:,.0f}'.format(plan.PlanCount or 0) }}{% if plan.used_by %} | USED: {{ plan.used_by }}{% endif %}</option>{% endfor %}
@@ -171,7 +171,7 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
 <div class="columns" id="production-workspace">
 <button type="button" class="lots-rail" id="open-lots" aria-controls="lot-panel" aria-expanded="false" title="Open Lot List" hidden>&#9654; LOTS</button>
 <aside class="panel list-panel" id="lot-panel"><div class="list-header"><h2 class="list-title">ACTIVE LOTS &middot; {{ lots|length }}</h2><button type="button" id="close-lots" aria-controls="lot-panel" aria-expanded="true" title="Close Lot List" aria-label="Close Lot List">&#9664;</button></div>
-<nav class="lot-list" aria-label="Active Lots">{% for item in lots %}<a class="lot-item {{ 'selected' if current and current.ProductionID == item.ProductionID else '' }}" {% if current and current.ProductionID == item.ProductionID %}aria-current="true"{% endif %} href="/?production_id={{ item.ProductionID }}&production_date={{ production_date }}">
+<nav class="lot-list" aria-label="Active Lots">{% for item in lots %}<a class="lot-item {{ 'selected' if current and current.ProductionID == item.ProductionID else '' }}" {% if current and current.ProductionID == item.ProductionID %}aria-current="true"{% endif %} href="/?production_id={{ item.ProductionID }}&production_date={{ item.ProdDate }}">
 <div class="lot-top"><strong>{{ item.LotNo }}</strong><span class="lot-plan" title="{{ item.PlanName }}">{{ item.PlanName }}</span></div>
 <div class="lot-bottom"><span class="lot-product" title="{{ item.MaterialName }}">{{ item.MaterialName }}</span><span class="lot-qty" aria-label="Plan quantity">{{ '{:,.0f}'.format(item.PlanQty or 0) }}</span></div></a>{% else %}<div class="empty">No active Lots.</div>{% endfor %}</nav></aside>
 <div id="lot-splitter" class="lot-splitter" role="separator" tabindex="0" aria-label="Resize Lot List" aria-orientation="vertical" aria-controls="lot-panel" aria-valuemin="18" aria-valuemax="45" aria-valuenow="25" title="Drag to resize; double-click to reset. Arrow keys resize."></div>

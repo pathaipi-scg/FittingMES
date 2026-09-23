@@ -18,7 +18,7 @@ ProductionLot does not persist Plant, Machine or VersionNo. Source resolution ca
 
 Per-lot field mappings distinguish required missing values, unresolved mappings and optional remarks. Per-request-group readiness checks date, shift, plant, machine, operation, plan week/name/version, start/end, material, lot and CuringQty. Missing required values do not prevent inspection or silently exclude lots.
 
-followPlan remains null and is reported as unresolved/nonfatal. itemDetails, itemInputs, itemProperties and resources remain empty arrays; no downtime/tasks/properties are invented. These omissions are displayed. READY FOR PIS PREVIEW describes the currently agreed preview fields, not authorization or readiness to send to PIS.
+followPlan is calculated independently for each lot as ProductionData.CuringQty >= the saved ProductionLot.PlanQty. CounterQty and ActivePlan quantities are not used in this calculation. Missing either source produces null and required-source diagnostics. Existing lot save validation and database constraints permit zero PlanQty, so saved zero participates in the comparison. itemDetails, itemInputs, itemProperties and resources remain empty arrays; no downtime/tasks/properties are invented. These omissions are displayed. READY FOR PIS PREVIEW describes the currently agreed preview fields, not authorization or readiness to send to PIS.
 
 ## Generated examples
 

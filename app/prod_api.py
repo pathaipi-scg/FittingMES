@@ -70,12 +70,24 @@ def resolve_plan(record, plans):
     return result
 
 
+def follow_plan(record):
+    curing, planned = record.get('CuringQty'), record.get('PlanQty')
+    # Existing lot validation permits saved zero PlanQty; do not treat zero as missing.
+    return None if curing is None or planned is None else curing >= planned
+
+
+def follow_plan_missing(record):
+    return [source for key, source in [('CuringQty', 'ProductionData.CuringQty'),
+                                       ('PlanQty', 'ProductionLot.PlanQty')]
+            if record.get(key) is None]
+
+
 def build_pis_production_item(record):
     start, end = local_timestamps(record)
     return dict(operationCode=clean_string(record.get('OperationCode')),
                 dateTimeStart=start, dateTimeEnd=end,
                 planWeek=clean_string(record.get('PlanWeek')), planName=clean_string(record.get('PlanName')),
-                versionNo=clean_string(record.get('VersionNo')), followPlan=None, remark=clean_string(record.get('Remark')),
+                versionNo=clean_string(record.get('VersionNo')), followPlan=follow_plan(record), remark=clean_string(record.get('Remark')),
                 itemDetails=[], itemOutputs=[dict(
                     materialCode=clean_string(record.get('MaterialCode')), lotNo=clean_string(record.get('LotNo')),
                     gross0=record.get('CuringQty'), tool='', remark=clean_string(record.get('Remark')),
@@ -106,7 +118,7 @@ def field_mapping(record):
         ('planWeek','P_ActivePlan.PlanWeek','PlanWeek'),
         ('planName','ProductionLot.PlanName','PlanName'),
         ('versionNo','P_ActivePlan.VersionNo (resolved source, not stored version)','VersionNo'),
-        ('followPlan','UNMAPPED: no confirmed source',None),
+        ('followPlan','ProductionData.CuringQty >= ProductionLot.PlanQty','followPlan'),
         ('remark / itemOutputs.remark','ProductionData.Remark','Remark'),
         ('materialCode','ProductionLot.MaterialCode','MaterialCode'),
         ('lotNo','ProductionLot.LotNo','LotNo'),
@@ -114,17 +126,17 @@ def field_mapping(record):
         ('outputDetails.count','ProductionData.CuringQty','CuringQty'),
         ('outputDetails.effectiveDate','ProductionLot.ProdDate','ProdDate')]
     start, end = local_timestamps(record)
-    values = dict(record, ProductionStartTime=start, ProductionEndTime=end)
+    values = dict(record, ProductionStartTime=start, ProductionEndTime=end, followPlan=follow_plan(record))
     mapping = []
     for field, source, key in fields:
         value = values.get(key)
         if isinstance(value, str):
             value = clean_string(value)
         missing = value is None or value == ''
-        severity = ('unresolved' if field == 'followPlan' else
-                    'optional' if field == 'remark / itemOutputs.remark' else
+        severity = ('optional' if field == 'remark / itemOutputs.remark' else
                     'required') if missing else 'mapped'
-        mapping.append(dict(field=field, source=source, value=value, missing=missing, severity=severity))
+        mapping.append(dict(field=field, source=source, value=value, missing=missing, severity=severity,
+                            missing_sources=follow_plan_missing(record) if field == 'followPlan' else []))
     mapping.append(dict(field='outputDetails.statusCode', source='Requested preview constant', value='Curing', missing=False, severity='mapped'))
     return mapping
 
@@ -147,7 +159,7 @@ def build_pis_date_preview(records, production_date):
         for key in sorted(groups, key=lambda key: '|'.join('' if value is None else str(value) for value in key))]
 
 
-def preview_readiness(payload):
+def preview_readiness(payload, source_records=None):
     missing = []
     for field in ('productionDate', 'shiftCode', 'plantCode', 'machineCode'):
         if payload.get(field) is None or payload.get(field) == '':
@@ -158,9 +170,22 @@ def preview_readiness(payload):
             if item.get(field) is None or item.get(field) == '':
                 missing.append(prefix + field)
         output = item['itemOutputs'][0]
+        if item.get('followPlan') is None:
+            sources = None
+            if source_records is not None:
+                source = next((record for record in source_records
+                               if group_key(record) == (day(payload['productionDate']), payload['shiftCode'],
+                                                        payload['plantCode'], payload['machineCode'])
+                               and clean_string(record.get('LotNo')) == output.get('lotNo')), None)
+                if source is not None:
+                    sources = follow_plan_missing(source)
+            if sources is None:
+                sources = (['ProductionData.CuringQty or ProductionLot.PlanQty']
+                           if output.get('gross0') is None else ['ProductionLot.PlanQty'])
+            missing.append(prefix + 'followPlan: missing ' + ', '.join(sources))
         for field in ('materialCode', 'lotNo', 'gross0'):
             if output.get(field) is None or output.get(field) == '':
                 missing.append(prefix + field + (' (CuringQty)' if field == 'gross0' else ''))
     return dict(missing=missing, ready=not missing,
-                unresolved=['followPlan source not implemented'],
+                unresolved=[],
                 notes=['itemDetails/tasks, itemInputs, itemProperties and resources have no confirmed source; arrays remain empty.'])

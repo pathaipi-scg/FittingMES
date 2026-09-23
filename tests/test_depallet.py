@@ -118,8 +118,8 @@ class DepalletTests(unittest.TestCase):
         conn.work['rejects'][(1,'R99')]=999
         conn.work['reasons'][7]['IsActive']=False
         before=copy.deepcopy(conn.work)
-        # Both today's page default and an unrelated explicit filter must be ignored.
-        for page_date in (None,date(2030,1,1)):
+        # Implicit and explicit matching lot dates retain the saved Depallet date.
+        for page_date in (None,lot['ProdDate']):
             response=self.render_lot(conn,lot,production_date=page_date)
             self.assertEqual(response.status_code,200)
             context=response.context
@@ -147,7 +147,7 @@ class DepalletTests(unittest.TestCase):
     def test_new_selected_lot_defaults_to_lot_date_not_page_date(self):
         import re
         conn=MemoryConnection()
-        response=self.render_lot(conn,LOT,production_date=date(2030,1,1))
+        response=self.render_lot(conn,LOT)
         self.assertEqual(response.context['depallet']['DepalletDate'],LOT['ProdDate'])
         self.assertEqual(response.context['depallet']['LotNo'],LOT['LotNo'])
         tag=re.search(r'<input id="depallet-date"[^>]*>',response.body.decode())[0]

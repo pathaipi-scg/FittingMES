@@ -51,7 +51,7 @@ class ProductionTests(unittest.TestCase):
         self.assertNotIn('replacement_plan',text)
 
     def test_edit_original_date_and_current_selectable(self):
-        response,_=self.render(production_id=7,edit=True,production_date=date(2026,8,1))
+        response,_=self.render(production_id=7,edit=True,production_date=DAY)
         self.assertEqual(response.status_code,200)
         self.assertIsNone(response.context['edit_plans'][0]['used_by'])
         self.assertIn('SAVE',response.body.decode())

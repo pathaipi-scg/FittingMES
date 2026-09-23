@@ -63,6 +63,7 @@ def product_selection_context(cursor, selected):
 
 def production_page(request, plan_id=None, product_code=None, confirm=False,
                     create=False, running_no=None, production_date=None, production_id=None, edit=False, save=False, void=False, production_input=None, data_saved=False, product_family=None, product_choices=None):
+    requested_date = production_date
     production_date = production_date or date.today()
     context = dict(depallet=None, depallet_error=None, reject_reasons=[], reject_values={}, inactive_rejects=[], families=FAMILIES, product_family=None, product_previews={}, production_data={}, calculated=calculate(None, None), data_saved=data_saved, production_date=production_date, lots=[], current=None, edit=edit, edit_plans=[], plans=[], selected=None, products=[], material_prefix=None,
                    product_code=None, lot=None, error=None, running_no=None, created_lot=None)
@@ -71,6 +72,17 @@ def production_page(request, plan_id=None, product_code=None, confirm=False,
         with closing(get_connection()) as conn:
             cursor = conn.cursor()
             context["lots"] = read_lots(cursor)
+            # Navigation may retain a lot only when it belongs to the selected date.
+            # Keep all mutation paths and their validation/save behavior unchanged.
+            if production_id is not None and not (confirm or create or save or void or production_input is not None):
+                selected_lot = next((lot for lot in context['lots'] if lot['ProductionID'] == production_id), None)
+                if selected_lot is not None:
+                    if requested_date is None:
+                        production_date = day(selected_lot['ProdDate'])
+                        context['production_date'] = production_date
+                    elif day(selected_lot['ProdDate']) != production_date:
+                        production_id = None
+                        context['edit'] = False
             if production_id is not None:
                 current = next((lot for lot in context["lots"] if lot["ProductionID"] == production_id), None)
                 if current is None:
@@ -284,13 +296,14 @@ def prod_api_page(request: Request, production_date: date | None = None,
                 for record in preview_records:
                     mapping = field_mapping(record)
                     context['diagnostics'].append(dict(record=record, mapping=mapping,
-                        missing=[item['field'] for item in mapping
+                        missing=[item['field'] + (': missing ' + ', '.join(item['missing_sources'])
+                                 if item.get('missing_sources') else '') for item in mapping
                                  if item['severity'] == 'required']))
                 groups = build_pis_date_preview(preview_records, production_date)
                 context['preview_count'] = len(preview_records)
                 context['group_count'] = len(groups)
                 context['missing'] = any(item['missing'] for item in context['diagnostics'])
-                context['previews'] = [dict(payload=group, readiness=preview_readiness(group), json=json.dumps(
+                context['previews'] = [dict(payload=group, readiness=preview_readiness(group, preview_records), json=json.dumps(
                     jsonable_encoder(group), ensure_ascii=False, indent=2)) for group in groups]
     except Exception:
         context.update(records=[], previews=[], diagnostics=[],

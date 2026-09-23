@@ -13,7 +13,7 @@
       "planWeek": "2026W36",
       "planName": "MTS033",
       "versionNo": "02",
-      "followPlan": null,
+      "followPlan": false,
       "remark": "Saved <remark>",
       "itemDetails": [],
       "itemOutputs": [
@@ -47,7 +47,7 @@
       "planWeek": "2026W36",
       "planName": "MTS033",
       "versionNo": "02",
-      "followPlan": null,
+      "followPlan": false,
       "remark": "Overnight example",
       "itemDetails": [],
       "itemOutputs": [

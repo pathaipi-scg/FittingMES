@@ -1,0 +1,29 @@
+{
+  "InterfaceID": "20250828230829608",
+  "Approve1": "MORAKOTK",
+  "Approve2": "",
+  "CreateBy": "ATAGONS",
+  "RequestDateTime": "2025-08-30 23:20",
+  "CompanyCode": "1030",
+  "CompanyID": "CP007",
+  "DocumentRemark": "test remark",
+  "EST_PL_ITEM": [
+    {
+      "InterfaceID": "20250828230829608",
+      "Item_Number": "1",
+      "Item_Status": "0",
+      "Cost_Center": "CC000002",
+      "GL_Account": "GL0193",
+      "Material_Number": "C203504010",
+      "Quantity": 1.0,
+      "Material_Plant": "C231",
+      "Material_PlantID": "PT003",
+      "GI_Quantity": 0.0,
+      "Plan_Delivery_Day": "0",
+      "Unit_Price": "7190",
+      "CurrencyNo": "THB",
+      "UOM": "PC",
+      "UseForPlantID": "PT001"
+    }
+  ]
+}

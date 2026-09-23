@@ -3,10 +3,18 @@
 .page-tabs a{display:inline-flex;align-items:center;height:22.5px;padding:1.5px 7px;border:0.75px solid #c7d2df;border-radius:2.25px;background:white;color:#243348;text-decoration:none;font:500 9.75px/1.2 system-ui,sans-serif}
 .page-tabs a[aria-current=page]{background:#1765ad;border-color:#1765ad;color:white}
 .page-tabs a:focus-visible{outline:1.5px solid #63acec;outline-offset:0.75px}
+.shared-production-date{display:flex;align-items:center;gap:4.5px;flex-wrap:wrap;flex-shrink:0;margin:0 0 4.5px}
 </style>
-{% set tab_date = current.ProdDate if current is defined and current else production_date %}
+{% set tab_date = production_date %}
+{% set tab = active_tab|default('production') %}
+{% set current_path = '/prod-api' if tab == 'prod-api' else '/reject-api' if tab == 'reject-api' else '/' %}
+<form class="shared-production-date" id="shared-production-date" method="get" action="{{ current_path }}">
+<label for="production_date">Production Date</label><input id="production_date" name="production_date" type="date" value="{{ tab_date }}" required>
+{% if tab == 'production' and current is defined and current and current.ProdDate == production_date %}<input type="hidden" name="production_id" value="{{ current.ProductionID }}">{% endif %}
+<button type="submit">REFRESH</button>
+</form>
 <nav class="page-tabs" aria-label="Main navigation">
 {% for key, label, path in [('production','PRODUCTION','/'),('prod-api','PROD API','/prod-api'),('reject-api','REJECT API','/reject-api')] %}
-<a href="{{ path }}?production_date={{ tab_date }}" {% if active_tab|default('production') == key %}aria-current="page"{% endif %}>{{ label }}</a>
+<a href="{{ path }}?production_date={{ tab_date }}{% if key == 'production' and current is defined and current and current.ProdDate == production_date %}&amp;production_id={{ current.ProductionID }}{% endif %}" {% if active_tab|default('production') == key %}aria-current="page"{% endif %}>{{ label }}</a>
 {% endfor %}
 </nav>
