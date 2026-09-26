@@ -49,6 +49,7 @@ Known FittingMES tables:
 -   `dbo.ProductionLot`
 -   `dbo.ProductionLotHistory`
 -   `dbo.ProductionData`
+-   `dbo.ProductionDayRuleHistory`
 -   `dbo.Depallet`
 -   `dbo.DepalletReject`
 -   `dbo.RejectReasonMaster`
@@ -77,6 +78,7 @@ CounterPerUnit only for CONSUMABLE; other rates are NULL.
 active master to retain all columns even before the first usage save.
 -   `dbo.vw_DepalletSummary`
 -   `dbo.vw_DepalletValidation`
+-   `dbo.vw_DepalletCuringBalance`
 
 Production planning is read from `dbo.P_ActivePlan` / `dbo.ActivePlan`.
 The application must use the actual live plan source rather than a
@@ -223,10 +225,76 @@ Current UI concepts include:
 
 -   Depallet Date
 -   Shift
--   Depallet Lot
+-   ProductionID and its Production Lot identity
+-   One row per depallet run, identified by `DepalletID`; a ProductionID
+    can have multiple runs on one Production Date, including the same shift.
+-   Nullable `StartDateTime` and `EndDateTime` as `datetime2(3)` calendar
+    values. Existing historical rows remain NULL until explicitly edited;
+    their times must not be inferred or backfilled.
 -   Depallet Qty
 -   Good Qty
 -   Remark
+
+Each saved run is edited by its `DepalletID`. A save without an existing
+`DepalletID` inserts a new run and must never upsert solely by
+ProductionID, Production Date, or Shift.
+
+### `dbo.ProductionDayRuleHistory`
+
+This is append-only historical configuration. Never overwrite or delete a
+rule to change the production-day boundary; insert a new rule with a new
+`EffectiveFromDate`. Resolve the rule for the selected shared Production
+Date with:
+
+``` sql
+SELECT TOP (1) DayStartTime
+FROM dbo.ProductionDayRuleHistory
+WHERE EffectiveFromDate <= @ProductionDate
+ORDER BY EffectiveFromDate DESC, RuleID DESC;
+```
+
+Operator Start/End inputs are HH:mm only. Map each clock to the selected
+Production Date when it is at/after that date's effective DayStartTime;
+map an earlier clock to the following calendar date. Thus 2026-09-26 at
+01:00 with an 08:00 cutoff becomes 2026-09-27 01:00. Do not use today's
+rule for historical dates or use GETDATE() to infer these calendar
+dates. Historical NULL time columns remain valid and display as blank.
+
+For saved rows, “Already Depalleted” and “Remaining Curing” are displayed
+immediately before that run, using earlier Depallet Dates and then lower
+DepalletIDs on the same date. Selector balances and server write guards
+continue to use the all-history `vw_DepalletCuringBalance` contract.
+
+### `dbo.vw_DepalletCuringBalance`
+
+This deployed view is the authoritative read model for Depallet lot
+selection and curing-room balances. Identify rows by `ProductionID`, not
+by `LotNo`. Its application contract is:
+
+-   `ProductionID`, `ProdDate`, `Shift`, `PlanName`
+-   `MaterialCode`, `MaterialName`, `ProductCode`, `LotPrefix`, `LotNo`
+-   `ProductionQty`, `DepalletQtyTotal`, `RemainingCuringQty`,
+    `DepalletCount`, `FirstDepalletDate`, `LastDepalletDate`
+
+`ProductionQty` is the ProductionData CuringQty. `DepalletQtyTotal` is
+the historical sum for that ProductionID across all Depallet Dates.
+`RemainingCuringQty` is clamped at zero by the view. The application
+must use these values directly and must not reproduce the historical
+balance calculation in its UI. Zero-production and zero-remaining lots
+remain visible for history but cannot be selected for new depallet work.
+
+The view's remaining quantity contract is:
+
+``` text
+RemainingCuringQty = MAX(ProductionQty - DepalletQtyTotal, 0)
+```
+
+Before saving, the application takes the existing transaction-owned
+ProductionLot application lock and reads this view again. For an edit,
+the current Depallet row's own quantity is added back to the view's
+remaining quantity when establishing its maximum editable value. This
+preserves legacy over-depallet records without allowing that row to
+increase its contribution. No historical record is changed implicitly.
 
 ### `dbo.DepalletReject`
 

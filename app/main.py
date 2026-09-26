@@ -2,7 +2,7 @@ import hashlib
 import json
 from contextlib import closing
 from pathlib import Path
-from datetime import date
+from datetime import date, time
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.encoders import jsonable_encoder
 from starlette.concurrency import run_in_threadpool
@@ -15,7 +15,8 @@ from app.database import get_connection
 from app.pis_config import PISConfig
 from app.usage import read_usage_context, save_usage
 from app.prod_api import read_prod_records, build_pis_date_preview, field_mapping, preview_readiness
-from app.depallet import read_context as read_depallet_context, read_reasons as read_depallet_reasons, save_depallet
+from app.depallet import (read_context as read_depallet_context, read_reasons as read_depallet_reasons,
+                          read_curing_lots, read_daily_work, save_depallet, save_depallet_batch)
 from app.products import FAMILIES, lot_prefix, read_products, read_mapping, confirm_mapping, selected_product, month_start
 from app.production_data import read_production_data, save_production_data, calculate
 
@@ -227,21 +228,35 @@ def save_production(request: Request, production_id: int,
 
 @app.get("/depallet", response_class=HTMLResponse)
 def depallet_page(request: Request, production_date: date | None = None,
-                  production_id: int | None = None):
+                  production_id: int | None = None, depallet_id: int | None = None):
     production_date = production_date or date.today()
     context = dict(page_title="DEPALLET", active_tab="depallet", production_date=production_date,
-                   lots=[], entries={}, current=None, error=None, r99_name="")
+                   lots=[], products=[], families=FAMILIES, entries={}, runs=[], current=None,
+                   current_run_id=depallet_id, error=None, r99_name="", daily_totals={},
+                   day_start_time=None)
     status = 200
     try:
         with closing(get_connection()) as conn:
             cursor = conn.cursor()
-            context["lots"] = [lot for lot in read_lots(cursor) if day(lot['ProdDate']) == production_date]
-            for lot in context["lots"]:
-                context["entries"][lot['ProductionID']] = read_depallet_context(cursor, lot, production_date)
+            context["lots"] = read_curing_lots(cursor)
+            context["products"] = read_products(cursor)
+            (context["entries"], context["runs"], context["reject_reasons"],
+             context["daily_totals"], context["day_start_time"]) = read_daily_work(
+                cursor, production_date, context["lots"])
             if context["lots"]:
+                selected_run = next((run for run in context['runs']
+                                     if run['DepalletID'] == depallet_id), None)
+                if selected_run is None and production_id is not None:
+                    selected_run = next((run for run in context['runs']
+                                         if run['ProductionID'] == production_id), None)
+                if selected_run is None and production_id is None and depallet_id is None and context['runs']:
+                    selected_run = context['runs'][0]
+                context['current_run_id'] = selected_run['DepalletID'] if selected_run else None
                 context["current"] = next((lot for lot in context["lots"]
-                                           if lot['ProductionID'] == production_id), context["lots"][0])
-                context.update(context["entries"][context["current"]['ProductionID']])
+                    if lot['ProductionID'] == (selected_run['ProductionID'] if selected_run else production_id)), None)
+                if context['current'] is None and context['lots']:
+                    context['current'] = next((lot for lot in context['lots']
+                        if lot['ProductionID'] == context['runs'][0]['ProductionID']), context['lots'][0]) if context['runs'] else context['lots'][0]
                 context['r99_name'] = next((reason['ReasonNameTH'] for reason in
                     read_depallet_reasons(cursor, include_r99=True) if reason['ReasonCode'] == 'R99'), '')
     except ValueError as exc:
@@ -251,11 +266,18 @@ def depallet_page(request: Request, production_date: date | None = None,
         context["error"] = "Unable to load Depallet data. Reload the page to retry."
         status = 503
     context['entries_json'] = jsonable_encoder(context['entries'])
+    context['runs_json'] = jsonable_encoder(context['runs'])
+    context['lots_json'] = jsonable_encoder(context['lots'])
+    context['products_json'] = jsonable_encoder(context['products'])
+    context['reasons_json'] = jsonable_encoder(context.get('reject_reasons', []))
+    context['daily_totals_json'] = jsonable_encoder(context['daily_totals'])
+    context['day_start_time_text'] = context['day_start_time'].strftime('%H:%M') \
+        if isinstance(context['day_start_time'], time) else ''
     return templates.TemplateResponse(request=request, name="depallet.html", context=context, status_code=status)
 
 
 @app.get("/lots/{production_id}/depallet")
-def load_depallet(production_id: int, depallet_date: date):
+def load_depallet(production_id: int, depallet_date: date, depallet_id: int | None = None):
     try:
         with closing(get_connection()) as conn:
             cursor = conn.cursor()
@@ -263,7 +285,7 @@ def load_depallet(production_id: int, depallet_date: date):
             found = rows(cursor)
             if not found:
                 raise ValueError("This Production Lot is no longer active.")
-            result = read_depallet_context(cursor, found[0], depallet_date)
+            result = read_depallet_context(cursor, found[0], depallet_date, depallet_id)
             return JSONResponse(jsonable_encoder(result), headers={"Cache-Control": "no-store"})
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
@@ -282,6 +304,29 @@ def save_depallet_response(production_id, raw):
         return JSONResponse({"error": "Unable to save Depallet data. Nothing was saved; please retry."}, status_code=503)
 
 
+def save_depallet_batch_response(depallet_date, items):
+    try:
+        with closing(get_connection()) as conn:
+            saved = save_depallet_batch(conn, depallet_date, items)
+            return JSONResponse(jsonable_encoder({"rows": saved, "message": "Depallet data saved."}))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception:
+        return JSONResponse({"error": "Unable to save Depallet data. Nothing was saved; please retry."}, status_code=503)
+
+
+@app.post("/depallet/save")
+async def save_depallet_batch_route(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid Depallet data."}, status_code=400)
+    if not isinstance(payload, dict) or set(payload) != {"depallet_date", "rows"}:
+        return JSONResponse({"error": "Invalid Depallet data."}, status_code=400)
+    return await run_in_threadpool(save_depallet_batch_response,
+                                   payload["depallet_date"], payload["rows"])
+
+
 @app.post("/lots/{production_id}/depallet")
 async def save_depallet_route(request: Request, production_id: int):
     form = await request.form()
@@ -289,7 +334,8 @@ async def save_depallet_route(request: Request, production_id: int):
     if any(len(form.getlist(key)) != 1 for key in form):
         return JSONResponse({"error": "Duplicate Depallet fields are not allowed."}, status_code=400)
     raw = dict(DepalletDate=form.get("depallet_date"), Shift=form.get("shift"),
-               LotNo=form.get("lot_no"), DepalletQty=form.get("depallet_qty"),
+               DepalletID=form.get("depallet_id"), LotNo=form.get("lot_no"),
+               Start=form.get("start"), End=form.get("end"), DepalletQty=form.get("depallet_qty"),
                GoodQty=form.get("good_qty"), Remark=form.get("remark"),
                rejects={key[len("reject_"):]: value for key, value in form.items() if key.startswith("reject_")})
     return await run_in_threadpool(save_depallet_response, production_id, raw)

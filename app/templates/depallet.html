@@ -3,267 +3,383 @@
 <style>
 .depallet-grid{table-layout:fixed;border-collapse:separate;border-spacing:0;border-top:1px solid #c7d2df;border-left:1px solid #c7d2df;font-variant-numeric:tabular-nums}
 .depallet-grid th,.depallet-grid td{padding:2px 3px;border-right:1px solid #c7d2df;border-bottom:1px solid #c7d2df}
-.depallet-grid th{text-align:center;background:#eaf0f6}
-.depallet-grid td{background:#f8fafc}
-.depallet-grid .numeric{text-align:right}
-.depallet-grid .editable{padding:0;background:white}
-.depallet-grid input{width:100%;min-width:0;height:22px;padding:1px 3px;border:0;border-radius:0;background:transparent}
-.depallet-grid input[type=number]{text-align:right}
-.depallet-grid input:focus-visible{outline-offset:-2px}
-.depallet-grid input[readonly]{background:#f4f6f8}
-.depallet-grid .reason{white-space:normal;overflow-wrap:anywhere}
-#depallet-lots{width:900px;max-width:100%}
-#depallet-lots tr[aria-selected=true] td{background:#eaf4ff;border-top:1px solid #1765ad;border-bottom:1px solid #1765ad}
-#depallet-lots a{color:inherit;display:block;padding:2px;text-decoration:none}
-#depallet-lots tr[aria-selected=true] a{font-weight:700}
-#depallet-detail{width:900px}
-#depallet-rejects{display:grid;grid-template-columns:repeat(3,296px);gap:6px;align-items:start}
-#depallet-detail .reject-group{width:296px}
-#depallet-detail .reject-code-column{width:50px}
-#depallet-detail .reject-reason-column{width:185px}
-#depallet-detail .reject-qty-column{width:60px}
-#depallet-detail th,#depallet-detail td{padding:1px 2px}
-#depallet-detail td.editable{padding:0}
+.depallet-grid th{text-align:center;background:#eaf0f6}.depallet-grid td{background:#f8fafc}
+.depallet-grid .numeric{text-align:right}.depallet-grid .editable{padding:0;background:white}
+.depallet-grid input,.depallet-grid select{width:100%;min-width:0;height:22px;padding:1px 3px;border:0;border-radius:0;background:transparent}
+.depallet-grid input[type=number]{text-align:right}.depallet-grid input[readonly]{background:#f4f6f8}
+#depallet-fields{border:0;margin:0;padding:0;min-width:0}
+#depallet-selectors{display:grid;grid-template-columns:minmax(140px,1fr) minmax(140px,1fr) minmax(270px,2fr) auto;gap:5px;align-items:end}
+#depallet-selectors label{display:grid;gap:2px;font-weight:600}#depallet-selectors select{height:24px;min-width:0}
+#depallet-selectors select:disabled{color:#8994a3;background:#f0f2f4}
+#depallet-production-lot option:disabled{color:#8994a3;background:#f0f2f4}
+#depallet-lots{min-width:1220px;width:100%}#depallet-lots tr[aria-selected=true] td{background:#eaf4ff;border-top:1px solid #1765ad;border-bottom:1px solid #1765ad}
+#depallet-lots tr[data-disabled=true] td{color:#78818d;background:#f0f1f2}
+#depallet-lots input{height:22px}#depallet-lots .select-cell{text-align:center}
+#depallet-lots output{display:block;text-align:right;padding:2px 4px}
+#depallet-detail{max-width:900px}#depallet-rejects{display:grid;grid-template-columns:repeat(3,minmax(245px,1fr));gap:6px;align-items:start}
+#depallet-detail .reject-group{width:100%}#depallet-detail .reject-code-column{width:38px}#depallet-detail .reject-reason-column{width:auto}
+#depallet-detail .reject-qty-column{width:50px}#depallet-detail .reject-day-column{width:58px}
+#depallet-detail th,#depallet-detail td{padding:1px 2px}#depallet-detail td.editable{padding:0}
 #depallet-detail input{width:100%;max-width:100%;min-width:0;height:21px;padding:1px 2px}
 #depallet-detail .reason label{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;white-space:normal;overflow-wrap:anywhere;line-height:1.2;max-height:2.4em}
-#depallet-fields{border:0;margin:0;padding:0;min-width:0}
-.depallet-totals{display:flex;gap:12px;flex-wrap:wrap;margin:5px 0}
-#depallet-balance[data-balanced=true]{color:#25643b}
-#depallet-balance[data-balanced=false]{color:#946200}
-#depallet-status[data-state=error]{color:#9d2525}
-#depallet-status[data-state=success]{color:#25643b}
+.depallet-totals{display:flex;gap:12px;flex-wrap:wrap;margin:5px 0}.depallet-controls{display:flex;gap:5px;align-items:center;flex-wrap:wrap}
+#depallet-warning{min-height:14px;color:#946200}#depallet-status[data-state=error]{color:#9d2525}#depallet-status[data-state=success]{color:#25643b}
+#depallet-balance[data-balanced=true]{color:#25643b}#depallet-balance[data-balanced=false]{color:#946200}
+@media(max-width:760px){ #depallet-selectors{grid-template-columns:1fr 1fr}#depallet-selectors label:nth-child(3){grid-column:1/-1}#depallet-rejects{grid-template-columns:1fr;max-width:420px}}
 </style>
 <h1>DEPALLET</h1>
-{% if error %}<div class="error" role="alert">{{ error }}</div>
-{% elif not lots %}<section class="panel"><h2>DEPALLET LOTS</h2><p class="muted">No active Production Lots for this date.</p></section>
-{% else %}
-<form id="depallet-input" method="post" action="/lots/{{ current.ProductionID }}/depallet">
+{% if error %}<div class="error" role="alert">{{ error }}</div>{% else %}
+<form id="depallet-input" method="post" action="/depallet/save">
 <input id="depallet-date" name="depallet_date" type="hidden" value="{{ production_date }}">
 <fieldset id="depallet-fields">
+<section class="panel"><h2>CREATE DEPALLET LOT</h2>
+<div id="depallet-selectors">
+<label>Product Family<select id="depallet-family"><option value="">Select family</option>{% for family, prefix in families %}<option value="{{ family }}">{{ family }}</option>{% endfor %}</select></label>
+<label>Product<select id="depallet-product" disabled><option value="">Select product</option></select></label>
+<label>Production Lot<select id="depallet-production-lot" disabled><option value="">Select Production Lot</option></select></label>
+<button id="create-depallet-lot" class="primary" type="button" disabled>CREATE DEPALLET LOT</button>
+</div></section>
 <section class="panel"><h2>DEPALLET LOTS</h2>
 <div class="table-scroll"><table class="depallet-grid" id="depallet-lots">
-<colgroup><col style="width:150px"><col style="width:55px"><col style="width:100px"><col style="width:100px"><col style="width:95px"><col></colgroup>
-<thead><tr><th scope="col">Lot No.</th><th scope="col">Shift</th><th scope="col">Depallet Qty</th><th scope="col">Good Qty</th><th scope="col">Reject Qty</th><th scope="col">Remark</th></tr></thead>
-<tbody>{% for lot in lots %}{% set entry = entries[lot.ProductionID].depallet %}{% set selected = lot.ProductionID == current.ProductionID %}
-<tr data-production-id="{{ lot.ProductionID }}" data-lot-no="{{ lot.LotNo }}" aria-selected="{{ 'true' if selected else 'false' }}">
-<td><a href="/depallet?production_date={{ production_date }}&amp;production_id={{ lot.ProductionID }}" data-select-lot>{{ lot.LotNo }}</a><input data-field="lot_no" name="lot_no" type="hidden" value="{{ entry.LotNo }}" form="{{ 'depallet-input' if selected else 'unselected-' ~ lot.ProductionID }}"></td>
-<td class="editable"><input data-field="shift" name="shift" maxlength="10" value="{{ entry.Shift }}" form="{{ 'depallet-input' if selected else 'unselected-' ~ lot.ProductionID }}" required aria-label="{{ lot.LotNo }} Shift"></td>
-<td class="editable"><input data-field="depallet_qty" name="depallet_qty" type="number" min="0" max="2147483647" step="1" value="{{ entry.DepalletQty }}" form="{{ 'depallet-input' if selected else 'unselected-' ~ lot.ProductionID }}" required aria-label="{{ lot.LotNo }} Depallet Qty"></td>
-<td class="editable"><input data-field="good_qty" name="good_qty" type="number" min="0" max="2147483647" step="1" value="{{ entry.GoodQty }}" form="{{ 'depallet-input' if selected else 'unselected-' ~ lot.ProductionID }}" required aria-label="{{ lot.LotNo }} Good Qty"></td>
-<td class="numeric"><output data-physical-reject>{{ entry.PhysicalRejectQty|default('') }}</output></td>
-<td class="editable"><input data-field="remark" name="remark" maxlength="500" value="{{ entry.Remark or '' }}" form="{{ 'depallet-input' if selected else 'unselected-' ~ lot.ProductionID }}" aria-label="{{ lot.LotNo }} Remark"></td>
-</tr>{% endfor %}</tbody></table></div></section>
-<section class="panel"><h2 id="reject-detail-title">REJECT DETAIL - {{ current.LotNo }}</h2>
-<div class="table-scroll"><div id="depallet-detail"><div id="depallet-rejects">
-{% for start, stop in [(1, 10), (11, 20), (21, 24)] %}
-<table class="depallet-grid reject-group" data-reject-group="{{ loop.index }}" aria-label="Reject reasons R{{ '%02d'|format(start) }} to R{{ '%02d'|format(stop) }}{{ ' and R99' if start == 21 else '' }}">
-<colgroup><col class="reject-code-column"><col class="reject-reason-column"><col class="reject-qty-column"></colgroup>
-<thead><tr><th scope="col">Code</th><th scope="col">Reject Reason</th><th scope="col">Qty</th></tr></thead>
-<tbody>
-{% for reason in (reject_reasons + inactive_rejects)|sort(attribute='ReasonCode') %}
-{% if start <= reason.ReasonCode[1:]|int <= stop %}
-{% set active = reason in reject_reasons %}
-<tr><td>{{ reason.ReasonCode }}</td><td class="reason"><label for="reject-{{ reason.ReasonCode }}" title="{{ reason.ReasonNameTH or '' }}{{ ' (inactive)' if not active else '' }}">{{ reason.ReasonNameTH or '' }}{{ ' (inactive)' if not active else '' }}</label></td><td{% if active %} class="editable"{% endif %}><input id="reject-{{ reason.ReasonCode }}" {% if active %}name="reject_{{ reason.ReasonCode }}" {% endif %}data-reject-code="{{ reason.ReasonCode }}" type="number" min="0" max="2147483647" step="1" value="{{ reject_values.get(reason.ReasonCode, '') if active else reason.Qty }}" {% if not active %}readonly {% endif %}aria-label="{{ reason.ReasonCode }} {{ reason.ReasonNameTH or '' }}{{ ' inactive saved quantity' if not active else '' }}"></td></tr>
-{% endif %}
-{% endfor %}
-{% if start == 21 %}
-<tr id="depallet-r99-row"><td>R99</td><td class="reason"><label for="depallet-r99" title="{{ r99_name }}">{{ r99_name }}</label></td><td><input id="depallet-r99" type="number" min="0" step="1" value="{{ depallet.R99|default('') }}" readonly aria-label="R99 {{ r99_name }}"></td></tr>
-{% endif %}
-</tbody></table>
-{% endfor %}
-</div></div></div>
-<div class="depallet-totals" aria-live="polite"><span>Classified Reject: <output id="depallet-reject-qty">{{ depallet.ClassifiedRejectQty|default('') }}</output></span><span>Difference: <output id="depallet-difference">{{ depallet.DifferenceQty|default('') }}</output></span><output id="depallet-balance"></output></div>
-<button id="save-depallet" class="primary" type="submit">SAVE DEPALLET</button>
-<button id="reload-depallet" type="button">RELOAD SELECTED LOT</button>
-<span id="depallet-status" role="status" aria-live="polite"></span>
+<colgroup><col style="width:38px"><col style="width:110px"><col style="width:100px"><col style="width:42px"><col style="width:53px"><col style="width:53px"><col style="width:78px"><col style="width:92px"><col style="width:88px"><col style="width:80px"><col style="width:72px"><col style="width:200px"></colgroup>
+<thead><tr><th scope="col">Select</th><th scope="col">Lot No.</th><th scope="col">Product</th><th scope="col">Shift</th><th scope="col">Start</th><th scope="col">End</th><th scope="col">Produced Qty</th><th scope="col">Already Depalleted</th><th scope="col">Remaining Curing</th><th scope="col">Depallet Qty</th><th scope="col">Good Qty</th><th scope="col">Remark</th></tr></thead>
+<tbody>{% for run in runs %}{% set d = run %}
+<tr data-run-key="{{ run.run_key }}" data-depallet-id="{{ run.DepalletID }}" data-production-id="{{ run.ProductionID }}" data-lot-no="{{ run.LotNo }}" data-saved="true" data-selected="{{ 'true' if current_run_id == run.DepalletID else 'false' }}" data-remaining="{{ run.RemainingCuringQty }}" data-production-qty="{{ run.ProductionQty }}">
+<td class="select-cell"><input type="radio" name="selected-depallet-row" data-row-select aria-label="Select {{ run.LotNo }} run {{ run.DepalletID }}"></td><td>{{ run.LotNo }}</td><td>{{ run.ProductName or run.ProductCode }}</td>
+<td class="editable"><input data-field="shift" maxlength="10" value="{{ d.Shift }}" aria-label="{{ run.LotNo }} Shift"></td>
+<td class="editable"><input data-field="start" inputmode="numeric" placeholder="HH:mm" maxlength="5" value="{{ run.StartClock }}" aria-label="{{ run.LotNo }} Start"></td>
+<td class="editable"><input data-field="end" inputmode="numeric" placeholder="HH:mm" maxlength="5" value="{{ run.EndClock }}" aria-label="{{ run.LotNo }} End"></td>
+<td><output>{{ run.ProductionQty }}</output></td><td><output>{{ run.AlreadyDepalletedBeforeRun }}</output></td><td><output>{{ run.RemainingCuringBeforeRun }}</output></td>
+<td class="editable"><input data-field="depallet_qty" type="number" min="0" max="2147483647" step="1" value="{{ d.DepalletQty }}" aria-label="{{ run.LotNo }} Depallet Qty"></td>
+<td class="editable"><input data-field="good_qty" type="number" min="0" max="2147483647" step="1" value="{{ d.GoodQty }}" aria-label="{{ run.LotNo }} Good Qty"></td>
+<td class="editable"><input data-field="remark" maxlength="500" value="{{ d.Remark or '' }}" aria-label="{{ run.LotNo }} Remark"></td></tr>{% endfor %}</tbody></table></div>
+<div id="depallet-warning" role="alert" aria-live="assertive"></div>
+</section>
+<section class="panel"><h2 id="reject-detail-title">REJECT DETAIL</h2>
+<div id="depallet-detail"><div id="depallet-rejects"></div></div>
+<div class="depallet-totals" aria-live="polite"><span>Classified Reject: <output id="depallet-reject-qty"></output></span><span>Difference: <output id="depallet-difference"></output></span><output id="depallet-balance"></output></div>
+<div class="depallet-controls"><button id="save-depallet" class="primary" type="submit">SAVE DEPALLET</button><span id="depallet-status" role="status" aria-live="polite"></span></div>
 </section></fieldset></form>
+<script id="depallet-lots-data" type="application/json">{{ lots_json|tojson }}</script>
+<script id="depallet-products-data" type="application/json">{{ products_json|tojson }}</script>
 <script id="depallet-entries" type="application/json">{{ entries_json|tojson }}</script>
+<script id="depallet-runs-data" type="application/json">{{ runs_json|tojson }}</script>
+<script id="depallet-reasons-data" type="application/json">{{ reasons_json|tojson }}</script>
+<script id="depallet-daily-totals" type="application/json">{{ daily_totals_json|tojson }}</script>
+<script id="depallet-day-start-time" type="application/json">{{ day_start_time_text|tojson }}</script>
 <script>
 (() => {
   const form = document.getElementById('depallet-input');
   if (!form) return;
   const fieldset = document.getElementById('depallet-fields');
   const date = document.getElementById('depallet-date');
+  const family = document.getElementById('depallet-family');
+  const product = document.getElementById('depallet-product');
+  const lotChoice = document.getElementById('depallet-production-lot');
+  const createButton = document.getElementById('create-depallet-lot');
+  const tableBody = document.querySelector('#depallet-lots tbody');
   const rejects = document.getElementById('depallet-rejects');
-  const button = document.getElementById('save-depallet');
-  const reloadButton = document.getElementById('reload-depallet');
-  const r99Row = document.getElementById('depallet-r99-row');
+  const saveButton = document.getElementById('save-depallet');
+  const title = document.getElementById('reject-detail-title');
   const status = document.getElementById('depallet-status');
+  const warning = document.getElementById('depallet-warning');
+  const lots = JSON.parse(document.getElementById('depallet-lots-data').textContent);
+  const products = JSON.parse(document.getElementById('depallet-products-data').textContent);
   const entries = JSON.parse(document.getElementById('depallet-entries').textContent);
-  const lotRows = Array.from(document.querySelectorAll('#depallet-lots tbody tr'));
-  const outputs = {
-    PhysicalRejectQty: null,
-    ClassifiedRejectQty: document.getElementById('depallet-reject-qty'),
-    R99: document.getElementById('depallet-r99'),
-    DifferenceQty: document.getElementById('depallet-difference'),
-    IsBalanced: document.getElementById('depallet-balance')
-  };
-  let selected = null, quantity = null, good = null, busy = false, loaded = true;
-  function message(state, text) { status.dataset.state = state; status.textContent = text; }
-  function pieces(input, blankZero = false) {
-    if (blankZero && input.value.trim() === '') return 0;
-    if (!/^[0-9]+$/.test(input.value)) return null;
-    const value = Number(input.value);
-    return Number.isSafeInteger(value) && value >= 0 && value <= 2147483647 ? value : null;
-  }
-  function show(data) {
-    for (const [key, output] of Object.entries(outputs)) {
-      output.value = key === 'IsBalanced' ? (data.DifferenceQty === 0 ? 'All physical rejects classified.' :
-        data.DifferenceQty > 0 ? `R99 อื่นๆ (คำนวณ) = ${data.R99}` :
-        `Classified reject exceeds physical reject by ${-data.DifferenceQty}. R99 = 0. Save is allowed.`) :
-        String(data[key]);
-    }
-    outputs.IsBalanced.dataset.balanced = String(data.DifferenceQty >= 0);
-  }
-  function calculate() {
-    const total = pieces(quantity), accepted = pieces(good);
-    const values = Array.from(rejects.querySelectorAll('[data-reject-code]'), input => /^R(0[1-9]|1[0-9]|2[0-4])$/.test(input.dataset.rejectCode) ? pieces(input, true) : 0);
-    if (total === null || accepted === null || values.includes(null)) {
-      Object.values(outputs).forEach(output => { output.value = ''; });
-      outputs.IsBalanced.value = 'ENTER VALID QUANTITIES';
-      outputs.IsBalanced.dataset.balanced = 'false';
-      return false;
-    }
-    const rejected = values.reduce((sum, value) => sum + value, 0);
-    const accounted = accepted + rejected;
-    show({ PhysicalRejectQty: total - accepted, ClassifiedRejectQty: rejected, R99: Math.max(total - accounted, 0),
-      AccountedQty: accounted, DifferenceQty: total - accounted, IsBalanced: total === accounted });
-    return true;
-  }
+  const runs = JSON.parse(document.getElementById('depallet-runs-data').textContent);
+  const reasons = JSON.parse(document.getElementById('depallet-reasons-data').textContent);
+  const dailyTotals = JSON.parse(document.getElementById('depallet-daily-totals').textContent);
+  const dayStartTime = JSON.parse(document.getElementById('depallet-day-start-time').textContent);
+  const manualCode = /^R(0[1-9]|1[0-9]|2[0-4])$/;
+  const outputs = {classified:document.getElementById('depallet-reject-qty'),
+    difference:document.getElementById('depallet-difference'),r99:null,balance:document.getElementById('depallet-balance')};
+  let selectedRow = null, busy = false, nextRunKey = 1;
 
-  function setBusy(value) {
-    busy = value; fieldset.disabled = value;
-    button.disabled = value || !loaded;
+  function setMessage(state, text) { status.dataset.state = state; status.textContent = text; }
+  function entryFor(key) { return entries[key]; }
+  function fields(row) { return Object.fromEntries(Array.from(row.querySelectorAll('[data-field]'), input => [input.dataset.field,input])); }
+  function makeSelectOption(label, value, disabled = false) {
+    const option = document.createElement('option'); option.value = value; option.textContent = label; option.disabled = disabled; return option;
   }
-  function rememberDetail() {
-    if (!selected) return;
-    const data = entries[selected.dataset.productionId];
-    for (const input of rejects.querySelectorAll('[data-reject-code]')) {
-      if (!input.readOnly) data.reject_values[input.dataset.rejectCode] = input.value;
+  function prettyDate(value) {
+    const parsed = new Date(value + 'T00:00:00');
+    return Number.isNaN(parsed.getTime()) ? value : new Intl.DateTimeFormat('en-GB').format(parsed);
+  }
+  function updateProducts() {
+    product.replaceChildren(makeSelectOption('Select product', ''));
+    product.value = ''; product.disabled = !family.value;
+    lotChoice.replaceChildren(makeSelectOption('Select Production Lot', ''));
+    lotChoice.value = ''; lotChoice.disabled = true; createButton.disabled = true;
+    if (!family.value) return;
+    for (const item of products.filter(item => item.ProductFamily === family.value)) {
+      product.append(makeSelectOption(item.ProductCode + ' | ' + item.ProductName, item.ProductCode));
     }
   }
-  function populateDetail(data) {
+  function updateLots() {
+    lotChoice.replaceChildren(makeSelectOption('Select Production Lot', ''));
+    lotChoice.value = ''; lotChoice.disabled = !product.value;
+    createButton.disabled = true;
+    if (!product.value) return;
+    const matches = lots.filter(item => item.ProductFamily === family.value && item.ProductCode === product.value);
+    for (const item of matches) {
+      const disabled = Number(item.ProductionQty) <= 0 || Number(item.RemainingCuringQty) <= 0;
+      const text = `${item.LotNo} | ${prettyDate(item.ProdDate)} | Produced ${item.ProductionQty} | Remaining ${item.RemainingCuringQty}`;
+      lotChoice.append(makeSelectOption(text, String(item.ProductionID), disabled));
+    }
+  }
+  function updateCreateState() {
+    const item = lots.find(lot => String(lot.ProductionID) === lotChoice.value);
+    createButton.disabled = !item || Number(item.ProductionQty) <= 0 || Number(item.RemainingCuringQty) <= 0;
+  }
+  family.addEventListener('change', updateProducts);
+  product.addEventListener('change', updateLots);
+  lotChoice.addEventListener('change', updateCreateState);
+
+  function makeInput(field, value, type, label, maxLength) {
+    const input = document.createElement('input'); input.dataset.field = field; input.type = type;
+    input.value = value ?? ''; input.setAttribute('aria-label', label);
+    if (type === 'number') { input.min = '0'; input.max = '2147483647'; input.step = '1'; }
+    if (maxLength) input.maxLength = maxLength;
+    return input;
+  }
+  function addCell(row, value, output = false) {
+    const cell = document.createElement('td');
+    if (output) { const display = document.createElement('output'); display.textContent = value ?? ''; cell.append(display); }
+    else cell.textContent = value ?? '';
+    row.append(cell); return cell;
+  }
+  function createWorkRow(item) {
+    const id = String(item.ProductionID);
+    const runKey = 'new:' + nextRunKey++;
+    const base = entryFor(id), data = {...base.depallet,DepalletID:null,DepalletQty:'',GoodQty:'',Remark:''};
+    entries[runKey] = {...base,depallet:data,reject_values:{},original_reject_values:{},original_r99:0};
+    const row = document.createElement('tr'); row.dataset.runKey = runKey; row.dataset.productionId = id; row.dataset.lotNo = item.LotNo;
+    row.dataset.saved = 'false'; row.dataset.remaining = item.RemainingCuringQty; row.dataset.productionQty = item.ProductionQty;
+    const selectCell = document.createElement('td'); selectCell.className = 'select-cell';
+    const radio = document.createElement('input'); radio.type = 'radio'; radio.name = 'selected-depallet-row'; radio.dataset.rowSelect = '';
+    radio.setAttribute('aria-label', 'Select ' + item.LotNo); selectCell.append(radio); row.append(selectCell);
+    addCell(row, item.LotNo); addCell(row, item.ProductName || item.ProductCode);
+    const shiftCell = document.createElement('td'); shiftCell.className = 'editable';
+    shiftCell.append(makeInput('shift', data.Shift || item.Shift || '', 'text', item.LotNo + ' Shift', 10)); row.append(shiftCell);
+    const startCell = document.createElement('td'); startCell.className = 'editable';
+    startCell.append(makeInput('start', '', 'text', item.LotNo + ' Start', 5)); row.append(startCell);
+    const endCell = document.createElement('td'); endCell.className = 'editable';
+    endCell.append(makeInput('end', '', 'text', item.LotNo + ' End', 5)); row.append(endCell);
+    addCell(row, item.ProductionQty, true); addCell(row, item.DepalletQtyTotal, true); addCell(row, item.RemainingCuringQty, true);
+    const qtyCell = document.createElement('td'); qtyCell.className = 'editable';
+    qtyCell.append(makeInput('depallet_qty', data.DepalletQty || '', 'number', item.LotNo + ' Depallet Qty')); row.append(qtyCell);
+    const goodCell = document.createElement('td'); goodCell.className = 'editable';
+    goodCell.append(makeInput('good_qty', data.GoodQty || '', 'number', item.LotNo + ' Good Qty')); row.append(goodCell);
+    const remarkCell = document.createElement('td'); remarkCell.className = 'editable';
+    remarkCell.append(makeInput('remark', data.Remark || '', 'text', item.LotNo + ' Remark', 500)); row.append(remarkCell);
+    tableBody.append(row); selectRow(row); return row;
+  }
+  createButton.addEventListener('click', () => {
+    const item = lots.find(lot => String(lot.ProductionID) === lotChoice.value);
+    if (!item || createButton.disabled) return;
+    createWorkRow(item);
+  });
+
+  function rememberRejects() {
+    if (!selectedRow) return;
+    const state = entryFor(selectedRow.dataset.runKey);
+    for (const input of rejects.querySelectorAll('[data-reject-code]')) {
+      if (!input.readOnly) state.reject_values[input.dataset.rejectCode] = input.value;
+    }
+  }
+  function totalsForDay() {
+    const totals = {...dailyTotals};
+    for (const row of tableBody.querySelectorAll('[data-production-id]')) {
+      const state = entryFor(row.dataset.runKey);
+      const original = state.original_reject_values || {};
+      const draft = state.reject_values || {};
+      for (const code of Object.keys(draft)) {
+        const before = Number(original[code] || 0), after = Number(draft[code] || 0);
+        totals[code] = Number(totals[code] || 0) + after - before;
+      }
+      const rowFields = fields(row);
+      const beforeR99 = Number(state.original_r99 || 0);
+      const qty = Number(rowFields.depallet_qty.value), good = Number(rowFields.good_qty.value);
+      const rejectsForRow = {...original,...draft};
+      const classified = Object.entries(rejectsForRow).reduce((sum,[code,value]) =>
+        sum + (manualCode.test(code) ? Number(value || 0) : 0),0);
+      const rowChanged = !state.depallet.DepalletID ||
+        String(state.depallet.DepalletQty ?? '') !== rowFields.depallet_qty.value ||
+        String(state.depallet.GoodQty ?? '') !== rowFields.good_qty.value ||
+        Object.keys(draft).some(code => Number(draft[code] || 0) !== Number(original[code] || 0));
+      const afterR99 = rowChanged && rowFields.depallet_qty.value !== '' && rowFields.good_qty.value !== ''
+        ? Math.max(qty - good - classified,0) : beforeR99;
+      totals.R99 = Number(totals.R99 || 0) + afterR99 - beforeR99;
+    }
+    return totals;
+  }
+  function buildRejectTables(data) {
     rejects.replaceChildren();
-    const groups = [[1, 10], [11, 20], [21, 24]].map(([start, stop], index) => {
-      const table = document.createElement('table'), columns = document.createElement('colgroup');
-      table.className = 'depallet-grid reject-group'; table.dataset.rejectGroup = String(index + 1);
-      table.setAttribute('aria-label', `Reject reasons R${String(start).padStart(2, '0')} to R${stop}${index === 2 ? ' and R99' : ''}`);
-      for (const kind of ['code', 'reason', 'qty']) {
-        const column = document.createElement('col'); column.className = 'reject-' + kind + '-column'; columns.append(column);
-      }
-      const head = document.createElement('thead'), headings = document.createElement('tr');
-      for (const text of ['Code', 'Reject Reason', 'Qty']) {
-        const cell = document.createElement('th'); cell.setAttribute('scope', 'col'); cell.textContent = text; headings.append(cell);
-      }
-      head.append(headings);
-      const body = document.createElement('tbody'); table.append(columns, head, body); rejects.append(table);
-      return body;
+    const inactive = data.inactive_rejects || [];
+    const byCode = new Map();
+    for (const reason of reasons.filter(item => manualCode.test(item.ReasonCode))) {
+      byCode.set(reason.ReasonCode,{...reason,active:reason.IsActive !== false,
+        Qty:data.reject_values[reason.ReasonCode] ?? ''});
+    }
+    for (const reason of inactive) byCode.set(reason.ReasonCode,{...reason,active:false,Qty:reason.Qty});
+    const source = Array.from(byCode.values()).sort((left,right) => left.ReasonCode.localeCompare(right.ReasonCode));
+    const daily = totalsForDay();
+    const groups = [[1,10],[11,20],[21,24]].map(([start,stop],index) => {
+      const table = document.createElement('table'); table.className = 'depallet-grid reject-group';
+      table.dataset.rejectGroup = String(index + 1);
+      const columns = document.createElement('colgroup');
+      for (const kind of ['code','reason','qty','day']) { const col = document.createElement('col'); col.className = 'reject-' + kind + '-column'; columns.append(col); }
+      const head = document.createElement('thead'), heading = document.createElement('tr');
+      for (const text of ['Code','Reject Reason','Qty','Qty/Day']) { const th = document.createElement('th'); th.scope = 'col'; th.textContent = text; heading.append(th); }
+      head.append(heading); const body = document.createElement('tbody'); table.append(columns,head,body); rejects.append(table);
+      return {start,stop,body,index};
     });
-    const items = data.reject_reasons.map(reason => ({ ...reason, active: true, Qty: data.reject_values[reason.ReasonCode] ?? '' }))
-      .concat(data.inactive_rejects.map(reason => ({ ...reason, active: false })))
-      .sort((a, b) => a.ReasonCode.localeCompare(b.ReasonCode));
-    for (const reason of items) {
-      if (!/^R(0[1-9]|1[0-9]|2[0-4])$/.test(reason.ReasonCode)) continue;
-      const row = document.createElement('tr'), code = document.createElement('td');
-      const name = document.createElement('td'), cell = document.createElement('td');
+    for (const reason of source) {
+      if (!manualCode.test(reason.ReasonCode)) continue;
+      const number = Number(reason.ReasonCode.slice(1));
+      const group = groups.find(item => number >= item.start && number <= item.stop);
+      const row = document.createElement('tr'), code = document.createElement('td'); code.textContent = reason.ReasonCode;
+      const name = document.createElement('td'); name.className = 'reason';
       const label = document.createElement('label'), input = document.createElement('input');
-      code.textContent = reason.ReasonCode; name.className = 'reason';
       input.id = 'reject-' + reason.ReasonCode; input.dataset.rejectCode = reason.ReasonCode;
       input.type = 'number'; input.min = '0'; input.max = '2147483647'; input.step = '1'; input.value = reason.Qty;
-      if (reason.active) { input.name = 'reject_' + reason.ReasonCode; cell.className = 'editable'; }
-      else input.readOnly = true;
-      label.htmlFor = input.id;
-      label.textContent = (reason.ReasonNameTH || '') + (reason.active ? '' : ' (inactive)');
-      label.title = label.textContent;
-      input.setAttribute('aria-label', reason.ReasonCode + ' ' + label.textContent);
-      name.append(label); cell.append(input); row.append(code, name, cell);
-      groups[Math.floor((Number(reason.ReasonCode.slice(1)) - 1) / 10)].append(row);
+      label.htmlFor = input.id; label.textContent = (reason.ReasonNameTH || '') + (reason.active ? '' : ' (inactive)');
+      label.title = label.textContent; name.append(label);
+      const qty = document.createElement('td'); qty.className = reason.active ? 'editable' : '';
+      if (!reason.active) input.readOnly = true; qty.append(input);
+      const day = document.createElement('td'), dailyQty = document.createElement('output');
+      dailyQty.dataset.dailyTotal = reason.ReasonCode; dailyQty.textContent = daily[reason.ReasonCode] || 0;
+      day.className = 'numeric'; day.append(dailyQty);
+      row.append(code,name,qty,day); group.body.append(row);
     }
-    groups[2].append(r99Row);
+    const row = document.createElement('tr'), code = document.createElement('td'); code.textContent = 'R99';
+    const name = document.createElement('td'); name.className = 'reason'; name.textContent = reasons.find(reason => reason.ReasonCode === 'R99')?.ReasonNameTH || '';
+    const qty = document.createElement('td'), input = document.createElement('input');
+    input.id = 'depallet-r99'; input.type = 'number'; input.readOnly = true; qty.append(input); outputs.r99 = input;
+    const day = document.createElement('td'), total = document.createElement('output'); total.dataset.dailyTotal = 'R99'; total.textContent = daily.R99 || 0; day.append(total);
+    row.append(code,name,qty,day); groups[2].body.append(row);
   }
-  function selectLot(row, updateURL = true) {
-    if (busy || row === selected) return;
-    rememberDetail();
-    selected = row;
-    for (const item of lotRows) {
-      item.setAttribute('aria-selected', String(item === row));
-      for (const input of item.querySelectorAll('[data-field]')) {
-        input.setAttribute('form', item === row ? 'depallet-input' : 'unselected-' + item.dataset.productionId);
-      }
+  function calculateSelected() {
+    if (!selectedRow) {
+      for (const output of [outputs.classified,outputs.difference,outputs.balance]) output.value = '';
+      return false;
     }
-    const id = row.dataset.productionId;
-    quantity = row.querySelector('[data-field="depallet_qty"]');
-    good = row.querySelector('[data-field="good_qty"]');
-    outputs.PhysicalRejectQty = row.querySelector('[data-physical-reject]');
-    form.action = '/lots/' + id + '/depallet';
-    loaded = !entries[id].loadFailed;
-    button.disabled = !loaded;
-    populateDetail(entries[id]);
-    document.getElementById('reject-detail-title').textContent = 'REJECT DETAIL - ' + row.dataset.lotNo;
-    calculate();
-    message(loaded ? 'info' : 'error', loaded ? '' : 'Reload the selected lot before saving.');
-    if (updateURL) {
-      const url = new URL(window.location.href);
-      url.searchParams.set('production_id', id);
-      url.searchParams.set('production_date', date.value);
-      window.history.replaceState(null, '', url);
+    const rowFields = fields(selectedRow), depalletQty = rowFields.depallet_qty.value.trim(), goodQty = rowFields.good_qty.value.trim();
+    const isQty = value => /^[0-9]+$/.test(value) && Number.isSafeInteger(Number(value)) && Number(value) <= 2147483647;
+    const values = Array.from(rejects.querySelectorAll('[data-reject-code]'))
+      .filter(input => manualCode.test(input.dataset.rejectCode)).map(input => input.value.trim() === '' ? 0 : isQty(input.value.trim()) ? Number(input.value) : null);
+    if (!isQty(depalletQty) || !isQty(goodQty) || values.includes(null)) {
+      outputs.classified.value = ''; outputs.difference.value = ''; outputs.r99.value = '';
+      outputs.balance.value = 'ENTER VALID QUANTITIES'; outputs.balance.dataset.balanced = 'false'; return false;
     }
-    const retained = document.querySelector('#shared-production-date input[name="production_id"]');
-    if (retained) retained.value = id;
+    const classified = values.reduce((sum,value) => sum + value,0);
+    const difference = Number(depalletQty) - Number(goodQty) - classified;
+    outputs.classified.value = String(classified); outputs.difference.value = String(difference);
+    outputs.r99.value = String(Math.max(difference,0));
+    outputs.balance.value = difference === 0 ? 'All physical rejects classified.' : difference > 0 ? `R99 other = ${Math.max(difference,0)}` : `Classified reject exceeds physical reject by ${-difference}. Save is allowed.`;
+    outputs.balance.dataset.balanced = String(difference >= 0); return true;
   }
-  for (const row of lotRows) {
-    row.addEventListener('click', event => {
-      if (event.target.closest('[data-select-lot]')) event.preventDefault();
-      selectLot(row);
-    });
-    row.addEventListener('focusin', () => selectLot(row));
+  function updateDailyDisplays() {
+    rememberRejects(); const daily = totalsForDay();
+    for (const output of rejects.querySelectorAll('[data-daily-total]')) output.textContent = daily[output.dataset.dailyTotal] || 0;
   }
-  form.addEventListener('input', event => {
-    const row = event.target.closest('[data-production-id]');
-    if (row) selectLot(row);
-    if (event.target === quantity || event.target === good || event.target.dataset.rejectCode) calculate();
+  function selectRow(row) {
+    if (busy || !row || selectedRow === row) return;
+    rememberRejects(); selectedRow = row;
+    for (const candidate of tableBody.querySelectorAll('[data-production-id]')) {
+      candidate.setAttribute('aria-selected',String(candidate === row));
+      const radio = candidate.querySelector('[data-row-select]'); if (radio) radio.checked = candidate === row;
+    }
+    const state = entryFor(row.dataset.runKey);
+    title.textContent = 'REJECT DETAIL - ' + row.dataset.lotNo +
+      (row.dataset.depalletId ? ' / RUN ' + row.dataset.depalletId : ' / NEW RUN');
+    buildRejectTables(state); calculateSelected(); updateDailyDisplays();
+    const url = new URL(window.location.href); url.searchParams.set('production_id',row.dataset.productionId);
+    if (row.dataset.depalletId) url.searchParams.set('depallet_id',row.dataset.depalletId);
+    else url.searchParams.delete('depallet_id');
+    url.searchParams.set('production_date',date.value); window.history.replaceState(null,'',url);
+    const shared = document.querySelector('#shared-production-date input[name="production_id"]'); if (shared) shared.value = row.dataset.productionId;
+  }
+  tableBody.addEventListener('click', event => {
+    const row = event.target.closest('[data-production-id]'); if (row) selectRow(row);
   });
-  async function reloadSelected() {
-    const response = await fetch(form.action + '?depallet_date=' + encodeURIComponent(date.value),
-      { headers: { Accept: 'application/json' }, cache: 'no-store' });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || 'Unable to reload Depallet data.');
-    const entry = data.depallet;
-    for (const [field, key] of Object.entries({shift:'Shift',lot_no:'LotNo',depallet_qty:'DepalletQty',good_qty:'GoodQty',remark:'Remark'})) {
-      selected.querySelector('[data-field="' + field + '"]').value = entry[key] ?? '';
+  tableBody.addEventListener('focusin', event => {
+    const row = event.target.closest('[data-production-id]'); if (row) selectRow(row);
+  });
+  tableBody.addEventListener('input', event => {
+    const row = event.target.closest('[data-production-id]');
+    if (row && event.target.dataset.field === 'depallet_qty') {
+      const input = event.target, remaining = Number(row.dataset.remaining);
+      const state = entryFor(row.dataset.runKey);
+      const saved = row.dataset.saved === 'true' ? Number(state.depallet.DepalletQty || 0) : 0;
+      const maximum = remaining + saved, entered = Number(input.value);
+      if (input.value !== '' && Number.isFinite(entered) && entered > maximum) {
+        const limit = saved ? `Remaining Curing Qty plus this row's saved quantity ${maximum}` : `Remaining Curing Qty ${maximum}`;
+        warning.textContent = `Depallet Qty ${input.value} exceeds ${limit}. Quantity adjusted to ${maximum}.`;
+        input.value = String(maximum);
+      } else warning.textContent = '';
     }
-    entries[selected.dataset.productionId] = data;
-    loaded = true;
-    populateDetail(data);
-    calculate();
-    if (entry.PhysicalRejectQty !== undefined) show(entry);
-  }
-  reloadButton.addEventListener('click', async () => {
-    if (busy) return;
-    rememberDetail(); setBusy(true);
-    try { await reloadSelected(); message('info', 'Saved Depallet values reloaded.'); }
-    catch (error) { loaded = false; entries[selected.dataset.productionId].loadFailed = true; message('error', error.message); }
-    finally { setBusy(false); }
+    if (event.target.dataset.field === 'depallet_qty' || event.target.dataset.field === 'good_qty') {
+      updateDailyDisplays();
+      if (row === selectedRow) calculateSelected();
+    }
+    if (event.target.dataset.rejectCode) { updateDailyDisplays(); calculateSelected(); }
   });
   form.addEventListener('submit', async event => {
-    event.preventDefault();
-    if (busy || !loaded) { message('error', 'Reload the selected lot before saving.'); return; }
-    if (!calculate()) { message('error', 'Enter valid whole-piece quantities before saving.'); return; }
-    const body = new FormData(form);
-    rememberDetail(); setBusy(true); message('info', 'Saving Depallet data...');
-    let saved = false;
+    event.preventDefault(); if (busy) return;
+    rememberRejects();
+    const items = [], submittedRunKeys = [];
+    for (const row of tableBody.querySelectorAll('[data-production-id]')) {
+      const rowFields = fields(row), state = entryFor(row.dataset.runKey);
+      if (row.dataset.saved !== 'true' && !rowFields.depallet_qty.value.trim()) continue;
+      if (!/^[0-9]+$/.test(rowFields.depallet_qty.value) || !/^[0-9]+$/.test(rowFields.good_qty.value)) {
+        selectRow(row); setMessage('error','Enter valid whole-piece quantities for ' + row.dataset.lotNo + '.'); return;
+      }
+      const validClock = value => /^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(value);
+      const missingAllowed = row.dataset.saved === 'true' && !state.depallet.StartDateTime &&
+        !state.depallet.EndDateTime && !rowFields.start.value && !rowFields.end.value;
+      if (!missingAllowed && (!validClock(rowFields.start.value) || !validClock(rowFields.end.value))) {
+        selectRow(row); setMessage('error','Enter Start and End as HH:mm for ' + row.dataset.lotNo + '.'); return;
+      }
+      items.push({ProductionID:Number(row.dataset.productionId),
+        DepalletID:row.dataset.depalletId ? Number(row.dataset.depalletId) : null,
+        Shift:rowFields.shift.value,Start:rowFields.start.value,End:rowFields.end.value,
+        DepalletQty:rowFields.depallet_qty.value,GoodQty:rowFields.good_qty.value,Remark:rowFields.remark.value,
+        rejects:{...state.reject_values}});
+      submittedRunKeys.push(row.dataset.runKey);
+    }
+    if (!items.length) { setMessage('error','Add a Production Lot and enter Depallet Qty before saving.'); return; }
+    busy = true; fieldset.disabled = true; saveButton.disabled = true; setMessage('info','Saving Depallet data...');
     try {
-      const response = await fetch(form.action, { method: 'POST', body, headers: { Accept: 'application/json' } });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Unable to save Depallet data.');
-      saved = true; show(data.depallet);
-      await reloadSelected(); message('success', data.message);
-    } catch (error) {
-      if (saved) { loaded = false; entries[selected.dataset.productionId].loadFailed = true; }
-      message('error', saved ? 'Saved, but reload failed. Reload the selected lot before saving again. ' + error.message : error.message);
-    } finally { setBusy(false); }
+      const response = await fetch('/depallet/save',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},
+        body:JSON.stringify({depallet_date:date.value,rows:items})});
+      const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Unable to save Depallet data.');
+      const url = new URL(window.location.href); url.searchParams.set('production_date',date.value);
+      if (selectedRow) {
+        const selectedIndex = submittedRunKeys.indexOf(selectedRow.dataset.runKey);
+        const selectedResult = result.rows[selectedIndex];
+        if (selectedResult) {
+          url.searchParams.set('depallet_id',selectedResult.DepalletID);
+          url.searchParams.set('production_id',selectedResult.ProductionID);
+        }
+      }
+      window.location.assign(url);
+    } catch (error) { setMessage('error',error.message); }
+    finally { busy = false; fieldset.disabled = false; saveButton.disabled = false; }
   });
-  selectLot(lotRows.find(row => row.getAttribute('aria-selected') === 'true') || lotRows[0], false);
+
+  for (const run of runs) {
+    entries[run.run_key] = {depallet:run,reject_values:run.reject_values,
+      inactive_rejects:run.inactive_rejects,original_reject_values:run.original_reject_values,
+      original_r99:run.original_r99};
+  }
+  for (const row of tableBody.querySelectorAll('[data-run-key]')) {
+    const state = entryFor(row.dataset.runKey);
+    state.original_reject_values = {...(state.original_reject_values || state.reject_values)};
+    state.original_r99 = Number(state.original_r99 ?? state.depallet.R99 ?? 0);
+  }
+  const initial = tableBody.querySelector('[data-selected="true"]') || tableBody.querySelector('[data-run-key]');
+  if (initial) selectRow(initial);
 })();
 </script>
 {% endif %}

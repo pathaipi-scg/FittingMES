@@ -3,28 +3,37 @@ import copy
 import json
 import re
 import unittest
-from datetime import date
+from datetime import date, datetime, time
 from decimal import Decimal
 from unittest.mock import patch
 from urllib.parse import urlencode
 from starlette.requests import Request
-from app.depallet import read_context, read_reasons, default_entry, summary, validate, save_depallet
-from app.main import load_depallet, save_depallet_route, save_depallet_response, production_page, depallet_page
+from app.depallet import (read_context, read_reasons, default_entry, summary, validate, save_depallet,
+                          read_curing_lots, read_daily_work, save_depallet_batch, read_day_start_time,
+                          production_clock_datetime, resolve_run_times)
+from app.main import (load_depallet, save_depallet_route, save_depallet_response, save_depallet_batch_response,
+                      save_depallet_batch_route, production_page, depallet_page)
 from test_production import LOT, PLAN, DAY, request
 
 CODES = [f'R{i:02d}' for i in range(1,25)] + ['R99']
 REASONS = [dict(ReasonCode=code,ReasonNameTH='เหตุผล '+code,SortOrder=i,IsActive=True) for i,code in enumerate(CODES)]
-RAW = dict(DepalletDate='2026-09-23',Shift='2',LotNo='STORED-LOT-01',DepalletQty='100',GoodQty='90',
+RAW = dict(DepalletDate='2026-09-23',Shift='2',LotNo='STORED-LOT-01',Start='20:00',End='21:00',DepalletQty='100',GoodQty='90',
            Remark='บันทึก',rejects={'R01':'7','R99':'3'})
 SAVED = dict(DepalletID=10,ProductionID=7,DepalletDate=date(2026,9,23),Shift='2',LotNo='STORED-LOT-01',
              ProductFamily=None,ProductCode='06',MaterialCode=LOT['MaterialCode'],
-             MaterialName=LOT['MaterialName'],DepalletQty=100,GoodQty=90,Remark='บันทึก')
+             MaterialName=LOT['MaterialName'],DepalletQty=100,GoodQty=90,Remark='บันทึก',
+             StartDateTime=None,EndDateTime=None)
+EDIT_RAW = dict(RAW,DepalletID=10)
 
 
 class MemoryConnection:
     """Isolated SQL-write double, with commit/rollback and unique reject row keys."""
     def __init__(self, existing=False):
         self.db=dict(lots=[dict(LOT)],reasons=copy.deepcopy(REASONS),
+                     day_rules=[dict(RuleID=1,EffectiveFromDate=date(2026,1,1),DayStartTime=time(8),Remark='Initial')],
+                     balances={LOT['ProductionID']:dict(ProductionID=LOT['ProductionID'],ProductionQty=10000,
+                         DepalletQtyTotal=0,RemainingCuringQty=10000)},
+                     products=[dict(ProductFamily='NeuFit / NeuStile',ProductCode='06',ProductName='Fixture Product')],
                      depallets=[dict(SAVED)] if existing else [],
                      rejects={(10,'R01'):7,(10,'R99'):3} if existing else {})
         self.work=copy.deepcopy(self.db)
@@ -49,11 +58,64 @@ class MemoryCursor:
         if c.fail and c.fail in sql: raise RuntimeError('simulated SQL failure')
         if 'sp_getapplock' in sql:
             self.set_rows([{'result':0}])
+        elif 'FROM dbo.ProductionDayRuleHistory' in sql:
+            eligible=[rule for rule in c.work['day_rules'] if rule['EffectiveFromDate']<=args[0]]
+            eligible.sort(key=lambda rule:(rule['EffectiveFromDate'],rule['RuleID']),reverse=True)
+            self.set_rows([{'DayStartTime':eligible[0]['DayStartTime']}] if eligible else [])
+        elif 'FROM dbo.vw_DepalletCuringBalance WHERE ProductionID' in sql:
+            balance=c.work['balances'].get(args[0])
+            if balance:
+                total=sum(d['DepalletQty'] for d in c.work['depallets'] if d['ProductionID']==args[0])
+                balance=dict(balance,DepalletQtyTotal=total,RemainingCuringQty=max(balance['ProductionQty']-total,0))
+                self.set_rows([balance])
+            else: self.set_rows([])
+        elif 'FROM dbo.vw_DepalletCuringBalance b' in sql:
+            result=[]
+            for lot in c.work['lots']:
+                balance=c.work['balances'].get(lot['ProductionID'])
+                if balance:
+                    total=sum(d['DepalletQty'] for d in c.work['depallets'] if d['ProductionID']==lot['ProductionID'])
+                    product=next((p for p in c.work['products'] if p['ProductFamily']=='NeuFit / NeuStile' and p['ProductCode']==lot['ProductCode']),{})
+                    result.append(dict(lot,ProductFamily='NeuFit / NeuStile',ProductionQty=balance['ProductionQty'],
+                        DepalletQtyTotal=total,RemainingCuringQty=max(balance['ProductionQty']-total,0),DepalletCount=0,
+                        FirstDepalletDate=None,LastDepalletDate=None,RunNo=lot.get('RunningNo',1),ProductName=product.get('ProductName')))
+            result.sort(key=lambda item:(item['ProdDate'],item['RunNo'],item['ProductionID']),reverse=True)
+            self.set_rows(result)
+        elif 'FROM dbo.ProductCodeMaster' in sql:
+            self.set_rows(c.work['products'])
         elif 'FROM dbo.ProductionLot' in sql:
             self.set_rows([lot for lot in c.work['lots'] if lot['ProductionID']==args[0]])
         elif 'FROM dbo.RejectReasonMaster' in sql:
-            self.set_rows([{k:r[k] for k in ('ReasonCode','ReasonNameTH','SortOrder')}
+            self.set_rows([{k:r[k] for k in ('ReasonCode','ReasonNameTH','SortOrder','IsActive')}
                            for r in sorted(c.work['reasons'],key=lambda r:r['SortOrder']) if r['IsActive']])
+        elif 'FROM dbo.vw_DepalletValidation v' in sql:
+            selected=[d for d in c.work['depallets'] if d['DepalletDate']==args[0]]
+            result=[]
+            for d in selected:
+                rejects={code:q for (depallet_id,code),q in c.work['rejects'].items() if depallet_id==d['DepalletID']}
+                lot=next((item for item in c.work['lots'] if item['ProductionID']==d['ProductionID']),{})
+                balance=c.work['balances'].get(d['ProductionID'],{})
+                total=sum(item['DepalletQty'] for item in c.work['depallets'] if item['ProductionID']==d['ProductionID'])
+                prior_total=sum(item['DepalletQty'] for item in c.work['depallets']
+                    if item['ProductionID']==d['ProductionID'] and
+                    (item['DepalletDate']<d['DepalletDate'] or
+                     (item['DepalletDate']==d['DepalletDate'] and item['DepalletID']<d['DepalletID'])))
+                product=next((p for p in c.work['products'] if p['ProductFamily']=='NeuFit / NeuStile' and p['ProductCode']==d['ProductCode']),{})
+                result.append(dict(d,**summary(d['DepalletQty'],d['GoodQty'],rejects),
+                    ProductionQty=balance.get('ProductionQty',10000),DepalletQtyTotal=total,
+                    RemainingCuringQty=max(balance.get('ProductionQty',10000)-total,0),
+                    ProductName=product.get('ProductName'),RunNo=lot.get('RunningNo',1),
+                    AlreadyDepalletedBeforeRun=prior_total))
+            self.set_rows(result)
+        elif 'FROM dbo.DepalletReject r' in sql and 'd.DepalletDate=?' in sql:
+            result=[]
+            for (depallet_id,code),qty in c.work['rejects'].items():
+                depallet=next(d for d in c.work['depallets'] if d['DepalletID']==depallet_id)
+                if depallet['DepalletDate']==args[0]:
+                    reason=next(r for r in c.work['reasons'] if r['ReasonCode']==code)
+                    result.append(dict(DepalletID=depallet_id,ReasonCode=code,Qty=qty,
+                        ReasonNameTH=reason['ReasonNameTH'],IsActive=reason['IsActive'],SortOrder=reason['SortOrder']))
+            self.set_rows(result)
         elif 'FROM dbo.DepalletReject r' in sql:
             result=[]
             for (depallet_id,code),qty in c.work['rejects'].items():
@@ -63,9 +125,14 @@ class MemoryCursor:
                                        IsActive=reason['IsActive'],SortOrder=reason['SortOrder']))
             self.set_rows(result)
         elif 'FROM dbo.vw_DepalletValidation' in sql:
-            selected=[d for d in c.work['depallets'] if
-                      (d['ProductionID']==args[0] and d['DepalletDate']==args[1]) if len(args)==2] if len(args)==2 else [
-                      d for d in c.work['depallets'] if d['ProductionID' if 'WHERE ProductionID=?' in sql else 'DepalletID']==args[0]]
+            if 'AND DepalletID=?' in sql:
+                selected=[d for d in c.work['depallets'] if d['ProductionID']==args[0] and d['DepalletID']==args[1]]
+            elif 'WHERE DepalletID=?' in sql:
+                selected=[d for d in c.work['depallets'] if d['DepalletID']==args[0]]
+            elif len(args)==2:
+                selected=[d for d in c.work['depallets'] if d['ProductionID']==args[0] and d['DepalletDate']==args[1]]
+            else:
+                selected=[d for d in c.work['depallets'] if d['ProductionID']==args[0]]
             result=[]
             for d in selected:
                 rejects={code:q for (id,code),q in c.work['rejects'].items() if id==d['DepalletID']}
@@ -73,9 +140,11 @@ class MemoryCursor:
                 if c.bad_view: continue
                 result.append(values)
             self.set_rows(result)
-        elif 'SELECT DepalletID FROM dbo.Depallet' in sql:
-            self.set_rows([dict(DepalletID=d['DepalletID']) for d in c.work['depallets']
-                           if d['ProductionID']==args[0] and d['DepalletDate']==args[1]])
+        elif 'FROM dbo.Depallet WITH (UPDLOCK,HOLDLOCK)' in sql and 'WHERE DepalletID=?' in sql:
+            found=next((d for d in c.work['depallets'] if d['DepalletID']==args[0] and
+                d['ProductionID']==args[1] and d['DepalletDate']==args[2]),None)
+            self.set_rows([dict(DepalletID=found['DepalletID'],DepalletQty=found['DepalletQty'],
+                StartDateTime=found.get('StartDateTime'),EndDateTime=found.get('EndDateTime'))] if found else [])
         elif 'INSERT INTO dbo.DepalletReject' in sql:
             key=(args[0],args[1])
             if key in c.work['rejects']: raise RuntimeError('duplicate reject')
@@ -86,12 +155,13 @@ class MemoryCursor:
             c.work['rejects'].pop((args[0],args[1]),None)
         elif 'INSERT INTO dbo.Depallet' in sql:
             keys=('ProductionID','DepalletDate','Shift','LotNo','ProductFamily','ProductCode',
-                  'MaterialCode','MaterialName','DepalletQty','GoodQty','Remark')
-            new=dict(zip(keys,args),DepalletID=10+len(c.work['depallets']))
+                  'MaterialCode','MaterialName','DepalletQty','GoodQty','Remark','StartDateTime','EndDateTime')
+            next_id=max((d['DepalletID'] for d in c.work['depallets']),default=9)+1
+            new=dict(zip(keys,args),DepalletID=next_id)
             c.work['depallets'].append(new); self.set_rows([dict(DepalletID=new['DepalletID'])])
         elif 'UPDATE dbo.Depallet SET' in sql:
-            row=next(d for d in c.work['depallets'] if d['DepalletID']==args[-1])
-            row.update(zip(('Shift','LotNo','DepalletQty','GoodQty','Remark'),args[:-1]))
+            row=next(d for d in c.work['depallets'] if d['DepalletID']==args[-2] and d['ProductionID']==args[-1])
+            row.update(zip(('Shift','LotNo','DepalletQty','GoodQty','Remark','StartDateTime','EndDateTime'),args[:-2]))
         else: raise AssertionError('Unexpected SQL: '+sql)
         return self
     def fetchone(self): return self.result.pop(0) if self.result else None
@@ -102,7 +172,10 @@ class MemoryCursor:
 class DepalletTests(unittest.TestCase):
     def render_lot(self, conn, lot, **kwargs):
         kwargs.setdefault('production_date',lot['ProdDate'])
-        with patch('app.main.get_connection',return_value=conn), patch('app.main.read_lots',return_value=[lot]):
+        conn.work['lots']=[dict(lot)]
+        conn.work['balances'].setdefault(lot['ProductionID'],dict(ProductionID=lot['ProductionID'],
+            ProductionQty=10000,DepalletQtyTotal=0,RemainingCuringQty=10000))
+        with patch('app.main.get_connection',return_value=conn):
             return depallet_page(request(),production_id=lot['ProductionID'],**kwargs)
 
     def test_selected_production_2_loads_saved_header_and_all_raw_rejects(self):
@@ -115,34 +188,27 @@ class DepalletTests(unittest.TestCase):
         conn.work['rejects']={(1,code):qty for code,qty in quantities.items()}
         conn.work['rejects'][(1,'R99')]=999
         conn.work['reasons'][7]['IsActive']=False
-        before=copy.deepcopy(conn.work)
         response=self.render_lot(conn,lot)
         self.assertEqual(response.status_code,200)
-        for key,value in saved.items(): self.assertEqual(response.context['depallet'][key],value)
-        self.assertEqual(response.context['reject_values'],quantities)
-        self.assertEqual(response.context['depallet']['R99'],124)
+        entry=response.context['entries']['run:1']
+        for key,value in saved.items():
+            if key not in {'LotNo','ProductFamily'}: self.assertEqual(entry['depallet'][key],value)
+        self.assertEqual(entry['depallet']['LotNo'],'B006690902')
+        self.assertEqual(entry['reject_values'],{code:qty for code,qty in quantities.items() if code!='R08'})
+        self.assertEqual(entry['depallet']['R99'],124)
         text=response.body.decode()
-        for field,value in [('shift','1'),('lot_no','SAVED-ALIAS'),('depallet_qty','1000'),
-                            ('good_qty','600'),('remark','Saved remark')]:
-            tag=re.search(r'<input data-field="'+field+r'"[^>]*>',text)[0]
-            self.assertIn('value="'+value+'"',tag)
-        for code,qty in quantities.items():
-            tag=re.search(r'<input id="reject-'+code+r'"[^>]*>',text)[0]
-            self.assertIn('value="'+str(qty)+'"',tag)
-        self.assertIn('readonly',re.search(r'<input id="reject-R08"[^>]*>',text)[0])
-        r99=re.search(r'<input id="depallet-r99"[^>]*>',text)[0]
-        self.assertIn('value="124"',r99)
-        self.assertIn('readonly',r99)
-        self.assertIn('REJECT DETAIL - B006690902',text)
-        self.assertEqual(conn.work,before)
+        self.assertIn('data-lot-no="B006690902"',text)
+        self.assertIn('id="depallet-reasons-data"',text)
+        self.assertIn('data-selected="true"',text)
+        self.assertIn('ProductionQty',text)
         self.assertEqual(conn.commits,0)
         self.assertTrue(all(sql.lstrip().startswith('SELECT') for sql,_ in conn.sql))
 
     def test_new_selected_lot_uses_shared_date_without_second_date_selector(self):
         conn=MemoryConnection()
         response=self.render_lot(conn,LOT)
-        self.assertEqual(response.context['depallet']['DepalletDate'],LOT['ProdDate'])
-        self.assertEqual(response.context['depallet']['LotNo'],LOT['LotNo'])
+        self.assertEqual(response.context['entries'][str(LOT['ProductionID'])]['depallet']['DepalletDate'],LOT['ProdDate'])
+        self.assertEqual(response.context['entries'][str(LOT['ProductionID'])]['depallet']['LotNo'],LOT['LotNo'])
         text=response.body.decode()
         self.assertEqual(len(re.findall(r'<input[^>]*type="date"',text)),1)
         tag=re.search(r'<input id="depallet-date"[^>]*>',text)[0]
@@ -159,13 +225,28 @@ class DepalletTests(unittest.TestCase):
         self.assertEqual(context['depallet_dates'],[date(2026,9,23),date(2026,9,24)])
         lot=dict(LOT,ProdDate=date(2026,9,24))
         response=self.render_lot(conn,lot)
-        self.assertEqual(response.context['depallet']['LotNo'],'SECOND')
+        self.assertEqual(response.context['runs'][0]['DepalletID'],11)
+        self.assertEqual(response.context['runs'][0]['LotNo'],LOT['LotNo'])
         self.assertNotIn(b'id="depallet-record"',response.body)
         with patch('app.main.get_connection',return_value=conn):
             response=load_depallet(7,date(2026,9,23))
         self.assertEqual(json.loads(response.body)['depallet']['LotNo'],SAVED['LotNo'])
         self.assertEqual(conn.commits,0)
         self.assertTrue(all(sql.lstrip().startswith('SELECT') for sql,_ in conn.sql))
+
+    def test_explicit_depalet_id_loads_one_run_when_same_lot_has_multiple_runs(self):
+        conn=MemoryConnection(existing=True)
+        second=dict(SAVED,DepalletID=11,DepalletDate=date(2026,9,23),DepalletQty=80,GoodQty=70)
+        conn.work['depallets'].append(second)
+        conn.work['rejects'][(11,'R02')]=6
+        with self.assertRaisesRegex(ValueError,'Select a DepalletID'):
+            read_context(conn.cursor(),LOT,date(2026,9,23))
+        context=read_context(conn.cursor(),LOT,date(2026,9,23),depallet_id=11)
+        self.assertEqual(context['depallet']['DepalletID'],11)
+        self.assertEqual(context['reject_values'],{'R02':6})
+        with patch('app.main.get_connection',return_value=conn):
+            response=load_depallet(7,date(2026,9,23),depallet_id=11)
+        self.assertEqual(json.loads(response.body)['depallet']['DepalletID'],11)
 
     def test_defaults_keep_independent_date_lot_shift(self):
         lot=dict(LOT,Shift='2')
@@ -192,6 +273,165 @@ class DepalletTests(unittest.TestCase):
         self.assertEqual(conn.commits,0)
         self.assertTrue(all(sql.lstrip().startswith('SELECT') for sql,_ in conn.sql))
 
+    def test_curing_lot_reader_uses_view_production_id_and_date_run_order(self):
+        conn=MemoryConnection()
+        newer=dict(LOT,ProductionID=8,ProdDate=date(2026,9,23),RunningNo=1,LotNo='NEWER')
+        same_day_later=dict(LOT,ProductionID=9,ProdDate=date(2026,9,23),RunningNo=4,LotNo='RUN4')
+        conn.work['lots']=[dict(LOT),newer,same_day_later]
+        for item in conn.work['lots']:
+            conn.work['balances'][item['ProductionID']]=dict(ProductionID=item['ProductionID'],
+                ProductionQty=0 if item['ProductionID']==8 else 500,DepalletQtyTotal=0,RemainingCuringQty=0 if item['ProductionID']==8 else 500)
+        found=read_curing_lots(conn.cursor())
+        self.assertEqual([item['ProductionID'] for item in found],[9,8,7])
+        sql=conn.sql[0][0]
+        self.assertIn('FROM dbo.vw_DepalletCuringBalance b',sql)
+        self.assertIn('p.ProductionID=b.ProductionID',sql)
+        self.assertIn('ORDER BY b.ProdDate DESC,p.RunningNo DESC',sql)
+        self.assertNotIn('RemainingCuringQty>0',sql)
+        self.assertEqual(found[1]['ProductionQty'],0)
+
+    def test_production_clock_conversion_uses_reporting_date_and_day_start(self):
+        selected=date(2026,9,26)
+        cutoff=time(8)
+        self.assertEqual(production_clock_datetime(selected,'01:00',cutoff),datetime(2026,9,27,1))
+        self.assertEqual(production_clock_datetime(selected,'20:00',cutoff),datetime(2026,9,26,20))
+        self.assertEqual(resolve_run_times(selected,'01:00','03:00',cutoff),
+                         (datetime(2026,9,27,1),datetime(2026,9,27,3)))
+        self.assertEqual(resolve_run_times(selected,'20:00','23:00',cutoff),
+                         (datetime(2026,9,26,20),datetime(2026,9,26,23)))
+
+    def test_historical_day_start_rule_is_selected_by_effective_date(self):
+        conn=MemoryConnection()
+        conn.work['day_rules']=[
+            dict(RuleID=1,EffectiveFromDate=date(2026,1,1),DayStartTime=time(8)),
+            dict(RuleID=2,EffectiveFromDate=date(2026,10,1),DayStartTime=time(8,30)),
+            dict(RuleID=3,EffectiveFromDate=date(2027,1,15),DayStartTime=time(7,30)),
+        ]
+        cursor=conn.cursor()
+        self.assertEqual(read_day_start_time(cursor,date(2026,9,26)),time(8))
+        self.assertEqual(read_day_start_time(cursor,date(2026,10,5)),time(8,30))
+        self.assertEqual(read_day_start_time(cursor,date(2027,1,20)),time(7,30))
+        self.assertIn('EffectiveFromDate<=?',conn.sql[0][0])
+        self.assertIn('ORDER BY EffectiveFromDate DESC,RuleID DESC',conn.sql[0][0])
+
+    def test_clock_validation_rejects_ambiguous_or_out_of_order_pair(self):
+        for start,end in (('01:00',''),('24:00','25:00'),('01:00','20:00')):
+              with self.subTest(start=start,end=end), self.assertRaises(ValueError):
+                resolve_run_times(date(2026,9,26),start,end,time(8))
+
+    def test_same_lot_runs_keep_depallet_id_scoped_rejects_and_allow_null_times(self):
+        conn=MemoryConnection()
+        first=dict(SAVED,DepalletID=31,DepalletDate=date(2026,9,24),DepalletQty=60,GoodQty=55)
+        second=dict(SAVED,DepalletID=33,DepalletDate=date(2026,9,24),DepalletQty=40,GoodQty=35)
+        middle=dict(SAVED,DepalletID=32,ProductionID=8,DepalletDate=date(2026,9,24),DepalletQty=20,GoodQty=19)
+        conn.work['depallets']=[first,middle,second]
+        conn.work['lots'].append(dict(LOT,ProductionID=8,LotNo='OTHER'))
+        conn.work['balances'][7]=dict(ProductionID=7,ProductionQty=100,DepalletQtyTotal=100,RemainingCuringQty=0)
+        conn.work['balances'][8]=dict(ProductionID=8,ProductionQty=20,DepalletQtyTotal=20,RemainingCuringQty=0)
+        conn.work['rejects']={(31,'R01'):3,(33,'R02'):4,(32,'R01'):2}
+        entries,runs,reasons,totals,cutoff=read_daily_work(conn.cursor(),date(2026,9,24),conn.work['lots'])
+        self.assertEqual([run['DepalletID'] for run in runs if run['ProductionID']==7],[31,33])
+        self.assertEqual(entries['run:31']['reject_values'],{'R01':3})
+        self.assertEqual(entries['run:33']['reject_values'],{'R02':4})
+        self.assertEqual(totals['R01'],5)
+        self.assertEqual(totals['R02'],4)
+        self.assertEqual(entries['run:31']['depallet']['StartDateTime'],None)
+        self.assertEqual(entries['run:31']['depallet']['EndDateTime'],None)
+        self.assertEqual(next(run for run in runs if run['DepalletID']==31)['StartClock'],'')
+        self.assertEqual(cutoff,time(8))
+
+    def test_historical_remaining_and_new_over_depalet_are_server_rejected(self):
+        conn=MemoryConnection()
+        conn.work['balances'][7]=dict(ProductionID=7,ProductionQty=500,DepalletQtyTotal=200,RemainingCuringQty=300)
+        conn.work['depallets']=[dict(SAVED,DepalletID=20,DepalletDate=date(2026,9,20),DepalletQty=200)]
+        with self.assertRaisesRegex(ValueError,'Remaining Curing Qty 300'):
+            save_depallet(conn,7,dict(RAW,DepalletQty='301'))
+        self.assertEqual(conn.db['depallets'],[])
+        self.assertEqual(conn.commits,0)
+        self.assertEqual(conn.rollbacks,1)
+
+    def test_editing_saved_record_adds_its_own_quantity_back_to_authoritative_remaining(self):
+        conn=MemoryConnection(existing=True)
+        conn.work['balances'][7]=dict(ProductionID=7,ProductionQty=500,DepalletQtyTotal=300,RemainingCuringQty=200)
+        conn.work['depallets'][0]['DepalletQty']=100
+        conn.work['depallets'].append(dict(SAVED,DepalletID=20,DepalletDate=date(2026,9,20),DepalletQty=200))
+        result=save_depallet(conn,7,dict(EDIT_RAW,DepalletQty='300'))
+        self.assertEqual(result['DepalletQty'],300)
+        self.assertEqual(sum(row['DepalletQty'] for row in conn.db['depallets']),500)
+        with self.assertRaisesRegex(ValueError,'Remaining Curing Qty 300'):
+            save_depallet(conn,7,dict(EDIT_RAW,DepalletQty='301'))
+
+    def test_legacy_over_depalet_record_can_remain_but_cannot_increase(self):
+        conn=MemoryConnection(existing=True)
+        conn.work['balances'][7]=dict(ProductionID=7,ProductionQty=500,DepalletQtyTotal=600,RemainingCuringQty=0)
+        conn.work['depallets'][0]['DepalletQty']=400
+        conn.work['depallets'].append(dict(SAVED,DepalletID=20,DepalletDate=date(2026,9,20),DepalletQty=200))
+        save_depallet(conn,7,dict(EDIT_RAW,DepalletQty='400'))
+        self.assertEqual(sum(row['DepalletQty'] for row in conn.db['depallets']),600)
+        with self.assertRaisesRegex(ValueError,'Remaining Curing Qty 400'):
+            save_depallet(conn,7,dict(EDIT_RAW,DepalletQty='401'))
+
+    def test_batch_save_is_atomic_and_rejects_duplicate_production_ids(self):
+        conn=MemoryConnection()
+        second=dict(LOT,ProductionID=8,LotNo='SECOND',RunningNo=2)
+        conn.work['lots'].append(second)
+        conn.work['balances'][7]=dict(ProductionID=7,ProductionQty=500,DepalletQtyTotal=0,RemainingCuringQty=500)
+        conn.work['balances'][8]=dict(ProductionID=8,ProductionQty=700,DepalletQtyTotal=0,RemainingCuringQty=700)
+        items=[dict(ProductionID=7,Shift='1',Start='20:00',End='21:00',DepalletQty='300',GoodQty='280',Remark='',rejects={'R01':'2'}),
+               dict(ProductionID=8,Shift='2',Start='21:00',End='22:00',DepalletQty='600',GoodQty='590',Remark='',rejects={'R02':'1'}),
+               dict(ProductionID=7,Shift='2',Start='22:00',End='23:00',DepalletQty='200',GoodQty='190',Remark='',rejects={'R03':'1'})]
+        saved=save_depallet_batch(conn,'2026-09-23',items)
+        self.assertEqual(len(saved),3)
+        self.assertEqual([row['ProductionID'] for row in conn.db['depallets']],[7,8,7])
+        self.assertEqual([row['Shift'] for row in conn.db['depallets'] if row['ProductionID']==7],['1','2'])
+        self.assertEqual(len({row['DepalletID'] for row in conn.db['depallets']}),3)
+        self.assertEqual(conn.commits,1)
+        before=copy.deepcopy(conn.db)
+        with self.assertRaisesRegex(ValueError,'run can only be submitted once'):
+            save_depallet_batch(conn,'2026-09-23',[dict(items[0],DepalletID=saved[0]['DepalletID']),
+                dict(items[0],DepalletID=saved[0]['DepalletID'])])
+        self.assertEqual(conn.db,before)
+
+    def test_batch_save_route_parses_depallet_date_and_rows(self):
+        conn=MemoryConnection()
+        payload=json.dumps({'depallet_date':'2026-09-26','rows':[
+            {'ProductionID':7,'Shift':'1','Start':'01:00','End':'03:00','DepalletQty':'100','GoodQty':'95','Remark':'','rejects':{'R01':'2'}}]})
+        async def receive(): return {'type':'http.request','body':payload.encode(),'more_body':False}
+        request_obj=Request({'type':'http','method':'POST','path':'/depallet/save',
+            'headers':[(b'content-type',b'application/json')]},receive)
+        with patch('app.main.get_connection',return_value=conn):
+            response=asyncio.run(save_depallet_batch_route(request_obj))
+        self.assertEqual(response.status_code,200)
+        body=json.loads(response.body)
+        self.assertEqual(body['rows'][0]['DepalletDate'].split('T')[0],'2026-09-26')
+        self.assertEqual(body['rows'][0]['StartDateTime'],'2026-09-27T01:00:00')
+        self.assertEqual(body['rows'][0]['EndDateTime'],'2026-09-27T03:00:00')
+        self.assertEqual(conn.db['depallets'][0]['ProductionID'],7)
+        self.assertEqual(conn.commits,1)
+
+    def test_daily_work_reject_totals_are_depallet_date_scoped_and_lot_isolated(self):
+        conn=MemoryConnection()
+        second=dict(LOT,ProductionID=8,LotNo='SECOND')
+        first=dict(SAVED,DepalletID=10,ProductionID=7,DepalletDate=date(2026,9,24),DepalletQty=100,GoodQty=90)
+        other=dict(SAVED,DepalletID=11,ProductionID=8,DepalletDate=date(2026,9,24),DepalletQty=80,GoodQty=70)
+        historical=dict(SAVED,DepalletID=12,ProductionID=8,DepalletDate=date(2026,9,21),DepalletQty=20,GoodQty=10)
+        conn.work['depallets']=[first,other,historical]
+        conn.work['reasons'][7]['IsActive']=False
+        conn.work['rejects']={(10,'R01'):5,(10,'R08'):6,(10,'R99'):5,
+            (11,'R01'):3,(11,'R02'):4,(12,'R01'):50}
+        entries,runs,reasons,totals,cutoff=read_daily_work(conn.cursor(),date(2026,9,24),[LOT,second])
+        self.assertEqual(totals['R01'],8)
+        self.assertEqual(totals['R02'],4)
+        self.assertEqual(totals['R08'],6)
+        self.assertEqual(totals['R99'],5)
+        self.assertEqual(entries['run:10']['reject_values'],{'R01':5})
+        self.assertEqual(entries['run:10']['inactive_rejects'][0]['ReasonCode'],'R08')
+        self.assertEqual(entries['run:11']['reject_values'],{'R01':3,'R02':4})
+        self.assertNotIn(50,entries['run:11']['reject_values'].values())
+        self.assertEqual([run['DepalletID'] for run in runs],[10,11])
+        self.assertEqual(cutoff,time(8))
+        self.assertTrue(any('DepalletDate=?' in sql for sql,_ in conn.sql))
+
     def test_edit_reloads_values_and_uses_validation_view(self):
         conn=MemoryConnection(existing=True)
         context=read_context(conn.cursor(),LOT,date(2026,9,23))
@@ -214,22 +454,22 @@ class DepalletTests(unittest.TestCase):
     def test_editable_depallet_lot_never_modifies_production(self):
         conn=MemoryConnection(); before=copy.deepcopy(conn.db['lots'])
         save_depallet(conn,7,RAW)
-        self.assertEqual(conn.db['depallets'][0]['LotNo'],'STORED-LOT-01')
+        self.assertEqual(conn.db['depallets'][0]['LotNo'],LOT['LotNo'])
         self.assertEqual(conn.db['depallets'][0]['ProductionID'],7)
         self.assertEqual(conn.db['lots'],before)
         self.assertFalse(any(('UPDATE dbo.Production' in sql or 'DepalletPISLog' in sql) for sql,_ in conn.sql))
 
-    def test_repeat_save_updates_instead_of_duplicate(self):
+    def test_repeat_create_adds_a_distinct_run_instead_of_upserting(self):
         conn=MemoryConnection()
         save_depallet(conn,7,RAW)
-        save_depallet(conn,7,dict(RAW,Remark='updated'))
-        self.assertEqual(len(conn.db['depallets']),1)
-        self.assertEqual(len(conn.db['rejects']),2)
-        self.assertEqual(conn.db['depallets'][0]['Remark'],'updated')
+        save_depallet(conn,7,dict(RAW,Remark='second run'))
+        self.assertEqual(len(conn.db['depallets']),2)
+        self.assertEqual(len({row['DepalletID'] for row in conn.db['depallets']}),2)
+        self.assertEqual(conn.db['depallets'][1]['Remark'],'second run')
 
     def test_blank_zero_removes_obsolete_reject_rows(self):
         conn=MemoryConnection(existing=True)
-        save_depallet(conn,7,dict(RAW,GoodQty='100',rejects={'R01':'','R99':'0'}))
+        save_depallet(conn,7,dict(EDIT_RAW,GoodQty='100',rejects={'R01':'','R99':'0'}))
         self.assertEqual(conn.db['rejects'],{})
         conn=MemoryConnection()
         save_depallet(conn,7,dict(RAW,GoodQty='100',rejects={'R01':'','R99':'0'}))
@@ -245,7 +485,7 @@ class DepalletTests(unittest.TestCase):
         for change in ({'DepalletQty':'-1'},
                        {'GoodQty':'2.5'},{'DepalletQty':'2147483648'},
                        {'rejects':{'R01':'-1'}},{'rejects':{'R01':'1.5'}},
-                       {'rejects':{'R00':'10'}},{'LotNo':''},{'Shift':''},
+                       {'rejects':{'R00':'10'}},{'Shift':''},
                        {'Remark':'x'*501},{'DepalletDate':'2026-02-30'}):
             with self.subTest(change=change):
                 conn=MemoryConnection()
@@ -264,7 +504,7 @@ class DepalletTests(unittest.TestCase):
                     entered['R01']=str(classified-23)
                     raw=dict(RAW,DepalletQty='3000',GoodQty='2800',rejects=entered)
                     before=copy.deepcopy(raw)
-                    result=save_depallet(conn,7,raw)
+                    result=save_depallet(conn,7,dict(raw,DepalletID=10) if existing else raw)
                     self.assertEqual(conn.commits,1)
                     self.assertEqual(conn.rollbacks,0)
                     self.assertEqual(raw,before)
@@ -297,7 +537,7 @@ class DepalletTests(unittest.TestCase):
                                                 (3000,2800,215,0),
                                                 (3000,2800,200,0),
                                                 (3000,2790,200,10)):
-            result=save_depallet(conn,7,dict(RAW,DepalletQty=str(depallet),GoodQty=str(good),rejects={'R01':str(classified)}))
+            result=save_depallet(conn,7,dict(EDIT_RAW,DepalletQty=str(depallet),GoodQty=str(good),rejects={'R01':str(classified)}))
             self.assertEqual(result['R99'],expected)
             self.assertEqual(conn.db['rejects'][(10,'R01')],classified)
             if expected:
@@ -309,7 +549,7 @@ class DepalletTests(unittest.TestCase):
         for supplied in ('999999','-15','not a quantity',None):
             for classified,expected in ((41,119),(215,0)):
                 conn=MemoryConnection(existing=True)
-                result=save_depallet(conn,7,dict(RAW,DepalletQty='3140',GoodQty='2980',
+                result=save_depallet(conn,7,dict(EDIT_RAW,DepalletQty='3140',GoodQty='2980',
                     rejects={'R01':str(classified),'R99':supplied}))
                 self.assertEqual(result['R99'],expected)
                 self.assertEqual(conn.db['rejects'].get((10,'R99'),0),expected)
@@ -340,7 +580,8 @@ class DepalletTests(unittest.TestCase):
             conn=MemoryConnection(existing=failure.startswith(('UPDATE','DELETE')))
             before=copy.deepcopy(conn.db)
             conn.fail=failure
-            raw=dict(RAW,GoodQty='100',rejects={}) if failure.startswith('DELETE') else RAW
+            raw=dict(EDIT_RAW,GoodQty='100',rejects={}) if failure.startswith('DELETE') else (
+                dict(EDIT_RAW) if conn.work['depallets'] else dict(RAW))
             with self.assertRaises(RuntimeError): save_depallet(conn,7,raw)
             self.assertEqual(conn.db,before); self.assertEqual(conn.work,before)
             self.assertEqual(conn.commits,0); self.assertEqual(conn.rollbacks,1)
@@ -355,15 +596,16 @@ class DepalletTests(unittest.TestCase):
         conn=MemoryConnection(existing=True)
         conn.work['depallets'].append(dict(SAVED,DepalletID=11))
         with self.assertRaisesRegex(ValueError,'Multiple'): read_context(conn.cursor(),LOT,date(2026,9,23))
-        with self.assertRaisesRegex(ValueError,'Multiple'): save_depallet(conn,7,RAW)
-        self.assertEqual(conn.commits,0)
+        added=save_depallet(conn,7,RAW)
+        self.assertNotIn(added['DepalletID'],{10,11})
+        self.assertEqual(len(conn.db['depallets']),3)
 
     def test_inactive_saved_rejects_are_preserved_and_counted(self):
         conn=MemoryConnection(existing=True)
         conn.work['reasons'][0]['IsActive']=False
         context=read_context(conn.cursor(),LOT,date(2026,9,23))
         self.assertEqual(context['inactive_rejects'][0]['Qty'],7)
-        save_depallet(conn,7,dict(RAW,rejects={}))
+        save_depallet(conn,7,dict(EDIT_RAW,rejects={}))
         self.assertEqual(conn.db['rejects'][(10,'R01')],7)
         self.assertEqual(conn.db['rejects'][(10,'R99')],3)
 
@@ -378,7 +620,8 @@ class DepalletTests(unittest.TestCase):
             self.assertEqual(json.loads(response.body)['message'],'Depallet data saved.')
 
     def test_save_route_parses_dynamic_reject_fields(self):
-        body=urlencode(dict(depallet_date='2026-09-23',shift='2',lot_no='OTHER',depallet_qty='1',good_qty='0',reject_R99='99999')).encode()
+        body=urlencode(dict(depallet_date='2026-09-23',shift='2',lot_no='OTHER',start='20:00',end='21:00',
+                    depallet_qty='1',good_qty='0',reject_R99='99999')).encode()
         async def receive(): return {'type':'http.request','body':body,'more_body':False}
         req=Request({'type':'http','method':'POST','path':'/lots/7/depallet','headers':[(b'content-type',b'application/x-www-form-urlencoded')]},receive)
         conn=MemoryConnection()
@@ -400,29 +643,17 @@ class DepalletTests(unittest.TestCase):
     def test_depallet_grid_and_dynamic_grouped_detail(self):
         conn=MemoryConnection(existing=True)
         conn.work['depallets'][0]['DepalletDate']=LOT['ProdDate']
-        conn.work['rejects'][(10,'R01')]=15  # Over-classified: summary must still show physical 10.
         response=self.render_lot(conn,LOT)
         text=response.body.decode()
         grid=re.search(r'<table[^>]*id="depallet-lots".*?</table>',text,re.S)[0]
         self.assertEqual(re.findall(r'<th scope="col">(.*?)</th>',grid),
-                         ['Lot No.','Shift','Depallet Qty','Good Qty','Reject Qty','Remark'])
-        self.assertNotIn('R99',grid)
-        self.assertNotIn('reject_R01',grid)
-        self.assertIn('<output data-physical-reject>10</output>',grid)
-        self.assertIn('aria-selected="true"',grid)
-        detail=re.search(r'<div id="depallet-detail">(.*?)<div class="depallet-totals"',text,re.S)[1]
-        self.assertEqual(detail.count('data-reject-code='),24)
-        for reason in REASONS:
-            self.assertIn(reason['ReasonNameTH'],detail)
-        for code in CODES[:-1]:
-            tag=re.search(r'<input id="reject-'+code+r'"[^>]*>',detail)[0]
-            self.assertIn('name="reject_'+code+'"',tag)
-            self.assertNotIn('readonly',tag)
-        r99=re.search(r'<input id="depallet-r99"[^>]*>',detail)[0]
-        self.assertIn('readonly',r99)
-        self.assertIn('value="0"',r99)
-        self.assertNotIn('name=',r99)
-        self.assertNotIn('data-reject-code',r99)
+                         ['Select','Lot No.','Product','Shift','Start','End','Produced Qty','Already Depalleted','Remaining Curing','Depallet Qty','Good Qty','Remark'])
+        self.assertIn('data-selected="true"',grid)
+        self.assertIn('data-production-qty="10000"',grid)
+        self.assertIn('Qty/Day',text)
+        self.assertIn('data-daily-total',text)
+        self.assertIn('data-reject-code',text)
+        self.assertIn('rejects.replaceChildren()',text)
 
     def test_compact_reject_groups_preserve_vertical_code_order_and_dynamic_names(self):
         conn=MemoryConnection(existing=True)
@@ -433,24 +664,11 @@ class DepalletTests(unittest.TestCase):
             reason['ReasonNameTH']='Dynamic long reason '+reason['ReasonCode']+' '+('wrapped text '*12)
             if reason['ReasonCode']=='R01': reason['IsActive']=False
         text=self.render_lot(conn,LOT).body.decode()
-        detail=re.search(r'<div id="depallet-detail">(.*?)<div class="depallet-totals"',text,re.S)[1]
-        groups=re.findall(r'<table[^>]*data-reject-group="([123])"[^>]*>(.*?)</table>',detail,re.S)
-        self.assertEqual([key for key,_ in groups],['1','2','3'])
-        expected=[CODES[:10],CODES[10:20],CODES[20:]]
-        for (_,group),codes in zip(groups,expected):
-            body=re.search(r'<tbody>(.*?)</tbody>',group,re.S)[1]
-            self.assertEqual(re.findall(r'<tr[^>]*><td>(R[0-9]+)</td>',body),codes)
-            self.assertLessEqual(body.count('<tr'),10)
-            self.assertEqual(re.findall(r'<th scope="col">(.*?)</th>',group),['Code','Reject Reason','Qty'])
-        self.assertEqual(detail.count('id="depallet-r99"'),1)
-        self.assertEqual(detail.count('data-reject-code='),24)
-        for reason in conn.work['reasons']:
-            self.assertIn(reason['ReasonNameTH'],detail)
-        self.assertIn('readonly',re.search(r'<input id="reject-R01"[^>]*>',detail)[0])
-        for rule in ('#depallet-detail{width:900px}', 'grid-template-columns:repeat(3,296px);gap:6px;',
-                     '.reject-code-column{width:50px}', '.reject-reason-column{width:185px}',
-                     '.reject-qty-column{width:60px}', '-webkit-line-clamp:2', 'overflow-wrap:anywhere',
-                     '#depallet-detail input{width:100%;max-width:100%;min-width:0;height:21px;'):
+        self.assertIn("for (const text of ['Code','Reject Reason','Qty','Qty/Day'])",text)
+        self.assertIn('data-daily-total',text)
+        for rule in ('#depallet-detail{max-width:900px}', '.reject-code-column{width:38px}',
+                     '.reject-reason-column{width:auto}', '.reject-qty-column{width:50px}',
+                     '.reject-day-column{width:58px}', '-webkit-line-clamp:2', 'overflow-wrap:anywhere'):
             self.assertIn(rule,text)
 
     def test_depallet_filters_date_selects_lot_and_loads_correct_detail(self):
@@ -458,23 +676,24 @@ class DepalletTests(unittest.TestCase):
         lots=[dict(LOT,ProdDate=date(2026,9,23)),dict(LOT,ProductionID=8,LotNo='OTHER',ProdDate=date(2026,9,23)),
               dict(LOT,ProductionID=9,LotNo='WRONG-DATE',ProdDate=date(2026,9,22))]
         conn.work['lots']=lots
-        with patch('app.main.get_connection',return_value=conn),patch('app.main.read_lots',return_value=lots):
+        for item in lots:
+            conn.work['balances'][item['ProductionID']]=dict(ProductionID=item['ProductionID'],ProductionQty=1000,
+                DepalletQtyTotal=0,RemainingCuringQty=1000)
+        with patch('app.main.get_connection',return_value=conn):
             response=depallet_page(request(),production_date=date(2026,9,23),production_id=8)
         self.assertEqual(response.status_code,200)
-        self.assertEqual([lot['ProductionID'] for lot in response.context['lots']],[7,8])
+        self.assertEqual([lot['ProductionID'] for lot in response.context['lots']],[8,7,9])
         self.assertEqual(response.context['current']['ProductionID'],8)
-        self.assertEqual(response.context['reject_values'],{})
-        self.assertNotIn(b'WRONG-DATE',response.body)
-        self.assertIn(b'REJECT DETAIL - OTHER',response.body)
-        self.assertIn(b'action="/lots/8/depallet"',response.body)
-        self.assertIn(b'name="production_id" value="8"',response.body)
+        self.assertIn(b'WRONG-DATE',response.body)
+        self.assertIn(b'action="/depallet/save"',response.body)
+        self.assertIn(b'id="depallet-production-lot"',response.body)
         self.assertEqual(conn.commits,0)
 
     def test_selected_lot_save_reload_and_repeat_update_on_depallet_page(self):
         conn=MemoryConnection()
         lot=dict(LOT,ProdDate=date(2026,9,23))
         for qty in (7,15):
-            payload=urlencode(dict(depallet_date='2026-09-23',shift='2',lot_no=lot['LotNo'],
+            payload=urlencode(dict(depallet_date='2026-09-23',shift='2',lot_no=lot['LotNo'],start='20:00',end='21:00',
                                    depallet_qty='100',good_qty='90',remark='saved',
                                    reject_R01=str(qty),reject_R99='999')).encode()
             async def receive(): return {'type':'http.request','body':payload,'more_body':False}
@@ -487,21 +706,23 @@ class DepalletTests(unittest.TestCase):
             self.assertEqual(page.context['active_tab'],'depallet')
             self.assertEqual(page.context['production_date'],date(2026,9,23))
             self.assertEqual(page.context['current']['ProductionID'],7)
-            self.assertEqual(page.context['reject_values']['R01'],qty)
-            self.assertEqual(page.context['depallet']['R99'],max(10-qty,0))
-            self.assertEqual(page.context['depallet']['PhysicalRejectQty'],10)
-        self.assertEqual(len(conn.db['depallets']),1)
+            run_key='run:'+str(max(row['DepalletID'] for row in page.context['runs']))
+            entry=page.context['entries'][run_key]
+            self.assertEqual(entry['reject_values']['R01'],qty)
+            self.assertEqual(entry['depallet']['R99'],max(10-qty,0))
+            self.assertEqual(entry['depallet']['PhysicalRejectQty'],10)
+        self.assertEqual(len(conn.db['depallets']),2)
         self.assertEqual(conn.commits,2)
-        self.assertNotIn((10,'R99'),conn.db['rejects'])
-        self.assertEqual(conn.db['lots'],[LOT])
+        self.assertNotIn((11,'R99'),conn.db['rejects'])
+        self.assertFalse(any('UPDATE dbo.ProductionLot' in sql for sql,_ in conn.sql))
 
     def test_depallet_load_errors_do_not_render_editable_grid(self):
         conn=MemoryConnection(existing=True)
         conn.work['depallets'].append(dict(SAVED,DepalletID=11))
         response=self.render_lot(conn,dict(LOT,ProdDate=SAVED['DepalletDate']))
-        self.assertEqual(response.status_code,400)
-        self.assertIn(b'Multiple Depallet records',response.body)
-        self.assertNotIn(b'id="depallet-input"',response.body)
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(len(response.context['runs']),2)
+        self.assertIn(b'id="depallet-input"',response.body)
         with patch('app.main.get_connection',side_effect=RuntimeError('private')):
             response=depallet_page(request())
         self.assertEqual(response.status_code,503)

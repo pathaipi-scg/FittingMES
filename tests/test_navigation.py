@@ -2,7 +2,7 @@ import asyncio
 import html
 import re
 import unittest
-from datetime import date
+from datetime import date, time
 from unittest.mock import MagicMock, patch
 from urllib.parse import urlencode, urlsplit
 from test_prod_api import get_page
@@ -16,6 +16,9 @@ class NavigationTests(unittest.TestCase):
              patch('app.main.read_plans',return_value=[dict(PLAN)]), \
              patch('app.main.read_production_data',return_value={}), \
              patch('app.main.read_depallet_context',return_value={}), \
+             patch('app.main.read_curing_lots',return_value=[]), \
+             patch('app.main.read_products',return_value=[]), \
+             patch('app.main.read_daily_work',return_value=({},[],[],{},time(8))), \
              patch('app.main.read_prod_records',return_value=[]), \
              patch('app.main.read_usage_context',return_value=dict(lots=[],shifts=[],daily=[])):
             status,body=asyncio.run(get_page(path,query))
