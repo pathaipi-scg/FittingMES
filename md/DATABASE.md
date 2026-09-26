@@ -325,6 +325,17 @@ Difference          = PhysicalRejectQty - ClassifiedRejectQty
 R99                 = MAX(Difference, 0)
 ```
 
+For every new or edited run, `GoodQty` must not exceed `DepalletQty` and
+`ClassifiedRejectQty` must not exceed `PhysicalRejectQty`. A classified
+overage is rejected server-side; it is not saved with a negative
+difference. R99 is always derived as
+`PhysicalRejectQty - ClassifiedRejectQty` after validation and is never
+accepted as an operator-entered value. The saved invariant is:
+
+``` text
+GoodQty + SUM(R01 ... R24) + R99 = DepalletQty
+```
+
 Rules:
 
 -   Client-provided `R99` must not be trusted.
@@ -333,7 +344,7 @@ Rules:
 -   If calculated `R99 > 0`, upsert the normalized R99 row.
 -   If calculated `R99 = 0`, delete any stale R99 row.
 -   If classified reject is greater than physical reject, saving is
-    allowed with a warning; `R99 = 0`.
+    blocked; the UI shows a validation error and displays `R99 = 0`.
 -   No PIS compensation logic should be invented.
 
 ### `dbo.RejectReasonMaster`

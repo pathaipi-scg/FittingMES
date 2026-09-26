@@ -30,6 +30,7 @@ class Element {
   getAttribute(key) { return this.attrs[key]; }
   addEventListener(name, callback) { this.handlers[name] = callback; }
   matches(selector) {
+    if (/^[a-z]+$/.test(selector)) return this.tag === selector;
     const match = selector.match(/^(?:([a-z]+))?\[data-([\w-]+)(?:=["']?([^"'\]]+)["']?)?\]$/);
     if (!match) return false;
     const key = match[2].replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
@@ -54,7 +55,7 @@ class Element {
 const ids = ['depallet-input','depallet-fields','depallet-date','depallet-family','depallet-product',
   'depallet-production-lot','create-depallet-lot','depallet-rejects','save-depallet',
   'reject-detail-title','depallet-status','depallet-warning','depallet-reject-qty','depallet-difference',
-  'depallet-balance','depallet-lots-data','depallet-products-data','depallet-entries','depallet-runs-data',
+  'depallet-total-reject','depallet-balance','depallet-lots-data','depallet-products-data','depallet-entries','depallet-runs-data',
   'depallet-reasons-data','depallet-daily-totals','depallet-day-start-time'];
 const nodes = Object.fromEntries(ids.map(id => [id, new Element(id.includes('select') || id.includes('family') || id.includes('product') ? 'select' : 'div')]));
 const body = new Element('tbody');
@@ -70,7 +71,7 @@ const products = [
   {ProductFamily:'NeuFit / NeuStile',ProductCode:'07',ProductName:'Angle Ridge'},
   {ProductFamily:'Oriental',ProductCode:'06',ProductName:'Other Eaves'}
 ];
-const reasonList = ['R01','R02','R99'].map((ReasonCode,index) => ({ReasonCode,ReasonNameTH:'Reason '+ReasonCode,SortOrder:index,IsActive:true}));
+const reasonList = ['R01','R02','R03','R99'].map((ReasonCode,index) => ({ReasonCode,ReasonNameTH:'Reason '+ReasonCode,SortOrder:index,IsActive:true}));
 const entry = id => ({depallet:{ProductionID:id,DepalletID:null,DepalletQty:'',GoodQty:'',Shift:'1',Remark:'',R99:0},
   reject_values:{},original_reject_values:{},original_r99:0,inactive_rejects:[]});
 const entries = Object.fromEntries(lots.map(item => [String(item.ProductionID),entry(item.ProductionID)]));
@@ -119,14 +120,52 @@ vm.runInNewContext(source, {document,window,URL,Intl,fetch:async (url,options) =
   assert.match(nodes['depallet-warning'].textContent,/800 exceeds Remaining Curing Qty 500.*adjusted to 500/);
   lotChoice.value = '101'; create.handlers.click(); assert.equal(body.children.length,2,'same ProductionID may be added again as another run');
   const secondFirstLotRun = body.children[1];
-  field(secondFirstLotRun,'depallet_qty').value = '100'; field(secondFirstLotRun,'good_qty').value = '90';
+  field(secondFirstLotRun,'depallet_qty').value = '300'; field(secondFirstLotRun,'good_qty').value = '290';
   field(secondFirstLotRun,'start').value = '21:00'; field(secondFirstLotRun,'end').value = '22:00';
   const allInputs = () => nodes['depallet-rejects'].querySelectorAll('[data-reject-code]');
   const reject = code => allInputs().find(input => input.dataset.rejectCode === code);
-  reject('R01').value = '5'; body.handlers.input({target:reject('R01')});
+  const r99 = nodes['depallet-rejects'].querySelectorAll('input').find(input => input.id === 'depallet-r99');
+  assert.equal(r99.readOnly,true,'R99 is system-calculated and read-only');
+  reject('R01').value = '3'; nodes['depallet-rejects'].handlers.input({target:reject('R01')});
+  reject('R02').value = '3'; nodes['depallet-rejects'].handlers.input({target:reject('R02')});
+  assert.equal(nodes['depallet-reject-qty'].value,'6');
+  assert.equal(nodes['depallet-total-reject'].value,'10');
+  assert.equal(nodes['depallet-difference'].value,'4');
+  assert.equal(r99.value,'4');
+  assert.equal(nodes['depallet-rejects'].querySelectorAll('[data-daily-total="R01"]')[0].textContent,11);
+  assert.notEqual(nodes['depallet-reject-qty'].value,
+    nodes['depallet-rejects'].querySelectorAll('[data-daily-total="R01"]')[0].textContent,
+    'Qty/Day must not be included in selected-run Classified Reject');
+  reject('R02').value = '7'; nodes['depallet-rejects'].handlers.input({target:reject('R02')});
+  assert.equal(nodes['depallet-reject-qty'].value,'10');
+  assert.equal(r99.value,'0');
+  field(secondFirstLotRun,'good_qty').value = '289'; body.handlers.input({target:field(secondFirstLotRun,'good_qty')});
+  assert.equal(nodes['depallet-total-reject'].value,'11');
+  assert.equal(nodes['depallet-difference'].value,'1','Good Qty changes Total Reject and R99 immediately');
+  field(secondFirstLotRun,'depallet_qty').value = '301'; body.handlers.input({target:field(secondFirstLotRun,'depallet_qty')});
+  assert.equal(nodes['depallet-total-reject'].value,'12');
+  assert.equal(nodes['depallet-difference'].value,'2','Depallet Qty changes Total Reject and R99 immediately');
+  field(secondFirstLotRun,'depallet_qty').value = '300'; body.handlers.input({target:field(secondFirstLotRun,'depallet_qty')});
+  field(secondFirstLotRun,'good_qty').value = '290'; body.handlers.input({target:field(secondFirstLotRun,'good_qty')});
+  reject('R02').value = '3'; nodes['depallet-rejects'].handlers.input({target:reject('R02')});
+  reject('R03').value = '5'; nodes['depallet-rejects'].handlers.input({target:reject('R03')});
+  assert.equal(nodes['depallet-reject-qty'].value,'11');
+  assert.equal(nodes['depallet-difference'].value,'-1');
+  assert.equal(r99.value,'0');
+  assert.match(nodes['depallet-balance'].value,/Classified Reject 11 exceeds Total Reject 10/);
+  assert.equal(nodes['save-depallet'].disabled,true);
+  const beforeInvalidSubmit=requests.length;
+  await form.handlers.submit({preventDefault(){}});
+  assert.equal(requests.length,beforeInvalidSubmit,'invalid classification blocks SAVE');
+  reject('R03').value = ''; reject('R02').value = '3';
+  nodes['depallet-rejects'].handlers.input({target:reject('R03')});
+  assert.equal(nodes['depallet-reject-qty'].value,'6');
+  assert.equal(nodes['depallet-difference'].value,'4');
+  assert.equal(r99.value,'4');
+  reject('R01').value = '5'; nodes['depallet-rejects'].handlers.input({target:reject('R01')});
   assert.equal(nodes['depallet-rejects'].querySelectorAll('[data-daily-total="R01"]')[0].textContent,13);
-  assert.equal(nodes['depallet-reject-qty'].value,'5');
-  assert.equal(nodes['depallet-rejects'].querySelectorAll('[data-daily-total="R99"]')[0].textContent,56);
+  assert.equal(nodes['depallet-reject-qty'].value,'8');
+  assert.equal(nodes['depallet-rejects'].querySelectorAll('[data-daily-total="R99"]')[0].textContent,53);
 
   lotChoice.value = '100'; lotChoice.handlers.change(); create.handlers.click();
   assert.equal(body.children.length,3);
@@ -142,8 +181,10 @@ vm.runInNewContext(source, {document,window,URL,Intl,fetch:async (url,options) =
   assert.equal(nodes['reject-detail-title'].textContent,'REJECT DETAIL - NEW-R2 / NEW RUN');
   assert.equal(reject('R01').value,'5','rejects stay isolated by unsaved run key');
 
+  field(first,'good_qty').value = '500';
+  field(secondFirstLotRun,'good_qty').value = '292';
+  field(third,'good_qty').value = '196';
   for (const row of body.children) {
-    field(row,'good_qty').value = '400';
     field(row,'start').value ||= '20:00'; field(row,'end').value ||= '21:00';
   }
   let prevented = false;

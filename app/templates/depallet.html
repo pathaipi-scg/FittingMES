@@ -62,7 +62,7 @@
 </section>
 <section class="panel"><h2 id="reject-detail-title">REJECT DETAIL</h2>
 <div id="depallet-detail"><div id="depallet-rejects"></div></div>
-<div class="depallet-totals" aria-live="polite"><span>Classified Reject: <output id="depallet-reject-qty"></output></span><span>Difference: <output id="depallet-difference"></output></span><output id="depallet-balance"></output></div>
+<div class="depallet-totals" aria-live="polite"><span>Total Reject: <output id="depallet-total-reject"></output></span><span>Classified Reject: <output id="depallet-reject-qty"></output></span><span>Difference: <output id="depallet-difference"></output></span><output id="depallet-balance"></output></div>
 <div class="depallet-controls"><button id="save-depallet" class="primary" type="submit">SAVE DEPALLET</button><span id="depallet-status" role="status" aria-live="polite"></span></div>
 </section></fieldset></form>
 <script id="depallet-lots-data" type="application/json">{{ lots_json|tojson }}</script>
@@ -96,7 +96,8 @@
   const dailyTotals = JSON.parse(document.getElementById('depallet-daily-totals').textContent);
   const dayStartTime = JSON.parse(document.getElementById('depallet-day-start-time').textContent);
   const manualCode = /^R(0[1-9]|1[0-9]|2[0-4])$/;
-  const outputs = {classified:document.getElementById('depallet-reject-qty'),
+  const outputs = {totalReject:document.getElementById('depallet-total-reject'),
+    classified:document.getElementById('depallet-reject-qty'),
     difference:document.getElementById('depallet-difference'),r99:null,balance:document.getElementById('depallet-balance')};
   let selectedRow = null, busy = false, nextRunKey = 1;
 
@@ -268,7 +269,8 @@
   }
   function calculateSelected() {
     if (!selectedRow) {
-      for (const output of [outputs.classified,outputs.difference,outputs.balance]) output.value = '';
+      for (const output of [outputs.totalReject,outputs.classified,outputs.difference,outputs.balance]) output.value = '';
+      saveButton.disabled = true;
       return false;
     }
     const rowFields = fields(selectedRow), depalletQty = rowFields.depallet_qty.value.trim(), goodQty = rowFields.good_qty.value.trim();
@@ -276,15 +278,31 @@
     const values = Array.from(rejects.querySelectorAll('[data-reject-code]'))
       .filter(input => manualCode.test(input.dataset.rejectCode)).map(input => input.value.trim() === '' ? 0 : isQty(input.value.trim()) ? Number(input.value) : null);
     if (!isQty(depalletQty) || !isQty(goodQty) || values.includes(null)) {
-      outputs.classified.value = ''; outputs.difference.value = ''; outputs.r99.value = '';
-      outputs.balance.value = 'ENTER VALID QUANTITIES'; outputs.balance.dataset.balanced = 'false'; return false;
+      outputs.totalReject.value = ''; outputs.classified.value = ''; outputs.difference.value = ''; outputs.r99.value = '';
+      outputs.balance.value = 'ENTER VALID QUANTITIES'; outputs.balance.dataset.balanced = 'false';
+      saveButton.disabled = true; return false;
+    }
+    if (Number(goodQty) > Number(depalletQty)) {
+      outputs.totalReject.value = String(Number(depalletQty)-Number(goodQty));
+      outputs.classified.value = '';
+      outputs.difference.value = '';
+      outputs.r99.value = '0';
+      outputs.balance.value = `Good Qty ${goodQty} exceeds Depallet Qty ${depalletQty}.`;
+      outputs.balance.dataset.balanced = 'false';
+      saveButton.disabled = true; return false;
     }
     const classified = values.reduce((sum,value) => sum + value,0);
-    const difference = Number(depalletQty) - Number(goodQty) - classified;
+    const totalReject = Number(depalletQty) - Number(goodQty);
+    const difference = totalReject - classified;
+    outputs.totalReject.value = String(totalReject);
     outputs.classified.value = String(classified); outputs.difference.value = String(difference);
     outputs.r99.value = String(Math.max(difference,0));
-    outputs.balance.value = difference === 0 ? 'All physical rejects classified.' : difference > 0 ? `R99 other = ${Math.max(difference,0)}` : `Classified reject exceeds physical reject by ${-difference}. Save is allowed.`;
-    outputs.balance.dataset.balanced = String(difference >= 0); return true;
+    if (difference < 0) {
+      outputs.balance.value = `Classified Reject ${classified} exceeds Total Reject ${totalReject}.`;
+      outputs.balance.dataset.balanced = 'false'; saveButton.disabled = true; return false;
+    }
+    outputs.balance.value = difference === 0 ? 'All physical rejects classified.' : `R99 other = ${difference}`;
+    outputs.balance.dataset.balanced = 'true'; saveButton.disabled = false; return true;
   }
   function updateDailyDisplays() {
     rememberRejects(); const daily = totalsForDay();
@@ -357,7 +375,14 @@
     if (event.target.dataset.rejectCode) { updateDailyDisplays(); calculateSelected(); }
     updateMoveButtons();
   });
-  rejects.addEventListener('input', updateMoveButtons);
+  rejects.addEventListener('input', event => {
+    if (event.target.matches('[data-reject-code]')) {
+      rememberRejects();
+      calculateSelected();
+      updateDailyDisplays();
+    }
+    updateMoveButtons();
+  });
   async function moveRun(row, direction) {
     if (!row || busy) return;
     const hasDraftRun = tableBody.querySelector('[data-saved="false"]');
@@ -383,6 +408,10 @@
   form.addEventListener('submit', async event => {
     event.preventDefault(); if (busy) return;
     rememberRejects();
+    if (!calculateSelected()) {
+      setMessage('error',outputs.balance.value || 'Correct the selected run quantities before saving.');
+      return;
+    }
     const items = [], submittedRunKeys = [];
     for (const row of tableBody.querySelectorAll('[data-production-id]')) {
       const rowFields = fields(row), state = entryFor(row.dataset.runKey);

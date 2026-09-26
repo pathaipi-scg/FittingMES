@@ -562,7 +562,7 @@ class DepalletTests(unittest.TestCase):
         conn.work['balances'][7]=dict(ProductionID=7,ProductionQty=1050,DepalletQtyTotal=1050,RemainingCuringQty=0)
         conn.work['rejects']={(10,'R01'):5,(12,'R02'):6,(14,'R03'):7}
         edit=dict(DepalletID=10,DepalletDate='2026-09-23',Shift='2',LotNo='A',Start='',End='',
-            DepalletQty='500',GoodQty='500',Remark='changed',rejects={'R01':'5'})
+            DepalletQty='500',GoodQty='495',Remark='changed',rejects={'R01':'5'})
         save_depallet(conn,7,edit)
         self.assertEqual([(r['DepalletID'],r['DepalletQty']) for r in conn.db['depallets']],[(10,500),(12,200),(14,250)])
         self.assertEqual(conn.db['rejects'],{(10,'R01'):5,(12,'R02'):6,(14,'R03'):7})
@@ -633,9 +633,9 @@ class DepalletTests(unittest.TestCase):
                 self.assertEqual(conn.commits,0)
                 self.assertEqual(conn.rollbacks,1)
 
-    def test_unbalanced_save_preserves_raw_reasons_on_insert_and_update(self):
+    def test_valid_classified_reject_totals_and_r99_preserve_manual_reasons(self):
         for existing in (False, True):
-            for classified, difference in ((175, 25), (215, -15)):
+            for classified, difference in ((175, 25), (200, 0)):
                 with self.subTest(existing=existing, classified=classified):
                     conn=MemoryConnection(existing=existing)
                     # Exercise every operator-classified raw code.
@@ -654,10 +654,21 @@ class DepalletTests(unittest.TestCase):
                     self.assertEqual(result['PhysicalRejectQty'],200)
                     self.assertEqual(result['ClassifiedRejectQty'],classified)
                     self.assertEqual(result['DifferenceQty'],difference)
-                    self.assertFalse(result['IsBalanced'])
+                    self.assertEqual(result['IsBalanced'],difference==0)
                     loaded=read_context(conn.cursor(),LOT,date(2026,9,23))
                     self.assertEqual(loaded['depallet']['DifferenceQty'],difference)
                     self.assertEqual(loaded['reject_values'],{code:int(qty) for code,qty in entered.items()})
+
+    def test_overclassified_rejects_are_blocked_on_insert_and_edit(self):
+        for existing in (False,True):
+            conn=MemoryConnection(existing=existing)
+            before=copy.deepcopy(conn.db)
+            raw=dict(RAW,DepalletQty='300',GoodQty='290',rejects={'R01':'6','R02':'5'})
+            if existing: raw['DepalletID']=10
+            with self.subTest(existing=existing), self.assertRaisesRegex(ValueError,'Classified Reject 11 exceeds Total Reject 10'):
+                save_depallet(conn,7,raw)
+            self.assertEqual(conn.db,before)
+            self.assertEqual(conn.commits,0)
 
     def test_positive_difference_stores_calculated_r99(self):
         conn=MemoryConnection()
@@ -673,7 +684,6 @@ class DepalletTests(unittest.TestCase):
         # Even an inactive R99 master must not preserve stale stored R99.
         conn.work['reasons'][-1]['IsActive']=False
         for depallet,good,classified,expected in ((3140,2980,41,119),
-                                                (3000,2800,215,0),
                                                 (3000,2800,200,0),
                                                 (3000,2790,200,10)):
             result=save_depallet(conn,7,dict(EDIT_RAW,DepalletQty=str(depallet),GoodQty=str(good),rejects={'R01':str(classified)}))
@@ -686,7 +696,7 @@ class DepalletTests(unittest.TestCase):
 
     def test_client_r99_is_ignored(self):
         for supplied in ('999999','-15','not a quantity',None):
-            for classified,expected in ((41,119),(215,0)):
+            for classified,expected in ((41,119),(160,0)):
                 conn=MemoryConnection(existing=True)
                 result=save_depallet(conn,7,dict(EDIT_RAW,DepalletQty='3140',GoodQty='2980',
                     rejects={'R01':str(classified),'R99':supplied}))
@@ -702,13 +712,32 @@ class DepalletTests(unittest.TestCase):
         self.assertEqual(conn.work['rejects'][(10,'R99')],999)
         self.assertTrue(all(sql.lstrip().startswith('SELECT') for sql,_ in conn.sql))
 
-    def test_unbalanced_save_response_is_successful(self):
-        for classified in (175,215):
+    def test_overclassified_save_response_is_rejected(self):
+        for classified in (201,215):
             conn=MemoryConnection()
             with patch('app.main.get_connection',return_value=conn):
                 response=save_depallet_response(7,dict(RAW,DepalletQty='3000',GoodQty='2800',rejects={'R01':str(classified)}))
-            self.assertEqual(response.status_code,200)
-            self.assertEqual(json.loads(response.body)['depallet']['DifferenceQty'],200-classified)
+            self.assertEqual(response.status_code,400)
+            self.assertIn('exceeds Total Reject',json.loads(response.body)['error'])
+            self.assertEqual(conn.db['depallets'],[])
+
+    def test_server_derives_r99_and_enforces_final_quantity_identity(self):
+        cases=[('300','290',{'R01':'3','R02':'3','R99':'999'},6,4),
+               ('300','290',{'R01':'10','R99':'-300'},10,0)]
+        for depallet,good,rejects,classified,r99 in cases:
+            conn=MemoryConnection()
+            result=save_depallet(conn,7,dict(RAW,DepalletQty=depallet,GoodQty=good,rejects=rejects))
+            stored=conn.db['rejects']
+            total=sum(qty for (run_id,code),qty in stored.items() if run_id==result['DepalletID'] and code in CODES)
+            self.assertEqual(stored.get((result['DepalletID'],'R99'),0),r99)
+            self.assertEqual(int(good)+total,int(depallet))
+            self.assertEqual(result['ClassifiedRejectQty'],classified)
+
+    def test_good_qty_cannot_exceed_depallet_qty(self):
+        conn=MemoryConnection()
+        with self.assertRaisesRegex(ValueError,'Good Qty cannot exceed Depallet Qty'):
+            save_depallet(conn,7,dict(RAW,DepalletQty='300',GoodQty='301',rejects={}))
+        self.assertEqual(conn.db['depallets'],[])
 
     def test_zero_quantity_safe(self):
         data,rejects=validate(dict(RAW,DepalletQty='0',GoodQty='0',rejects={}),CODES)
@@ -846,7 +875,7 @@ class DepalletTests(unittest.TestCase):
     def test_selected_lot_save_reload_and_repeat_update_on_depallet_page(self):
         conn=MemoryConnection()
         lot=dict(LOT,ProdDate=date(2026,9,23))
-        for qty in (7,15):
+        for qty in (7,10):
             payload=urlencode(dict(depallet_date='2026-09-23',shift='2',lot_no=lot['LotNo'],start='20:00',end='21:00',
                                    depallet_qty='100',good_qty='90',remark='saved',
                                    reject_R01=str(qty),reject_R99='999')).encode()

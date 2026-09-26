@@ -231,8 +231,14 @@ def validate(raw, active_codes, retained=None):
     data = dict(DepalletDate=depallet_date, Shift=shift, LotNo=lot_no,
                 DepalletQty=quantity(raw.get('DepalletQty'), 'Depallet Qty'),
                 GoodQty=quantity(raw.get('GoodQty'), 'Good Qty'), Remark=remark)
+    if data['GoodQty'] > data['DepalletQty']:
+        raise ValueError('Good Qty cannot exceed Depallet Qty.')
+    total_reject = data['DepalletQty'] - data['GoodQty']
+    classified = sum(qty for code, qty in rejects.items() if code in MANUAL_CODES)
+    if classified > total_reject:
+        raise ValueError(f'Classified Reject {classified} exceeds Total Reject {total_reject}.')
     # R99 is derived independently of any client or previously stored value.
-    r99 = summary(data['DepalletQty'], data['GoodQty'], rejects)['R99']
+    r99 = total_reject - classified
     if r99:
         rejects['R99'] = r99
     return data, rejects
