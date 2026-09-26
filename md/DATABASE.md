@@ -228,6 +228,11 @@ Current UI concepts include:
 -   ProductionID and its Production Lot identity
 -   One row per depallet run, identified by `DepalletID`; a ProductionID
     can have multiple runs on one Production Date, including the same shift.
+-   `RunSequence` is the operator-controlled operational order scoped to
+    `DepalletDate`, not to ProductionID or Shift. A unique index enforces
+    `(DepalletDate, RunSequence)` and a check requires positive values.
+-   `DepalletID` remains permanent when RunSequence changes; reject rows
+    continue referencing DepalletID.
 -   Nullable `StartDateTime` and `EndDateTime` as `datetime2(3)` calendar
     values. Existing historical rows remain NULL until explicitly edited;
     their times must not be inferred or backfilled.
@@ -236,8 +241,13 @@ Current UI concepts include:
 -   Remark
 
 Each saved run is edited by its `DepalletID`. A save without an existing
-`DepalletID` inserts a new run and must never upsert solely by
-ProductionID, Production Date, or Shift.
+`DepalletID` inserts a new run with `MAX(RunSequence)+1` for its selected
+Production Date and must never upsert solely by ProductionID, Production
+Date, or Shift. Migration `008_depallet_run_sequence.sql` backfills
+previously unsequenced rows in `DepalletDate, DepalletID` order without
+changing identities, quantities, rejects, dates, shifts, or timestamps.
+Reorder swaps/resequences run positions transactionally; it does not
+change operational values or reject ownership.
 
 ### `dbo.ProductionDayRuleHistory`
 
@@ -260,10 +270,13 @@ map an earlier clock to the following calendar date. Thus 2026-09-26 at
 rule for historical dates or use GETDATE() to infer these calendar
 dates. Historical NULL time columns remain valid and display as blank.
 
-For saved rows, “Already Depalleted” and “Remaining Curing” are displayed
-immediately before that run, using earlier Depallet Dates and then lower
-DepalletIDs on the same date. Selector balances and server write guards
-continue to use the all-history `vw_DepalletCuringBalance` contract.
+For saved rows, “Already Depalleted” is the sum of quantities on earlier
+Production Dates and earlier RunSequence values on the same date for the
+same ProductionID only. “Remaining Curing” is Produced Qty minus that
+before-run sum. Changing RunSequence recalculates those display values
+without changing any saved quantities. Selector balances and server write
+guards continue to use the all-history `vw_DepalletCuringBalance`
+contract.
 
 ### `dbo.vw_DepalletCuringBalance`
 

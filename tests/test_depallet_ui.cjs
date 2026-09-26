@@ -11,6 +11,11 @@ assert.match(html, /Already Depalleted/);
 assert.match(html, /Remaining Curing/);
 assert.match(html, /Qty\/Day/);
 assert.match(html, /#depallet-lots tr\[aria-selected=true\]/);
+assert.match(html, /SEQ \{\{ run\.RunSequence \}\} \/ RUN \{\{ run\.DepalletID \}\}/);
+assert.match(html, /data-move="up"/);
+assert.match(html, /data-move="down"/);
+assert.match(html, /\/depallet\/\$\{row\.dataset\.depalletId\}\/move/);
+assert.match(html, /Save or remove NEW RUN rows before reordering saved runs\./);
 
 class Element {
   constructor(tag = 'div') {

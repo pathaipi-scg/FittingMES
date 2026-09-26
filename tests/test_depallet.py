@@ -5,14 +5,16 @@ import re
 import unittest
 from datetime import date, datetime, time
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlencode
 from starlette.requests import Request
 from app.depallet import (read_context, read_reasons, default_entry, summary, validate, save_depallet,
                           read_curing_lots, read_daily_work, save_depallet_batch, read_day_start_time,
-                          production_clock_datetime, resolve_run_times)
+                          production_clock_datetime, resolve_run_times, reorder_depallet_run)
 from app.main import (load_depallet, save_depallet_route, save_depallet_response, save_depallet_batch_response,
-                      save_depallet_batch_route, production_page, depallet_page)
+                      save_depallet_batch_route, reorder_depallet_route, reorder_depallet_response,
+                      production_page, depallet_page)
 from test_production import LOT, PLAN, DAY, request
 
 CODES = [f'R{i:02d}' for i in range(1,25)] + ['R99']
@@ -22,7 +24,7 @@ RAW = dict(DepalletDate='2026-09-23',Shift='2',LotNo='STORED-LOT-01',Start='20:0
 SAVED = dict(DepalletID=10,ProductionID=7,DepalletDate=date(2026,9,23),Shift='2',LotNo='STORED-LOT-01',
              ProductFamily=None,ProductCode='06',MaterialCode=LOT['MaterialCode'],
              MaterialName=LOT['MaterialName'],DepalletQty=100,GoodQty=90,Remark='บันทึก',
-             StartDateTime=None,EndDateTime=None)
+             StartDateTime=None,EndDateTime=None,RunSequence=1)
 EDIT_RAW = dict(RAW,DepalletID=10)
 
 
@@ -99,13 +101,14 @@ class MemoryCursor:
                 prior_total=sum(item['DepalletQty'] for item in c.work['depallets']
                     if item['ProductionID']==d['ProductionID'] and
                     (item['DepalletDate']<d['DepalletDate'] or
-                     (item['DepalletDate']==d['DepalletDate'] and item['DepalletID']<d['DepalletID'])))
+                     (item['DepalletDate']==d['DepalletDate'] and item['RunSequence']<d['RunSequence'])))
                 product=next((p for p in c.work['products'] if p['ProductFamily']=='NeuFit / NeuStile' and p['ProductCode']==d['ProductCode']),{})
                 result.append(dict(d,**summary(d['DepalletQty'],d['GoodQty'],rejects),
                     ProductionQty=balance.get('ProductionQty',10000),DepalletQtyTotal=total,
                     RemainingCuringQty=max(balance.get('ProductionQty',10000)-total,0),
                     ProductName=product.get('ProductName'),RunNo=lot.get('RunningNo',1),
                     AlreadyDepalletedBeforeRun=prior_total))
+            result.sort(key=lambda d:(d['RunSequence'],d['DepalletID']))
             self.set_rows(result)
         elif 'FROM dbo.DepalletReject r' in sql and 'd.DepalletDate=?' in sql:
             result=[]
@@ -145,6 +148,25 @@ class MemoryCursor:
                 d['ProductionID']==args[1] and d['DepalletDate']==args[2]),None)
             self.set_rows([dict(DepalletID=found['DepalletID'],DepalletQty=found['DepalletQty'],
                 StartDateTime=found.get('StartDateTime'),EndDateTime=found.get('EndDateTime'))] if found else [])
+        elif 'SELECT ISNULL(MAX(RunSequence),0)+1' in sql:
+            target_date=args[0]
+            self.set_rows([{'next':max((d.get('RunSequence',0) for d in c.work['depallets']
+                if d['DepalletDate']==target_date),default=0)+1}])
+        elif 'SELECT ISNULL(MAX(RunSequence),0) FROM dbo.Depallet' in sql:
+            target_date=args[0]
+            self.set_rows([{'max':max((d.get('RunSequence',0) for d in c.work['depallets']
+                if d['DepalletDate']==target_date),default=0)}])
+        elif 'SELECT RunSequence FROM dbo.Depallet WHERE DepalletID=?' in sql:
+            found=next(d for d in c.work['depallets'] if d['DepalletID']==args[0])
+            self.set_rows([{'RunSequence':found['RunSequence']}])
+        elif 'SELECT DepalletID,RunSequence FROM dbo.Depallet WITH' in sql:
+            found=sorted([dict(DepalletID=d['DepalletID'],RunSequence=d['RunSequence'])
+                for d in c.work['depallets'] if d['DepalletDate']==args[0]],
+                key=lambda d:(d['RunSequence'],d['DepalletID']))
+            self.set_rows(found)
+        elif 'UPDATE dbo.Depallet SET RunSequence=?' in sql:
+            row=next(d for d in c.work['depallets'] if d['DepalletID']==args[1] and d['DepalletDate']==args[2])
+            row['RunSequence']=args[0]
         elif 'INSERT INTO dbo.DepalletReject' in sql:
             key=(args[0],args[1])
             if key in c.work['rejects']: raise RuntimeError('duplicate reject')
@@ -155,7 +177,7 @@ class MemoryCursor:
             c.work['rejects'].pop((args[0],args[1]),None)
         elif 'INSERT INTO dbo.Depallet' in sql:
             keys=('ProductionID','DepalletDate','Shift','LotNo','ProductFamily','ProductCode',
-                  'MaterialCode','MaterialName','DepalletQty','GoodQty','Remark','StartDateTime','EndDateTime')
+                  'MaterialCode','MaterialName','DepalletQty','GoodQty','Remark','StartDateTime','EndDateTime','RunSequence')
             next_id=max((d['DepalletID'] for d in c.work['depallets']),default=9)+1
             new=dict(zip(keys,args),DepalletID=next_id)
             c.work['depallets'].append(new); self.set_rows([dict(DepalletID=new['DepalletID'])])
@@ -385,12 +407,23 @@ class DepalletTests(unittest.TestCase):
         self.assertEqual([row['ProductionID'] for row in conn.db['depallets']],[7,8,7])
         self.assertEqual([row['Shift'] for row in conn.db['depallets'] if row['ProductionID']==7],['1','2'])
         self.assertEqual(len({row['DepalletID'] for row in conn.db['depallets']}),3)
+        self.assertEqual([row['RunSequence'] for row in conn.db['depallets']],[1,2,3])
         self.assertEqual(conn.commits,1)
         before=copy.deepcopy(conn.db)
         with self.assertRaisesRegex(ValueError,'run can only be submitted once'):
             save_depallet_batch(conn,'2026-09-23',[dict(items[0],DepalletID=saved[0]['DepalletID']),
                 dict(items[0],DepalletID=saved[0]['DepalletID'])])
         self.assertEqual(conn.db,before)
+
+    def test_new_run_accepts_blank_times_and_appends_date_wide_sequence(self):
+        conn=MemoryConnection()
+        conn.work['depallets']=[dict(SAVED,DepalletID=20,ProductionID=8,
+            DepalletDate=date(2026,9,23),RunSequence=4)]
+        result=save_depallet(conn,7,dict(RAW,Start='',End=''))
+        self.assertEqual(result['RunSequence'],5)
+        self.assertIsNone(result['StartDateTime'])
+        self.assertIsNone(result['EndDateTime'])
+        self.assertEqual(conn.db['depallets'][-1]['RunSequence'],5)
 
     def test_batch_save_route_parses_depallet_date_and_rows(self):
         conn=MemoryConnection()
@@ -431,6 +464,112 @@ class DepalletTests(unittest.TestCase):
         self.assertEqual([run['DepalletID'] for run in runs],[10,11])
         self.assertEqual(cutoff,time(8))
         self.assertTrue(any('DepalletDate=?' in sql for sql,_ in conn.sql))
+
+    def test_run_sequence_migration_has_deterministic_date_scoped_backfill_and_unique_rule(self):
+        migration=Path('sql/008_depallet_run_sequence.sql').read_text(encoding='utf-8')
+        self.assertIn('PARTITION BY DepalletDate ORDER BY DepalletID',migration)
+        self.assertIn('UX_Depallet_DepalletDate_RunSequence',migration)
+        self.assertIn('CHECK (RunSequence > 0)',migration)
+        self.assertIn("COL_LENGTH('dbo.Depallet', 'RunSequence') IS NULL",migration)
+        self.assertNotIn('UPDATE dbo.Depallet SET DepalletID',migration)
+        self.assertNotIn('UPDATE dbo.Depallet SET DepalletQty',migration)
+
+    def test_sequence_reorder_swaps_adjacent_runs_without_changing_run_or_reject_identity(self):
+        conn=MemoryConnection()
+        runs=[
+            dict(SAVED,DepalletID=10,ProductionID=7,RunSequence=1,
+                 StartDateTime=datetime(2026,9,23,20),EndDateTime=datetime(2026,9,23,21)),
+            dict(SAVED,DepalletID=11,ProductionID=8,RunSequence=2),
+            dict(SAVED,DepalletID=12,ProductionID=7,RunSequence=3,
+                 StartDateTime=datetime(2026,9,23,10),EndDateTime=datetime(2026,9,23,11)),
+        ]
+        conn.work['depallets']=copy.deepcopy(runs)
+        conn.work['rejects']={(10,'R01'):5,(12,'R02'):9}
+        result=reorder_depallet_run(conn,date(2026,9,23),12,'up')
+        self.assertTrue(result['moved'])
+        self.assertEqual(result['RunSequence'],2)
+        self.assertEqual([(run['DepalletID'],run['RunSequence']) for run in
+            sorted(conn.db['depallets'],key=lambda row:row['RunSequence'])],[(10,1),(12,2),(11,3)])
+        self.assertEqual(conn.db['rejects'],{(10,'R01'):5,(12,'R02'):9})
+        self.assertEqual({run['DepalletID'] for run in conn.db['depallets']},{10,11,12})
+        self.assertEqual(sum(run['DepalletQty'] for run in conn.db['depallets']),sum(row['DepalletQty'] for row in runs))
+        self.assertEqual(next(row for row in conn.db['depallets'] if row['DepalletID']==12)['StartDateTime'],datetime(2026,9,23,10))
+
+    def test_reorder_http_route_uses_depallet_id_and_persists_direction(self):
+        conn=MemoryConnection()
+        conn.work['depallets']=[dict(SAVED,DepalletID=10,RunSequence=1),dict(SAVED,DepalletID=11,RunSequence=2)]
+        payload=json.dumps({'production_date':'2026-09-23','direction':'up'})
+        async def receive(): return {'type':'http.request','body':payload.encode(),'more_body':False}
+        req=Request({'type':'http','method':'POST','path':'/depallet/11/move',
+            'headers':[(b'content-type',b'application/json')]},receive)
+        with patch('app.main.get_connection',return_value=conn):
+            response=asyncio.run(reorder_depallet_route(11,req))
+        self.assertEqual(response.status_code,200)
+        self.assertTrue(json.loads(response.body)['moved'])
+        self.assertEqual([(row['DepalletID'],row['RunSequence']) for row in
+            sorted(conn.db['depallets'],key=lambda row:row['RunSequence'])],[(11,1),(10,2)])
+
+    def test_read_daily_order_uses_run_sequence_not_shift_or_times(self):
+        conn=MemoryConnection()
+        conn.work['depallets']=[
+            dict(SAVED,DepalletID=40,ProductionID=7,DepalletDate=date(2026,9,24),RunSequence=1,
+                Shift='2',StartDateTime=None,EndDateTime=None),
+            dict(SAVED,DepalletID=41,ProductionID=8,DepalletDate=date(2026,9,24),RunSequence=2,
+                Shift='1',StartDateTime=datetime(2026,9,24,14),EndDateTime=datetime(2026,9,24,15)),
+            dict(SAVED,DepalletID=42,ProductionID=7,DepalletDate=date(2026,9,24),RunSequence=3,
+                Shift='1',StartDateTime=datetime(2026,9,24,10),EndDateTime=datetime(2026,9,24,11)),
+        ]
+        conn.work['lots'].append(dict(LOT,ProductionID=8,LotNo='B'))
+        entries,runs,_,_,_=read_daily_work(conn.cursor(),date(2026,9,24),conn.work['lots'])
+        self.assertEqual([run['DepalletID'] for run in runs],[40,41,42])
+        self.assertEqual([run['StartDateTime'] for run in runs],[None,datetime(2026,9,24,14),datetime(2026,9,24,10)])
+
+    def test_reorder_boundaries_and_failure_roll_back_without_duplicate_sequences(self):
+        conn=MemoryConnection()
+        conn.work['depallets']=[dict(SAVED,DepalletID=10,RunSequence=1),
+                                dict(SAVED,DepalletID=11,RunSequence=2)]
+        self.assertFalse(reorder_depallet_run(conn,date(2026,9,23),10,'up')['moved'])
+        self.assertFalse(reorder_depallet_run(conn,date(2026,9,23),11,'down')['moved'])
+        before=copy.deepcopy(conn.db)
+        conn.fail='UPDATE dbo.Depallet SET RunSequence=?'
+        with self.assertRaises(RuntimeError): reorder_depallet_run(conn,date(2026,9,23),11,'up')
+        self.assertEqual(conn.db,before)
+        self.assertEqual(conn.work,before)
+        self.assertEqual(len({row['RunSequence'] for row in conn.db['depallets']}),2)
+
+    def test_a_b_a_c_a_balance_uses_only_earlier_same_production_sequences(self):
+        conn=MemoryConnection()
+        ids=[(10,7,'A',1,600),(11,8,'B',2,300),(12,7,'A',3,200),
+             (13,9,'C',4,400),(14,7,'A',5,250)]
+        conn.work['depallets']=[dict(SAVED,DepalletID=run_id,ProductionID=production_id,
+            LotNo=lot,DepalletDate=date(2026,9,23),RunSequence=sequence,DepalletQty=qty,GoodQty=qty)
+            for run_id,production_id,lot,sequence,qty in ids]
+        conn.work['lots']=[dict(LOT,ProductionID=production_id,LotNo=lot) for production_id,lot in
+            ((7,'A'),(8,'B'),(9,'C'))]
+        conn.work['balances']={7:dict(ProductionID=7,ProductionQty=1050,DepalletQtyTotal=1050,RemainingCuringQty=0),
+            8:dict(ProductionID=8,ProductionQty=300,DepalletQtyTotal=300,RemainingCuringQty=0),
+            9:dict(ProductionID=9,ProductionQty=400,DepalletQtyTotal=400,RemainingCuringQty=0)}
+        entries,runs,reasons,totals,cutoff=read_daily_work(conn.cursor(),date(2026,9,23),conn.work['lots'])
+        observed=[(run['ProductionID'],run['DepalletID'],run['AlreadyDepalletedBeforeRun'],run['RemainingCuringBeforeRun']) for run in runs]
+        self.assertEqual(observed,[(7,10,0,1050),(8,11,0,300),(7,12,600,450),(9,13,0,400),(7,14,800,250)])
+
+    def test_edit_earlier_run_changes_only_its_quantity_then_recalculates_later_balances(self):
+        conn=MemoryConnection()
+        conn.work['depallets']=[
+            dict(SAVED,DepalletID=10,ProductionID=7,DepalletDate=date(2026,9,23),RunSequence=1,DepalletQty=600,GoodQty=600),
+            dict(SAVED,DepalletID=12,ProductionID=7,DepalletDate=date(2026,9,23),RunSequence=3,DepalletQty=200,GoodQty=200),
+            dict(SAVED,DepalletID=14,ProductionID=7,DepalletDate=date(2026,9,23),RunSequence=5,DepalletQty=250,GoodQty=250)]
+        conn.work['balances'][7]=dict(ProductionID=7,ProductionQty=1050,DepalletQtyTotal=1050,RemainingCuringQty=0)
+        conn.work['rejects']={(10,'R01'):5,(12,'R02'):6,(14,'R03'):7}
+        edit=dict(DepalletID=10,DepalletDate='2026-09-23',Shift='2',LotNo='A',Start='',End='',
+            DepalletQty='500',GoodQty='500',Remark='changed',rejects={'R01':'5'})
+        save_depallet(conn,7,edit)
+        self.assertEqual([(r['DepalletID'],r['DepalletQty']) for r in conn.db['depallets']],[(10,500),(12,200),(14,250)])
+        self.assertEqual(conn.db['rejects'],{(10,'R01'):5,(12,'R02'):6,(14,'R03'):7})
+        read_lots=[dict(LOT,ProductionID=7,LotNo='A')]
+        entries,runs,_,_,_=read_daily_work(conn.cursor(),date(2026,9,23),read_lots)
+        self.assertEqual([(run['DepalletID'],run['AlreadyDepalletedBeforeRun'],run['RemainingCuringBeforeRun'])
+            for run in runs],[(10,0,1050),(12,500,550),(14,700,350)])
 
     def test_edit_reloads_values_and_uses_validation_view(self):
         conn=MemoryConnection(existing=True)
@@ -647,13 +786,28 @@ class DepalletTests(unittest.TestCase):
         text=response.body.decode()
         grid=re.search(r'<table[^>]*id="depallet-lots".*?</table>',text,re.S)[0]
         self.assertEqual(re.findall(r'<th scope="col">(.*?)</th>',grid),
-                         ['Select','Lot No.','Product','Shift','Start','End','Produced Qty','Already Depalleted','Remaining Curing','Depallet Qty','Good Qty','Remark'])
+                         ['Select','Move','Order','Lot No.','Product','Shift','Start','End','Produced Qty','Already Depalleted','Remaining Curing','Depallet Qty','Good Qty','Remark'])
         self.assertIn('data-selected="true"',grid)
         self.assertIn('data-production-qty="10000"',grid)
         self.assertIn('Qty/Day',text)
         self.assertIn('data-daily-total',text)
         self.assertIn('data-reject-code',text)
         self.assertIn('rejects.replaceChildren()',text)
+
+    def test_saved_run_move_buttons_respect_sequence_boundaries(self):
+        conn=MemoryConnection()
+        conn.work['depallets']=[dict(SAVED,DepalletID=20,RunSequence=1,DepalletDate=LOT['ProdDate']),
+            dict(SAVED,DepalletID=21,RunSequence=2,LotNo='SECOND',DepalletDate=LOT['ProdDate'])]
+        response=self.render_lot(conn,LOT)
+        grid=re.search(r'<table[^>]*id="depallet-lots".*?</table>',response.body.decode(),re.S)[0]
+        rows=re.findall(r'<tr data-run-key=.*?</tr>',grid,re.S)
+        self.assertEqual(len(rows),2)
+        self.assertIn('SEQ 1 / RUN 20',rows[0])
+        self.assertIn('SEQ 2 / RUN 21',rows[1])
+        self.assertIn('data-move="up"',rows[0])
+        self.assertIn('data-move="down"',rows[0])
+        self.assertRegex(rows[0],r'data-move="up"[^>]*disabled')
+        self.assertRegex(rows[1],r'data-move="down"[^>]*disabled')
 
     def test_compact_reject_groups_preserve_vertical_code_order_and_dynamic_names(self):
         conn=MemoryConnection(existing=True)

@@ -31,7 +31,7 @@ def production_clock_datetime(production_date, clock_value, day_start_time):
 def resolve_run_times(production_date, start_value, end_value, day_start_time, allow_missing=False):
     start_value = str(start_value or '').strip()
     end_value = str(end_value or '').strip()
-    if not start_value and not end_value and allow_missing:
+    if not start_value and not end_value:
         return None, None
     if not start_value or not end_value:
         raise ValueError('Enter both Start and End times for this Depallet run.')
@@ -68,20 +68,20 @@ def read_curing_lots(cursor):
 def read_daily_work(cursor, production_date, lots):
     reasons = read_reasons(cursor, include_r99=True)
     day_start_time = read_day_start_time(cursor, production_date)
-    cursor.execute("""SELECT v.*,d.StartDateTime,d.EndDateTime,
+    cursor.execute("""SELECT v.*,d.RunSequence,d.StartDateTime,d.EndDateTime,
         b.ProductionQty,b.DepalletQtyTotal,b.RemainingCuringQty,p.RunningNo AS RunNo,
         pm.ProductName,p.ProductFamily,
-        ISNULL((SELECT SUM(prior.DepalletQty) FROM dbo.Depallet prior
+                ISNULL((SELECT SUM(prior.DepalletQty) FROM dbo.Depallet prior
             WHERE prior.ProductionID=d.ProductionID
               AND (prior.DepalletDate<d.DepalletDate
-                   OR (prior.DepalletDate=d.DepalletDate AND prior.DepalletID<d.DepalletID))),0)
+                                     OR (prior.DepalletDate=d.DepalletDate AND prior.RunSequence<d.RunSequence))),0)
             AS AlreadyDepalletedBeforeRun
         FROM dbo.vw_DepalletValidation v
         JOIN dbo.Depallet d ON d.DepalletID=v.DepalletID
         LEFT JOIN dbo.vw_DepalletCuringBalance b ON b.ProductionID=v.ProductionID
         LEFT JOIN dbo.ProductionLot p ON p.ProductionID=v.ProductionID
         LEFT JOIN dbo.ProductCodeMaster pm ON pm.ProductFamily=p.ProductFamily AND pm.ProductCode=v.ProductCode
-        WHERE v.DepalletDate=? ORDER BY v.ProductionID,v.DepalletID""", production_date)
+        WHERE v.DepalletDate=? ORDER BY d.RunSequence,d.DepalletID""", production_date)
     saved = rows(cursor)
 
     cursor.execute("""SELECT r.DepalletID,r.ReasonCode,r.Qty,m.ReasonNameTH,m.IsActive,m.SortOrder
@@ -133,7 +133,10 @@ def read_daily_work(cursor, production_date, lots):
                              original_r99=run_entry['original_r99'],
                              StartClock=clock_display(entry.get('StartDateTime')),
                              EndClock=clock_display(entry.get('EndDateTime'))))
-    runs.sort(key=lambda row:(row['ProductionID'],row['DepalletID']))
+    runs.sort(key=lambda row:(row['RunSequence'],row['DepalletID']))
+    for index, run in enumerate(runs):
+        run['CanMoveUp'] = index > 0
+        run['CanMoveDown'] = index < len(runs) - 1
     return entries, runs, reasons, daily_totals, day_start_time
 
 
@@ -279,20 +282,23 @@ def _save_depallet_locked(cursor, production_id, raw, day_start_time=None):
         day_start_time = read_day_start_time(cursor, selected_date)
     start_datetime, end_datetime = resolve_run_times(
         selected_date, raw.get('Start'), raw.get('End'), day_start_time,
-        allow_missing=depallet_id is not None and old_start is None and old_end is None)
+        allow_missing=True)
     data['StartDateTime'] = start_datetime
     data['EndDateTime'] = end_datetime
     max_quantity = int(balance['RemainingCuringQty']) + int(old_quantity)
     if data['DepalletQty'] > max_quantity:
         raise ValueError(f"Depallet Qty {data['DepalletQty']} exceeds Remaining Curing Qty {max_quantity}.")
     if depallet_id is None:
+        cursor.execute("""SELECT ISNULL(MAX(RunSequence),0)+1
+            FROM dbo.Depallet WITH (UPDLOCK,HOLDLOCK) WHERE DepalletDate=?""", selected_date)
+        run_sequence = int(cursor.fetchone()[0])
         cursor.execute("""INSERT INTO dbo.Depallet
             (ProductionID,DepalletDate,Shift,LotNo,ProductFamily,ProductCode,MaterialCode,
-             MaterialName,DepalletQty,GoodQty,Remark,StartDateTime,EndDateTime)
-            OUTPUT INSERTED.DepalletID VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             MaterialName,DepalletQty,GoodQty,Remark,StartDateTime,EndDateTime,RunSequence)
+            OUTPUT INSERTED.DepalletID VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             production_id, data['DepalletDate'], data['Shift'], data['LotNo'],
             lot.get('ProductFamily'), lot['ProductCode'], lot['MaterialCode'], lot.get('MaterialName'),
-            data['DepalletQty'], data['GoodQty'], data['Remark'],data['StartDateTime'],data['EndDateTime'])
+            data['DepalletQty'], data['GoodQty'], data['Remark'],data['StartDateTime'],data['EndDateTime'],run_sequence)
         depallet_id = cursor.fetchone()[0]
     else:
         cursor.execute("""UPDATE dbo.Depallet SET Shift=?,LotNo=?,DepalletQty=?,GoodQty=?,
@@ -316,6 +322,8 @@ def _save_depallet_locked(cursor, production_id, raw, day_start_time=None):
         raise ValueError('Depallet validation failed. Nothing was saved.')
     saved[0].update(summary(data['DepalletQty'], data['GoodQty'], rejects))
     saved[0].update(StartDateTime=data['StartDateTime'],EndDateTime=data['EndDateTime'])
+    cursor.execute('SELECT RunSequence FROM dbo.Depallet WHERE DepalletID=?', depallet_id)
+    saved[0]['RunSequence'] = cursor.fetchone()[0]
     return saved[0]
 
 
@@ -354,6 +362,43 @@ def save_depallet_batch(conn, depallet_date, items):
             saved.append(_save_depallet_locked(cursor, item['ProductionID'], raw, day_start_time))
         conn.commit()
         return saved
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def reorder_depallet_run(conn, depallet_date, depallet_id, direction):
+    try:
+        selected_date = date.fromisoformat(str(depallet_date))
+    except ValueError:
+        raise ValueError('Enter a valid Production Date.') from None
+    if direction not in ('up', 'down'):
+        raise ValueError('Direction must be up or down.')
+    try:
+        cursor = conn.cursor()
+        lock_lots(cursor)
+        cursor.execute("""SELECT DepalletID,RunSequence FROM dbo.Depallet WITH (UPDLOCK,HOLDLOCK)
+            WHERE DepalletDate=? ORDER BY RunSequence,DepalletID""", selected_date)
+        runs = rows(cursor)
+        index = next((i for i, run in enumerate(runs) if run['DepalletID'] == depallet_id), None)
+        if index is None:
+            raise ValueError('This Depallet run no longer exists for the selected Production Date.')
+        neighbor_index = index - 1 if direction == 'up' else index + 1
+        if neighbor_index < 0 or neighbor_index >= len(runs):
+            conn.commit()
+            return dict(moved=False, DepalletID=depallet_id, RunSequence=runs[index]['RunSequence'])
+        selected = runs[index]
+        runs[index], runs[neighbor_index] = runs[neighbor_index], runs[index]
+        cursor.execute('SELECT ISNULL(MAX(RunSequence),0) FROM dbo.Depallet WITH (UPDLOCK,HOLDLOCK) WHERE DepalletDate=?', selected_date)
+        temporary_base = int(cursor.fetchone()[0]) + len(runs) + 1
+        for offset, run in enumerate(runs, start=1):
+            cursor.execute('UPDATE dbo.Depallet SET RunSequence=? WHERE DepalletID=? AND DepalletDate=?',
+                           temporary_base + offset, run['DepalletID'], selected_date)
+        for sequence, run in enumerate(runs, start=1):
+            cursor.execute('UPDATE dbo.Depallet SET RunSequence=? WHERE DepalletID=? AND DepalletDate=?',
+                           sequence, run['DepalletID'], selected_date)
+        conn.commit()
+        return dict(moved=True, DepalletID=depallet_id, RunSequence=neighbor_index + 1)
     except Exception:
         conn.rollback()
         raise

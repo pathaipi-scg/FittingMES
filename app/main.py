@@ -16,7 +16,8 @@ from app.pis_config import PISConfig
 from app.usage import read_usage_context, save_usage
 from app.prod_api import read_prod_records, build_pis_date_preview, field_mapping, preview_readiness
 from app.depallet import (read_context as read_depallet_context, read_reasons as read_depallet_reasons,
-                          read_curing_lots, read_daily_work, save_depallet, save_depallet_batch)
+                          read_curing_lots, read_daily_work, save_depallet, save_depallet_batch,
+                          reorder_depallet_run)
 from app.products import FAMILIES, lot_prefix, read_products, read_mapping, confirm_mapping, selected_product, month_start
 from app.production_data import read_production_data, save_production_data, calculate
 
@@ -313,6 +314,29 @@ def save_depallet_batch_response(depallet_date, items):
         return JSONResponse({"error": str(exc)}, status_code=400)
     except Exception:
         return JSONResponse({"error": "Unable to save Depallet data. Nothing was saved; please retry."}, status_code=503)
+
+
+def reorder_depallet_response(depallet_date, depallet_id, direction):
+    try:
+        with closing(get_connection()) as conn:
+            result = reorder_depallet_run(conn, depallet_date, depallet_id, direction)
+            return JSONResponse(jsonable_encoder(result))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception:
+        return JSONResponse({"error": "Unable to reorder Depallet runs. No changes were saved."}, status_code=503)
+
+
+@app.post("/depallet/{depallet_id}/move")
+async def reorder_depallet_route(depallet_id: int, request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid reorder request."}, status_code=400)
+    if not isinstance(payload, dict) or set(payload) != {"production_date", "direction"}:
+        return JSONResponse({"error": "Invalid reorder request."}, status_code=400)
+    return await run_in_threadpool(reorder_depallet_response,
+        payload["production_date"], depallet_id, payload["direction"])
 
 
 @app.post("/depallet/save")

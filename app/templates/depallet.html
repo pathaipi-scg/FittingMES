@@ -12,9 +12,12 @@
 #depallet-selectors label{display:grid;gap:2px;font-weight:600}#depallet-selectors select{height:24px;min-width:0}
 #depallet-selectors select:disabled{color:#8994a3;background:#f0f2f4}
 #depallet-production-lot option:disabled{color:#8994a3;background:#f0f2f4}
-#depallet-lots{min-width:1220px;width:100%}#depallet-lots tr[aria-selected=true] td{background:#eaf4ff;border-top:1px solid #1765ad;border-bottom:1px solid #1765ad}
+#depallet-lots{min-width:1320px;width:100%}#depallet-lots tr[aria-selected=true] td{background:#eaf4ff;border-top:1px solid #1765ad;border-bottom:1px solid #1765ad}
 #depallet-lots tr[data-disabled=true] td{color:#78818d;background:#f0f1f2}
 #depallet-lots input{height:22px}#depallet-lots .select-cell{text-align:center}
+#depallet-lots .move-cell{width:42px;text-align:center;white-space:normal}
+#depallet-lots .move-cell button{width:18px;height:18px;padding:0;margin:0 1px;font:10px/16px system-ui;vertical-align:middle}
+#depallet-lots .sequence-cell{font-variant-numeric:tabular-nums;text-align:center}
 #depallet-lots output{display:block;text-align:right;padding:2px 4px}
 #depallet-detail{max-width:900px}#depallet-rejects{display:grid;grid-template-columns:repeat(3,minmax(245px,1fr));gap:6px;align-items:start}
 #depallet-detail .reject-group{width:100%}#depallet-detail .reject-code-column{width:38px}#depallet-detail .reject-reason-column{width:auto}
@@ -41,11 +44,13 @@
 </div></section>
 <section class="panel"><h2>DEPALLET LOTS</h2>
 <div class="table-scroll"><table class="depallet-grid" id="depallet-lots">
-<colgroup><col style="width:38px"><col style="width:110px"><col style="width:100px"><col style="width:42px"><col style="width:53px"><col style="width:53px"><col style="width:78px"><col style="width:92px"><col style="width:88px"><col style="width:80px"><col style="width:72px"><col style="width:200px"></colgroup>
-<thead><tr><th scope="col">Select</th><th scope="col">Lot No.</th><th scope="col">Product</th><th scope="col">Shift</th><th scope="col">Start</th><th scope="col">End</th><th scope="col">Produced Qty</th><th scope="col">Already Depalleted</th><th scope="col">Remaining Curing</th><th scope="col">Depallet Qty</th><th scope="col">Good Qty</th><th scope="col">Remark</th></tr></thead>
+<colgroup><col style="width:38px"><col style="width:42px"><col style="width:58px"><col style="width:110px"><col style="width:95px"><col style="width:42px"><col style="width:53px"><col style="width:53px"><col style="width:78px"><col style="width:92px"><col style="width:88px"><col style="width:80px"><col style="width:72px"><col style="width:180px"></colgroup>
+<thead><tr><th scope="col">Select</th><th scope="col">Move</th><th scope="col">Order</th><th scope="col">Lot No.</th><th scope="col">Product</th><th scope="col">Shift</th><th scope="col">Start</th><th scope="col">End</th><th scope="col">Produced Qty</th><th scope="col">Already Depalleted</th><th scope="col">Remaining Curing</th><th scope="col">Depallet Qty</th><th scope="col">Good Qty</th><th scope="col">Remark</th></tr></thead>
 <tbody>{% for run in runs %}{% set d = run %}
-<tr data-run-key="{{ run.run_key }}" data-depallet-id="{{ run.DepalletID }}" data-production-id="{{ run.ProductionID }}" data-lot-no="{{ run.LotNo }}" data-saved="true" data-selected="{{ 'true' if current_run_id == run.DepalletID else 'false' }}" data-remaining="{{ run.RemainingCuringQty }}" data-production-qty="{{ run.ProductionQty }}">
-<td class="select-cell"><input type="radio" name="selected-depallet-row" data-row-select aria-label="Select {{ run.LotNo }} run {{ run.DepalletID }}"></td><td>{{ run.LotNo }}</td><td>{{ run.ProductName or run.ProductCode }}</td>
+<tr data-run-key="{{ run.run_key }}" data-depallet-id="{{ run.DepalletID }}" data-production-id="{{ run.ProductionID }}" data-lot-no="{{ run.LotNo }}" data-run-sequence="{{ run.RunSequence }}" data-saved="true" data-can-move-up="{{ 'true' if run.CanMoveUp else 'false' }}" data-can-move-down="{{ 'true' if run.CanMoveDown else 'false' }}" data-selected="{{ 'true' if current_run_id == run.DepalletID else 'false' }}" data-remaining="{{ run.RemainingCuringQty }}" data-production-qty="{{ run.ProductionQty }}">
+<td class="select-cell"><input type="radio" name="selected-depallet-row" data-row-select aria-label="Select {{ run.LotNo }} run {{ run.DepalletID }}"></td>
+<td class="move-cell"><button type="button" data-move="up" aria-label="Move run {{ run.DepalletID }} up" title="Move up" {% if not run.CanMoveUp %}disabled{% endif %}>↑</button><button type="button" data-move="down" aria-label="Move run {{ run.DepalletID }} down" title="Move down" {% if not run.CanMoveDown %}disabled{% endif %}>↓</button></td>
+<td class="sequence-cell">SEQ {{ run.RunSequence }} / RUN {{ run.DepalletID }}</td><td>{{ run.LotNo }}</td><td>{{ run.ProductName or run.ProductCode }}</td>
 <td class="editable"><input data-field="shift" maxlength="10" value="{{ d.Shift }}" aria-label="{{ run.LotNo }} Shift"></td>
 <td class="editable"><input data-field="start" inputmode="numeric" placeholder="HH:mm" maxlength="5" value="{{ run.StartClock }}" aria-label="{{ run.LotNo }} Start"></td>
 <td class="editable"><input data-field="end" inputmode="numeric" placeholder="HH:mm" maxlength="5" value="{{ run.EndClock }}" aria-label="{{ run.LotNo }} End"></td>
@@ -158,6 +163,8 @@
     const selectCell = document.createElement('td'); selectCell.className = 'select-cell';
     const radio = document.createElement('input'); radio.type = 'radio'; radio.name = 'selected-depallet-row'; radio.dataset.rowSelect = '';
     radio.setAttribute('aria-label', 'Select ' + item.LotNo); selectCell.append(radio); row.append(selectCell);
+    const moveCell = document.createElement('td'); moveCell.className = 'move-cell'; row.append(moveCell);
+    const sequenceCell = document.createElement('td'); sequenceCell.className = 'sequence-cell'; sequenceCell.textContent = 'NEW'; row.append(sequenceCell);
     addCell(row, item.LotNo); addCell(row, item.ProductName || item.ProductCode);
     const shiftCell = document.createElement('td'); shiftCell.className = 'editable';
     shiftCell.append(makeInput('shift', data.Shift || item.Shift || '', 'text', item.LotNo + ' Shift', 10)); row.append(shiftCell);
@@ -172,7 +179,7 @@
     goodCell.append(makeInput('good_qty', data.GoodQty || '', 'number', item.LotNo + ' Good Qty')); row.append(goodCell);
     const remarkCell = document.createElement('td'); remarkCell.className = 'editable';
     remarkCell.append(makeInput('remark', data.Remark || '', 'text', item.LotNo + ' Remark', 500)); row.append(remarkCell);
-    tableBody.append(row); selectRow(row); return row;
+    tableBody.append(row); selectRow(row); updateMoveButtons(); return row;
   }
   createButton.addEventListener('click', () => {
     const item = lots.find(lot => String(lot.ProductionID) === lotChoice.value);
@@ -283,6 +290,25 @@
     rememberRejects(); const daily = totalsForDay();
     for (const output of rejects.querySelectorAll('[data-daily-total]')) output.textContent = daily[output.dataset.dailyTotal] || 0;
   }
+  function hasUnsavedChanges() {
+    return Array.from(tableBody.querySelectorAll('[data-run-key]')).some(row => {
+      if (row.dataset.saved !== 'true') return true;
+      const state = entryFor(row.dataset.runKey), current = fields(row);
+      if (Object.keys(current).some(name => current[name].value !== state.initial_fields[name])) return true;
+      return Object.keys(state.reject_values || {}).some(code =>
+        String(state.reject_values[code] ?? '') !== String((state.original_reject_values || {})[code] ?? ''));
+    });
+  }
+  function updateMoveButtons() {
+    const dirty = hasUnsavedChanges();
+    for (const row of tableBody.querySelectorAll('[data-run-key]')) {
+      for (const button of row.querySelectorAll('[data-move]')) {
+        const atBoundary = button.dataset.move === 'up'
+          ? row.dataset.canMoveUp !== 'true' : row.dataset.canMoveDown !== 'true';
+        button.disabled = dirty || atBoundary;
+      }
+    }
+  }
   function selectRow(row) {
     if (busy || !row || selectedRow === row) return;
     rememberRejects(); selectedRow = row;
@@ -302,6 +328,11 @@
   }
   tableBody.addEventListener('click', event => {
     const row = event.target.closest('[data-production-id]'); if (row) selectRow(row);
+    const move = event.target.closest('[data-move]');
+    if (move) {
+      event.preventDefault(); event.stopPropagation();
+      moveRun(move.closest('[data-depallet-id]'),move.dataset.move);
+    }
   });
   tableBody.addEventListener('focusin', event => {
     const row = event.target.closest('[data-production-id]'); if (row) selectRow(row);
@@ -324,7 +355,31 @@
       if (row === selectedRow) calculateSelected();
     }
     if (event.target.dataset.rejectCode) { updateDailyDisplays(); calculateSelected(); }
+    updateMoveButtons();
   });
+  rejects.addEventListener('input', updateMoveButtons);
+  async function moveRun(row, direction) {
+    if (!row || busy) return;
+    const hasDraftRun = tableBody.querySelector('[data-saved="false"]');
+    if (hasDraftRun) { setMessage('error','Save or remove NEW RUN rows before reordering saved runs.'); return; }
+    const button = row.querySelector(`[data-move="${direction}"]`);
+    if (button?.disabled) return;
+    busy = true; fieldset.disabled = true; setMessage('info','Reordering Depallet runs...');
+    try {
+      const response = await fetch(`/depallet/${row.dataset.depalletId}/move`, {
+        method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},
+        body:JSON.stringify({production_date:date.value,direction})
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Unable to reorder Depallet runs.');
+      const url = new URL(window.location.href);
+      url.searchParams.set('production_date',date.value);
+      url.searchParams.set('production_id',row.dataset.productionId);
+      url.searchParams.set('depallet_id',row.dataset.depalletId);
+      window.location.assign(url);
+    } catch (error) { setMessage('error',error.message); }
+    finally { busy = false; fieldset.disabled = false; }
+  }
   form.addEventListener('submit', async event => {
     event.preventDefault(); if (busy) return;
     rememberRejects();
@@ -336,8 +391,7 @@
         selectRow(row); setMessage('error','Enter valid whole-piece quantities for ' + row.dataset.lotNo + '.'); return;
       }
       const validClock = value => /^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(value);
-      const missingAllowed = row.dataset.saved === 'true' && !state.depallet.StartDateTime &&
-        !state.depallet.EndDateTime && !rowFields.start.value && !rowFields.end.value;
+      const missingAllowed = !rowFields.start.value && !rowFields.end.value;
       if (!missingAllowed && (!validClock(rowFields.start.value) || !validClock(rowFields.end.value))) {
         selectRow(row); setMessage('error','Enter Start and End as HH:mm for ' + row.dataset.lotNo + '.'); return;
       }
@@ -377,7 +431,9 @@
     const state = entryFor(row.dataset.runKey);
     state.original_reject_values = {...(state.original_reject_values || state.reject_values)};
     state.original_r99 = Number(state.original_r99 ?? state.depallet.R99 ?? 0);
+    state.initial_fields = Object.fromEntries(Object.entries(fields(row)).map(([name,input]) => [name,input.value]));
   }
+  updateMoveButtons();
   const initial = tableBody.querySelector('[data-selected="true"]') || tableBody.querySelector('[data-run-key]');
   if (initial) selectRow(initial);
 })();
