@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import json
+import re
 import unittest
 from datetime import date
 from decimal import Decimal
@@ -8,7 +9,7 @@ from unittest.mock import patch
 from urllib.parse import urlencode
 from starlette.requests import Request
 from app.depallet import read_context, read_reasons, default_entry, summary, validate, save_depallet
-from app.main import load_depallet, save_depallet_route, save_depallet_response, production_page
+from app.main import load_depallet, save_depallet_route, save_depallet_response, production_page, depallet_page
 from test_production import LOT, PLAN, DAY, request
 
 CODES = [f'R{i:02d}' for i in range(1,25)] + ['R99']
@@ -100,76 +101,69 @@ class MemoryCursor:
 
 class DepalletTests(unittest.TestCase):
     def render_lot(self, conn, lot, **kwargs):
-        with patch('app.main.get_connection',return_value=conn), \
-             patch('app.main.read_lots',return_value=[lot]), \
-             patch('app.main.read_plans',return_value=[PLAN]), \
-             patch('app.main.read_production_data',return_value={'CounterQty':500,'CuringQty':450}):
-            return production_page(request(),production_id=lot['ProductionID'],**kwargs)
+        kwargs.setdefault('production_date',lot['ProdDate'])
+        with patch('app.main.get_connection',return_value=conn), patch('app.main.read_lots',return_value=[lot]):
+            return depallet_page(request(),production_id=lot['ProductionID'],**kwargs)
 
     def test_selected_production_2_loads_saved_header_and_all_raw_rejects(self):
-        import re
         conn=MemoryConnection()
-        lot=dict(LOT,ProductionID=2,LotNo='B006690902')
-        saved=dict(SAVED,DepalletID=1,ProductionID=2,DepalletDate=date(2026,9,22),
-                   Shift='1',LotNo='B006690902',DepalletQty=1000,GoodQty=600,Remark='Saved remark')
+        lot=dict(LOT,ProductionID=2,LotNo='B006690902',ProdDate=date(2026,9,22))
+        saved=dict(SAVED,DepalletID=1,ProductionID=2,DepalletDate=lot['ProdDate'],
+                   Shift='1',LotNo='SAVED-ALIAS',DepalletQty=1000,GoodQty=600,Remark='Saved remark')
         conn.work['depallets']=[saved,dict(SAVED,ProductionID=99)]
         quantities={code:i for i,code in enumerate(CODES[:-1])}
         conn.work['rejects']={(1,code):qty for code,qty in quantities.items()}
         conn.work['rejects'][(1,'R99')]=999
         conn.work['reasons'][7]['IsActive']=False
         before=copy.deepcopy(conn.work)
-        # Implicit and explicit matching lot dates retain the saved Depallet date.
-        for page_date in (None,lot['ProdDate']):
-            response=self.render_lot(conn,lot,production_date=page_date)
-            self.assertEqual(response.status_code,200)
-            context=response.context
-            for key,value in saved.items():
-                self.assertEqual(context['depallet'][key],value)
-            self.assertEqual(context['reject_values'],quantities)
-            self.assertEqual(context['depallet']['R99'],124)
-            text=response.body.decode()
-            for field,value in [('date','2026-09-22'),('shift','1'),('lot','B006690902'),
-                                ('qty','1000'),('good','600'),('remark','Saved remark')]:
-                tag=re.search(r'<input id="depallet-'+field+r'"[^>]*>',text)[0]
-                self.assertIn('value="'+value+'"',tag)
-            for code,qty in quantities.items():
-                tag=re.search(r'<input id="reject-'+code+r'"[^>]*>',text)[0]
-                self.assertIn('value="'+str(qty)+'"',tag)
-            r99=re.search(r'<input id="depallet-r99"[^>]*>',text)[0]
-            self.assertIn('value="124"',r99)
-            self.assertIn('readonly',r99)
-            self.assertEqual(context['production_data'],{'CounterQty':500,'CuringQty':450})
-            self.assertIn('SAVE PRODUCTION',text)
+        response=self.render_lot(conn,lot)
+        self.assertEqual(response.status_code,200)
+        for key,value in saved.items(): self.assertEqual(response.context['depallet'][key],value)
+        self.assertEqual(response.context['reject_values'],quantities)
+        self.assertEqual(response.context['depallet']['R99'],124)
+        text=response.body.decode()
+        for field,value in [('shift','1'),('lot_no','SAVED-ALIAS'),('depallet_qty','1000'),
+                            ('good_qty','600'),('remark','Saved remark')]:
+            tag=re.search(r'<input data-field="'+field+r'"[^>]*>',text)[0]
+            self.assertIn('value="'+value+'"',tag)
+        for code,qty in quantities.items():
+            tag=re.search(r'<input id="reject-'+code+r'"[^>]*>',text)[0]
+            self.assertIn('value="'+str(qty)+'"',tag)
+        self.assertIn('readonly',re.search(r'<input id="reject-R08"[^>]*>',text)[0])
+        r99=re.search(r'<input id="depallet-r99"[^>]*>',text)[0]
+        self.assertIn('value="124"',r99)
+        self.assertIn('readonly',r99)
+        self.assertIn('REJECT DETAIL - B006690902',text)
         self.assertEqual(conn.work,before)
         self.assertEqual(conn.commits,0)
         self.assertTrue(all(sql.lstrip().startswith('SELECT') for sql,_ in conn.sql))
 
-    def test_new_selected_lot_defaults_to_lot_date_not_page_date(self):
-        import re
+    def test_new_selected_lot_uses_shared_date_without_second_date_selector(self):
         conn=MemoryConnection()
         response=self.render_lot(conn,LOT)
         self.assertEqual(response.context['depallet']['DepalletDate'],LOT['ProdDate'])
         self.assertEqual(response.context['depallet']['LotNo'],LOT['LotNo'])
-        tag=re.search(r'<input id="depallet-date"[^>]*>',response.body.decode())[0]
+        text=response.body.decode()
+        self.assertEqual(len(re.findall(r'<input[^>]*type="date"',text)),1)
+        tag=re.search(r'<input id="depallet-date"[^>]*>',text)[0]
+        self.assertIn('type="hidden"',tag)
         self.assertIn('value="2026-09-21"',tag)
-        self.assertNotIn('readonly',tag)
-        self.assertNotIn('disabled',tag)
         self.assertEqual(conn.work['depallets'],[])
         self.assertEqual(conn.commits,0)
 
-    def test_multiple_dates_require_operator_selection(self):
+    def test_multiple_dates_remain_date_keyed_and_existing_endpoint_works(self):
         conn=MemoryConnection(existing=True)
         conn.work['depallets'].append(dict(SAVED,DepalletID=11,DepalletDate=date(2026,9,24),LotNo='SECOND'))
-        response=self.render_lot(conn,LOT)
-        self.assertEqual(response.context['depallet_dates'],[date(2026,9,23),date(2026,9,24)])
-        self.assertEqual(response.context['depallet']['DepalletDate'],'')
-        self.assertEqual(response.context['reject_values'],{})
-        self.assertIn(b'id="depallet-record"',response.body)
-        import re
-        self.assertIn('disabled',re.search(r'<button id="save-depallet"[^>]*>',response.body.decode())[0])
+        # The legacy reader still requires a date for ambiguous records.
+        context=read_context(conn.cursor(),LOT)
+        self.assertEqual(context['depallet_dates'],[date(2026,9,23),date(2026,9,24)])
+        lot=dict(LOT,ProdDate=date(2026,9,24))
+        response=self.render_lot(conn,lot)
+        self.assertEqual(response.context['depallet']['LotNo'],'SECOND')
+        self.assertNotIn(b'id="depallet-record"',response.body)
         with patch('app.main.get_connection',return_value=conn):
-            response=load_depallet(7,date(2026,9,24))
-        self.assertEqual(json.loads(response.body)['depallet']['LotNo'],'SECOND')
+            response=load_depallet(7,date(2026,9,23))
+        self.assertEqual(json.loads(response.body)['depallet']['LotNo'],SAVED['LotNo'])
         self.assertEqual(conn.commits,0)
         self.assertTrue(all(sql.lstrip().startswith('SELECT') for sql,_ in conn.sql))
 
@@ -393,26 +387,125 @@ class DepalletTests(unittest.TestCase):
         self.assertEqual(response.status_code,200)
         self.assertEqual(conn.db['rejects'],{(10,'R99'):1})
 
-    def test_page_renders_inline_below_calculated_and_lot_editable(self):
+    def test_production_page_has_no_depallet_input_or_reads(self):
         conn=MemoryConnection()
-        with patch('app.main.get_connection',return_value=conn),patch('app.main.read_lots',return_value=[LOT]),patch('app.main.read_plans',return_value=[PLAN]),patch('app.main.read_production_data',return_value={}):
+        with patch('app.main.get_connection',return_value=conn),patch('app.main.read_lots',return_value=[LOT]),patch('app.main.read_plans',return_value=[PLAN]),patch('app.main.read_production_data',return_value={}),patch('app.main.read_depallet_context') as reader:
             response=production_page(request(),production_id=7,production_date=DAY)
         self.assertEqual(response.status_code,200)
+        self.assertIn(b'SAVE PRODUCTION',response.body)
+        self.assertNotIn(b'id="depallet-input"',response.body)
+        self.assertNotIn(b'data-reject-code',response.body)
+        reader.assert_not_called()
+
+    def test_depallet_grid_and_dynamic_grouped_detail(self):
+        conn=MemoryConnection(existing=True)
+        conn.work['depallets'][0]['DepalletDate']=LOT['ProdDate']
+        conn.work['rejects'][(10,'R01')]=15  # Over-classified: summary must still show physical 10.
+        response=self.render_lot(conn,LOT)
         text=response.body.decode()
-        self.assertLess(text.index('id="wet-reject-qty"'),text.index('DEPALLET INPUT'))
-        for heading in ('CALCULATED DATA','REJECT DETAIL','CALCULATED DEPALLET DATA'):
-            self.assertNotIn('<h2>'+heading+'</h2>',text)
-        self.assertIn('name="lot_no"',text)
-        self.assertIn('R99 อื่นๆ',text)
-        import re
-        r99=re.search(r'<input id="depallet-r99"[^>]*>',text)[0]
+        grid=re.search(r'<table[^>]*id="depallet-lots".*?</table>',text,re.S)[0]
+        self.assertEqual(re.findall(r'<th scope="col">(.*?)</th>',grid),
+                         ['Lot No.','Shift','Depallet Qty','Good Qty','Reject Qty','Remark'])
+        self.assertNotIn('R99',grid)
+        self.assertNotIn('reject_R01',grid)
+        self.assertIn('<output data-physical-reject>10</output>',grid)
+        self.assertIn('aria-selected="true"',grid)
+        detail=re.search(r'<div id="depallet-detail">(.*?)<div class="depallet-totals"',text,re.S)[1]
+        self.assertEqual(detail.count('data-reject-code='),24)
+        for reason in REASONS:
+            self.assertIn(reason['ReasonNameTH'],detail)
+        for code in CODES[:-1]:
+            tag=re.search(r'<input id="reject-'+code+r'"[^>]*>',detail)[0]
+            self.assertIn('name="reject_'+code+'"',tag)
+            self.assertNotIn('readonly',tag)
+        r99=re.search(r'<input id="depallet-r99"[^>]*>',detail)[0]
         self.assertIn('readonly',r99)
+        self.assertIn('value="0"',r99)
         self.assertNotIn('name=',r99)
-        self.assertNotIn('id="reject-R99"',text)
-        self.assertEqual(text.count('data-reject-code='),24)
-        import re
-        tag=re.search(r'<input id="depallet-lot"[^>]*>',text)[0]
-        self.assertNotIn('readonly',tag)
+        self.assertNotIn('data-reject-code',r99)
+
+    def test_compact_reject_groups_preserve_vertical_code_order_and_dynamic_names(self):
+        conn=MemoryConnection(existing=True)
+        conn.work['depallets'][0]['DepalletDate']=LOT['ProdDate']
+        conn.work['reasons'].reverse()
+        for reason in conn.work['reasons']:
+            reason['SortOrder']=100-int(reason['ReasonCode'][1:])
+            reason['ReasonNameTH']='Dynamic long reason '+reason['ReasonCode']+' '+('wrapped text '*12)
+            if reason['ReasonCode']=='R01': reason['IsActive']=False
+        text=self.render_lot(conn,LOT).body.decode()
+        detail=re.search(r'<div id="depallet-detail">(.*?)<div class="depallet-totals"',text,re.S)[1]
+        groups=re.findall(r'<table[^>]*data-reject-group="([123])"[^>]*>(.*?)</table>',detail,re.S)
+        self.assertEqual([key for key,_ in groups],['1','2','3'])
+        expected=[CODES[:10],CODES[10:20],CODES[20:]]
+        for (_,group),codes in zip(groups,expected):
+            body=re.search(r'<tbody>(.*?)</tbody>',group,re.S)[1]
+            self.assertEqual(re.findall(r'<tr[^>]*><td>(R[0-9]+)</td>',body),codes)
+            self.assertLessEqual(body.count('<tr'),10)
+            self.assertEqual(re.findall(r'<th scope="col">(.*?)</th>',group),['Code','Reject Reason','Qty'])
+        self.assertEqual(detail.count('id="depallet-r99"'),1)
+        self.assertEqual(detail.count('data-reject-code='),24)
+        for reason in conn.work['reasons']:
+            self.assertIn(reason['ReasonNameTH'],detail)
+        self.assertIn('readonly',re.search(r'<input id="reject-R01"[^>]*>',detail)[0])
+        for rule in ('#depallet-detail{width:900px}', 'grid-template-columns:repeat(3,296px);gap:6px;',
+                     '.reject-code-column{width:50px}', '.reject-reason-column{width:185px}',
+                     '.reject-qty-column{width:60px}', '-webkit-line-clamp:2', 'overflow-wrap:anywhere',
+                     '#depallet-detail input{width:100%;max-width:100%;min-width:0;height:21px;'):
+            self.assertIn(rule,text)
+
+    def test_depallet_filters_date_selects_lot_and_loads_correct_detail(self):
+        conn=MemoryConnection(existing=True)
+        lots=[dict(LOT,ProdDate=date(2026,9,23)),dict(LOT,ProductionID=8,LotNo='OTHER',ProdDate=date(2026,9,23)),
+              dict(LOT,ProductionID=9,LotNo='WRONG-DATE',ProdDate=date(2026,9,22))]
+        conn.work['lots']=lots
+        with patch('app.main.get_connection',return_value=conn),patch('app.main.read_lots',return_value=lots):
+            response=depallet_page(request(),production_date=date(2026,9,23),production_id=8)
+        self.assertEqual(response.status_code,200)
+        self.assertEqual([lot['ProductionID'] for lot in response.context['lots']],[7,8])
+        self.assertEqual(response.context['current']['ProductionID'],8)
+        self.assertEqual(response.context['reject_values'],{})
+        self.assertNotIn(b'WRONG-DATE',response.body)
+        self.assertIn(b'REJECT DETAIL - OTHER',response.body)
+        self.assertIn(b'action="/lots/8/depallet"',response.body)
+        self.assertIn(b'name="production_id" value="8"',response.body)
+        self.assertEqual(conn.commits,0)
+
+    def test_selected_lot_save_reload_and_repeat_update_on_depallet_page(self):
+        conn=MemoryConnection()
+        lot=dict(LOT,ProdDate=date(2026,9,23))
+        for qty in (7,15):
+            payload=urlencode(dict(depallet_date='2026-09-23',shift='2',lot_no=lot['LotNo'],
+                                   depallet_qty='100',good_qty='90',remark='saved',
+                                   reject_R01=str(qty),reject_R99='999')).encode()
+            async def receive(): return {'type':'http.request','body':payload,'more_body':False}
+            req=Request({'type':'http','method':'POST','path':'/lots/7/depallet',
+                         'headers':[(b'content-type',b'application/x-www-form-urlencoded')]},receive)
+            with patch('app.main.get_connection',return_value=conn):
+                saved=asyncio.run(save_depallet_route(req,7))
+            self.assertEqual(saved.status_code,200)
+            page=self.render_lot(conn,lot)
+            self.assertEqual(page.context['active_tab'],'depallet')
+            self.assertEqual(page.context['production_date'],date(2026,9,23))
+            self.assertEqual(page.context['current']['ProductionID'],7)
+            self.assertEqual(page.context['reject_values']['R01'],qty)
+            self.assertEqual(page.context['depallet']['R99'],max(10-qty,0))
+            self.assertEqual(page.context['depallet']['PhysicalRejectQty'],10)
+        self.assertEqual(len(conn.db['depallets']),1)
+        self.assertEqual(conn.commits,2)
+        self.assertNotIn((10,'R99'),conn.db['rejects'])
+        self.assertEqual(conn.db['lots'],[LOT])
+
+    def test_depallet_load_errors_do_not_render_editable_grid(self):
+        conn=MemoryConnection(existing=True)
+        conn.work['depallets'].append(dict(SAVED,DepalletID=11))
+        response=self.render_lot(conn,dict(LOT,ProdDate=SAVED['DepalletDate']))
+        self.assertEqual(response.status_code,400)
+        self.assertIn(b'Multiple Depallet records',response.body)
+        self.assertNotIn(b'id="depallet-input"',response.body)
+        with patch('app.main.get_connection',side_effect=RuntimeError('private')):
+            response=depallet_page(request())
+        self.assertEqual(response.status_code,503)
+        self.assertNotIn(b'private',response.body)
 
     def test_new_load_failure_does_not_break_production_page(self):
         conn=MemoryConnection()

@@ -1,19 +1,19 @@
 # Depallet entry
 
-Depallet Input appears below Calculated Data on the existing Production page. Active reject reasons are loaded from RejectReasonMaster in SortOrder; Thai names remain database-provided Unicode text.
+DEPALLET has its own `/depallet` page between PRODUCTION and USAGE. The shared Production Date selects active production lots whose ProdDate matches that date and the Depallet record for each ProductionID/date pair. Direct access defaults to today. Production no longer loads or renders Depallet inputs; its save, edit and void workflows are unchanged.
 
-The selected ProductionLot supplies ProductionID, default LotNo, stored Shift and product/material context. Shift is stored on ProductionLot in this application, not ProductionData. Editing the Depallet Lot does not rename the Production Lot.
+The compact lot grid shows the production Lot No., saved/default Shift, editable Depallet Qty, Good Qty and Remark, and read-only physical Reject Qty. The summary uses PhysicalRejectQty from the existing reader/calculation, not the classified-plus-R99 total. The production Lot No. remains the row label; an existing independent Depallet LotNo is retained in the submitted data.
 
-Selecting a Production Lot loads its existing Depallet by ProductionID when exactly one record exists, including its saved date and raw reject quantities. With no existing record, Depallet Date defaults to the selected lot's ProdDate, independently of the page date or system date, and remains editable. With multiple records, the operator must select a saved Depallet date or enter a new date; no record is chosen or merged automatically. Viewing a lot does not write any data. Changing it loads the record for that ProductionID/date, or new defaults. It does not move a previously saved dated record. Save updates the existing record for that pair; pre-existing duplicate records are reported rather than selected arbitrarily.
+Selecting a lot by its link, row or input displays its vertical reject detail. Selection updates the URL and retains the shared date. Summary inputs and reject drafts remain in memory while switching rows. Only the selected row and its reject detail are associated with the save form. Active R01-R24 names and ordering come from RejectReasonMaster; saved inactive manual reasons remain read-only and retained. R99 appears only in reject detail, with its master-provided name and a read-only value.
 
-Saving requires nonnegative integer quantities and Depallet Qty = Good Qty + Reject Qty. Zero quantity has a zero reject percentage. The existing validation view supplies persisted totals. Header and reject changes commit together or all roll back; the existing application writer lock serializes concurrent saves. Blank/zero rejects have no rows. Previously saved inactive reasons remain visible read-only and are retained in totals.
+The page reuses the existing live calculation preview and the authoritative server `summary`, `validate` and `save_depallet` functions. PhysicalRejectQty = DepalletQty - GoodQty; ClassifiedRejectQty sums R01-R24; DifferenceQty = PhysicalRejectQty - ClassifiedRejectQty; R99 = max(DifferenceQty, 0). Client R99 is ignored. Manual quantities are not adjusted. Positive R99 is upserted, and stale zero R99 is deleted. Classified quantities above physical rejects are allowed, with R99 zero and the existing warning.
 
-Messages use the existing generic lot status bar. Saving does not reload the page. No schema changes, PIS calls, PIS-log writes or ProductionLot/ProductionData updates are introduced.
+SAVE DEPALLET posts to the unchanged `/lots/{production_id}/depallet` endpoint, then reloads that lot through its existing GET endpoint with `depallet_date`. The selected lot and Production Date remain on DEPALLET. Failed saves preserve inputs. A committed save whose reload fails blocks another save until a successful selected-lot reload. RELOAD SELECTED LOT explicitly replaces that lot's draft with saved values.
 
-Validation commands:
+The existing date-keyed reader and endpoints remain available for older clients and deep links, including independent Depallet dates. Duplicate records for one ProductionID/date are rejected. Repeated saves update the existing record. Header and reject changes commit together or roll back together under the existing lot writer lock. There are no schema, view, PIS, ProductionLot or ProductionData write changes.
 
-- `.\.venv\Scripts\python.exe -m unittest discover -s tests`
-- `node tests/test_family_ui.cjs` (also validates all inline JavaScript syntax)
+Validation uses isolated database doubles and mocked HTTP calls, never live production records or external services:
+
+- `.venv/Scripts/python.exe -m unittest discover -s tests`
+- `node tests/test_family_ui.cjs`
 - `node tests/test_depallet_ui.cjs`
-
-Tests use in-memory database doubles; they do not create live records.

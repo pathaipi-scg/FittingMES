@@ -8,16 +8,39 @@
 </style>
 {% set tab_date = production_date %}
 {% set tab = active_tab|default('production') %}
-{% set current_path = '/usage' if tab == 'usage' else '/prod-api' if tab == 'prod-api' else '/reject-api' if tab == 'reject-api' else '/' %}
+{% set current_path = '/depallet' if tab == 'depallet' else '/usage' if tab == 'usage' else '/prod-api' if tab == 'prod-api' else '/reject-api' if tab == 'reject-api' else '/' %}
 <div class="shared-header-row">
 <form class="shared-production-date" id="shared-production-date" method="get" action="{{ current_path }}">
 <label for="production_date">Production Date</label><input id="production_date" name="production_date" type="date" value="{{ tab_date }}" required>
-{% if tab == 'production' and current is defined and current and current.ProdDate == production_date %}<input type="hidden" name="production_id" value="{{ current.ProductionID }}">{% endif %}
+{% if tab in ('production', 'depallet') and current is defined and current and current.ProdDate == production_date %}<input type="hidden" name="production_id" value="{{ current.ProductionID }}">{% endif %}
 <button type="submit">REFRESH</button>
 </form>
 <nav class="page-tabs" aria-label="Main navigation">
-{% for key, label, path in [('production','PRODUCTION','/'),('usage','USAGE','/usage'),('prod-api','PROD API','/prod-api'),('reject-api','REJECT API','/reject-api')] %}
+{% for key, label, path in [('production','PRODUCTION','/'),('usage','USAGE','/usage'),('depallet','DEPALLET','/depallet'),('prod-api','PROD API','/prod-api'),('reject-api','REJECT API','/reject-api')] %}
 <a href="{{ path }}?production_date={{ tab_date }}{% if key == 'production' and current is defined and current and current.ProdDate == production_date %}&amp;production_id={{ current.ProductionID }}{% endif %}" {% if active_tab|default('production') == key %}aria-current="page"{% endif %}>{{ label }}</a>
 {% endfor %}
 </nav>
 </div>
+<script>
+(() => {
+  const dateForm = document.getElementById('shared-production-date');
+  const dateInput = document.getElementById('production_date');
+  if (!dateForm || !dateInput) return;
+  const loadedDate = dateInput.value;
+  dateInput.addEventListener('change', () => {
+    if (!dateInput.value || !dateInput.validity.valid || dateInput.value === loadedDate) return;
+    const url = new URL(window.location.href);
+    // Use the current tab's GET page even when rendering a failed POST response.
+    url.pathname = new URL(dateForm.action, url).pathname;
+    url.searchParams.set('production_date', dateInput.value);
+    // Lot/plan selections and save notices belong to the previous date.
+    if (['/', '/depallet', '/prod-api'].includes(url.pathname)) url.searchParams.delete('production_id');
+    if (url.pathname === '/') {
+      for (const key of ['plan_id', 'edit', 'data_saved']) url.searchParams.delete(key);
+    }
+    if (url.pathname === '/usage') url.searchParams.delete('saved');
+    if (url.pathname === '/prod-api') url.searchParams.delete('preview_one');
+    window.location.assign(url.toString());
+  });
+})();
+</script>

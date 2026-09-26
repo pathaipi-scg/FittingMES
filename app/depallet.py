@@ -8,10 +8,10 @@ MAX_QTY = 2147483647
 MANUAL_CODES = frozenset(f'R{i:02d}' for i in range(1, 25))
 
 
-def read_reasons(cursor):
+def read_reasons(cursor, include_r99=False):
     cursor.execute("""SELECT ReasonCode,ReasonNameTH,SortOrder FROM dbo.RejectReasonMaster
         WHERE IsActive=1 ORDER BY SortOrder,ReasonCode""")
-    return [r for r in rows(cursor) if r['ReasonCode'] in MANUAL_CODES]
+    return [r for r in rows(cursor) if r['ReasonCode'] in MANUAL_CODES or (include_r99 and r['ReasonCode'] == 'R99')]
 
 
 def summary(quantity, good, rejects):

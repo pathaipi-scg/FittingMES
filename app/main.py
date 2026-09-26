@@ -15,7 +15,7 @@ from app.database import get_connection
 from app.pis_config import PISConfig
 from app.usage import read_usage_context, save_usage
 from app.prod_api import read_prod_records, build_pis_date_preview, field_mapping, preview_readiness
-from app.depallet import read_context as read_depallet_context, save_depallet
+from app.depallet import read_context as read_depallet_context, read_reasons as read_depallet_reasons, save_depallet
 from app.products import FAMILIES, lot_prefix, read_products, read_mapping, confirm_mapping, selected_product, month_start
 from app.production_data import read_production_data, save_production_data, calculate
 
@@ -66,7 +66,7 @@ def production_page(request, plan_id=None, product_code=None, confirm=False,
                     create=False, running_no=None, production_date=None, production_id=None, edit=False, save=False, void=False, production_input=None, data_saved=False, product_family=None, product_choices=None):
     requested_date = production_date
     production_date = production_date or date.today()
-    context = dict(depallet=None, depallet_error=None, reject_reasons=[], reject_values={}, inactive_rejects=[], families=FAMILIES, product_family=None, product_previews={}, production_data={}, calculated=calculate(None, None), data_saved=data_saved, production_date=production_date, lots=[], current=None, edit=edit, edit_plans=[], plans=[], selected=None, products=[], material_prefix=None,
+    context = dict(families=FAMILIES, product_family=None, product_previews={}, production_data={}, calculated=calculate(None, None), data_saved=data_saved, production_date=production_date, lots=[], current=None, edit=edit, edit_plans=[], plans=[], selected=None, products=[], material_prefix=None,
                    product_code=None, lot=None, error=None, running_no=None, created_lot=None)
     status = 200
     try:
@@ -114,13 +114,6 @@ def production_page(request, plan_id=None, product_code=None, confirm=False,
                     replacement = choose_plan(context["edit_plans"], plan_id) if save else None
                     update_lot(conn, production_id, replacement, void=void)
                     return RedirectResponse("/" if void else f"/?production_id={production_id}", status_code=303)
-                # Depallet availability must not block the existing Production workflow.
-                try:
-                    context.update(read_depallet_context(cursor, current))
-                except ValueError as exc:
-                    context["depallet_error"] = str(exc)
-                except Exception:
-                    context["depallet_error"] = "Unable to load Depallet data. Reload the page to retry."
             context["plans"] = mark_used(read_plans(cursor, production_date), context["lots"])
             if plan_id:
                 selected = choose_plan(context["plans"], plan_id)
@@ -230,6 +223,35 @@ def save_production(request: Request, production_id: int,
                CuringQty=curing, Remark=remark)
     return production_page(request, production_id=production_id,
                            production_date=production_date, production_input=raw)
+
+
+@app.get("/depallet", response_class=HTMLResponse)
+def depallet_page(request: Request, production_date: date | None = None,
+                  production_id: int | None = None):
+    production_date = production_date or date.today()
+    context = dict(page_title="DEPALLET", active_tab="depallet", production_date=production_date,
+                   lots=[], entries={}, current=None, error=None, r99_name="")
+    status = 200
+    try:
+        with closing(get_connection()) as conn:
+            cursor = conn.cursor()
+            context["lots"] = [lot for lot in read_lots(cursor) if day(lot['ProdDate']) == production_date]
+            for lot in context["lots"]:
+                context["entries"][lot['ProductionID']] = read_depallet_context(cursor, lot, production_date)
+            if context["lots"]:
+                context["current"] = next((lot for lot in context["lots"]
+                                           if lot['ProductionID'] == production_id), context["lots"][0])
+                context.update(context["entries"][context["current"]['ProductionID']])
+                context['r99_name'] = next((reason['ReasonNameTH'] for reason in
+                    read_depallet_reasons(cursor, include_r99=True) if reason['ReasonCode'] == 'R99'), '')
+    except ValueError as exc:
+        context["error"] = str(exc)
+        status = 400
+    except Exception:
+        context["error"] = "Unable to load Depallet data. Reload the page to retry."
+        status = 503
+    context['entries_json'] = jsonable_encoder(context['entries'])
+    return templates.TemplateResponse(request=request, name="depallet.html", context=context, status_code=status)
 
 
 @app.get("/lots/{production_id}/depallet")

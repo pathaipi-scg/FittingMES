@@ -29,7 +29,7 @@ class NavigationTests(unittest.TestCase):
 
     def test_date_survives_complete_tab_cycle(self):
         body=self.page('/','production_date=2026-09-14')
-        for path in ('/usage','/prod-api','/reject-api','/'):
+        for path in ('/usage','/depallet','/prod-api','/reject-api','/'):
             nav=re.search(r'<nav class="page-tabs".*?</nav>',body,re.S)[0]
             target=next(html.unescape(url) for url in re.findall(r'href="([^"]+)"',nav)
                         if urlsplit(html.unescape(url)).path==path)
@@ -39,7 +39,7 @@ class NavigationTests(unittest.TestCase):
             self.assertIn('value="2026-09-14"',self.shared_form(body))
 
     def test_refresh_uses_current_tab_and_one_shared_date_input(self):
-        for path in ('/','/usage','/prod-api','/reject-api'):
+        for path in ('/','/usage','/depallet','/prod-api','/reject-api'):
             with self.subTest(path=path):
                 body=self.page(path,'production_date=2026-09-14')
                 form=self.shared_form(body)
@@ -54,7 +54,7 @@ class NavigationTests(unittest.TestCase):
                 self.assertNotIn('production_date=2026-09-14',refreshed)
 
     def test_deep_links_and_default_date(self):
-        for path in ('/','/usage','/prod-api','/reject-api'):
+        for path in ('/','/usage','/depallet','/prod-api','/reject-api'):
             body=self.page(path,'production_date=2020-01-02')
             self.assertIn('value="2020-01-02"',self.shared_form(body))
             body=self.page(path)
@@ -82,12 +82,20 @@ class NavigationTests(unittest.TestCase):
         self.assertNotIn('type="date"',form)
 
     def test_shared_header_groups_date_refresh_and_tabs_in_one_wrapping_row(self):
-        for path in ('/','/usage','/prod-api','/reject-api'):
+        for path in ('/','/usage','/depallet','/prod-api','/reject-api'):
             body=self.page(path,'production_date=2026-09-14')
             row=re.search(r'<div class="shared-header-row">(.*?)</nav>\s*</div>',body,re.S)
             self.assertIsNotNone(row)
             self.assertIn('id="shared-production-date"',row[1])
             self.assertLess(row[1].index('>REFRESH<'),row[1].index('<nav class="page-tabs"'))
-            self.assertEqual(re.findall(r'>(PRODUCTION|USAGE|PROD API|REJECT API)</a>',row[1]),
-                             ['PRODUCTION','USAGE','PROD API','REJECT API'])
+            self.assertEqual(re.findall(r'>(PRODUCTION|DEPALLET|USAGE|PROD API|REJECT API)</a>',row[1]),
+                             ['PRODUCTION','USAGE','DEPALLET','PROD API','REJECT API'])
             self.assertRegex(body,r'\.shared-header-row\{[^}]*display:flex;[^}]*flex-wrap:wrap;')
+
+    def test_shared_date_change_navigation_is_present_on_every_page(self):
+        for path in ('/','/usage','/depallet','/prod-api','/reject-api'):
+            with self.subTest(path=path):
+                body=self.page(path,'production_date=2026-09-14')
+                self.assertEqual(body.count("dateInput.addEventListener('change'"),1)
+                self.assertIn('window.location.assign(url.toString())',body)
+                self.assertIn('>REFRESH<',self.shared_form(body))

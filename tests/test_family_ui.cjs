@@ -46,3 +46,49 @@ prevented=false; form.handlers.submit({ preventDefault() { prevented=true; } });
 assert.equal(prevented,false);
 assert.ok(selects.every(select => select.error === ''));
 console.log('All inline JavaScript syntax passed; family dropdown clearing and preview behavior passed in all 16 selection directions.');
+
+// Exercise shared date navigation without submitting any form or making requests.
+const navigationHTML = fs.readFileSync('app/templates/navigation.html', 'utf8');
+const navigationScripts = [...navigationHTML.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+assert.equal(navigationScripts.length,1);
+new vm.Script(navigationScripts[0]);
+function dateNavigation(path, query = 'production_date=2026-09-14', action = path) {
+  const navigations = [];
+  const dateInput = {value:'2026-09-14',validity:{valid:true},handlers:{},
+    addEventListener(event, handler) { this.handlers[event] = handler; }};
+  const dateForm = {action,submit() { assert.fail('Date change must not submit'); },
+    requestSubmit() { assert.fail('Date change must not requestSubmit'); },
+    addEventListener() { assert.fail('Manual REFRESH behavior must remain unchanged'); }};
+  vm.runInNewContext(navigationScripts[0], {
+    document:{getElementById:id => ({'shared-production-date':dateForm,production_date:dateInput}[id])},
+    URL, window:{location:{href:'http://local'+path+'?'+query,assign:url => navigations.push(new URL(url))}},
+    fetch() { assert.fail('Date change must navigate, not fetch or save'); }
+  });
+  return {dateInput,navigations,change(value) { dateInput.value=value; dateInput.handlers.change(); }};
+}
+for (const path of ['/','/usage','/depallet','/prod-api','/reject-api']) {
+  const test = dateNavigation(path,'production_date=2026-09-14&filter=active&filter=shift1');
+  test.change('2026-09-14'); test.change('');
+  test.dateInput.validity.valid=false; test.change('invalid');
+  assert.equal(test.navigations.length,0);
+  test.dateInput.validity.valid=true; test.change('2026-09-15');
+  assert.equal(test.navigations.length,1);
+  assert.equal(test.navigations[0].pathname,path);
+  assert.equal(test.navigations[0].searchParams.get('production_date'),'2026-09-15');
+  assert.deepEqual(test.navigations[0].searchParams.getAll('filter'),['active','shift1']);
+}
+for (const [path,query,removed,retained] of [
+  ['/','production_id=7&plan_id=old&edit=true&data_saved=true',['production_id','plan_id','edit','data_saved'],[]],
+  ['/depallet','production_id=7',['production_id'],[]],
+  ['/usage','saved=true',['saved'],[]],
+  ['/prod-api','production_id=7&preview_one=true&preview_all=true',['production_id','preview_one'],['preview_all']]
+]) {
+  const test = dateNavigation(path,query); test.change('2026-09-15');
+  for (const key of removed) assert.equal(test.navigations[0].searchParams.has(key),false);
+  for (const key of retained) assert.equal(test.navigations[0].searchParams.get(key),'true');
+}
+const failedPost = dateNavigation('/lots/7/production','production_id=7','/');
+failedPost.change('2026-09-15');
+assert.equal(failedPost.navigations[0].pathname,'/');
+assert.equal(failedPost.navigations[0].searchParams.has('production_id'),false);
+console.log('Shared date auto-navigation passed on all five tabs; query preservation, stale selections and no form submissions verified.');

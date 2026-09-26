@@ -89,7 +89,10 @@ class ProdApiTests(unittest.TestCase):
         self.assertRegex(body,r'href="/prod-api\?production_date=2026-09-22" aria-current="page"')
         self.assertIn('href="/reject-api?production_date=2026-09-22"',body)
         self.assertIn('href="/?production_date=2026-09-22"',body)
-        self.assertNotIn('<script',body)
+        scripts=re.findall(r'<script>(.*?)</script>',body,re.S)
+        self.assertEqual(len(scripts),1)
+        self.assertIn("dateInput.addEventListener('change'",scripts[0])
+        self.assertNotRegex(scripts[0],r'fetch\s*\(|XMLHttpRequest|\.submit\s*\(|\.requestSubmit\s*\(')
         self.assertNotIn('https://',body)
         self.assertNotIn('method="post"',body)
         self.assertNotIn('>SEND<',body)
@@ -201,7 +204,10 @@ class ProdApiTests(unittest.TestCase):
         self.assertEqual(status,200)
         self.assertIn('Coming next',body)
         self.assertRegex(body,r'href="/reject-api\?production_date=2026-09-22" aria-current="page"')
-        self.assertNotIn('<script',body)
+        scripts=re.findall(r'<script>(.*?)</script>',body,re.S)
+        self.assertEqual(len(scripts),1)
+        self.assertIn("dateInput.addEventListener('change'",scripts[0])
+        self.assertNotRegex(scripts[0],r'fetch\s*\(|XMLHttpRequest|\.submit\s*\(|\.requestSubmit\s*\(')
 
     def test_database_failure_shows_safe_error(self):
         with patch('app.main.get_connection',side_effect=RuntimeError('private details')):
@@ -266,7 +272,10 @@ class ProdApiTests(unittest.TestCase):
         self.assertEqual(groups[0]['productionItems'][0]['itemOutputs'][0]['gross0'],80)
         self.assertIn('1 lots included',body)
         self.assertIn('SELECTED LOT',body)
-        self.assertNotIn('<script',body)
+        scripts=re.findall(r'<script>(.*?)</script>',body,re.S)
+        self.assertEqual(len(scripts),1)
+        self.assertIn("dateInput.addEventListener('change'",scripts[0])
+        self.assertNotRegex(scripts[0],r'fetch\s*\(|XMLHttpRequest|\.submit\s*\(|\.requestSubmit\s*\(')
         self.assertNotIn('method="post"',body)
         # get_page blocks socket connections throughout route execution.
         self.assertNotIn('Unable to load',body)

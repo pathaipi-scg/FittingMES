@@ -114,21 +114,6 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
 #family-product-form .family-lot-preview{display:flex;flex-basis:100%;flex-wrap:wrap;gap:8px}
 .family-lot-preview output{font-weight:600}
 
-.depallet-section{border-top:0.75px solid #dbe2ea;margin-top:3px;padding-top:2px}
-#depallet-input{display:block}
-#depallet-fields{border:0;margin:0;padding:0;min-width:0}
-.depallet-input-row{display:flex;align-items:center;flex-wrap:wrap;gap:4.5px}
-.depallet-input-row>div{display:flex;align-items:center;gap:3px;min-width:0}
-#depallet-shift{width:38px}#depallet-lot{width:110px;max-width:100%}
-#depallet-qty,#depallet-good{width:65px}
-.depallet-input-row .depallet-remark{flex:1;min-width:125px}
-#depallet-remark{min-width:0;width:100%}
-.reject-grid{margin-top:3px;display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:3px 7px}
-.reject-grid>div{display:flex;align-items:center;gap:4px;min-width:0}
-.reject-grid label{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.reject-grid input{width:52px;flex:none}
-#depallet-balance[data-balanced=true]{color:#25643b}
-#depallet-balance[data-balanced=false]{color:#946200}
 </style></head><body><main>
 <header>FittingMES / PRODUCTION · CRTC / 30A1 / SB2-3</header>
 {% include 'navigation.html' %}
@@ -219,31 +204,6 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
 <div><dt>Wet Reject %</dt><dd><output id="wet-reject-percent">{{ '{:.2f} %'.format(calculated.WetRejectPercent) if calculated.WetRejectPercent is not none else '' }}</output></dd></div>
 </dl></div>
 
-{% if depallet_error %}<script type="application/json" id="depallet-load-error">{{ depallet_error|tojson }}</script>{% endif %}
-{% if depallet %}
-<section class="depallet-section" aria-label="Depallet Input"><h2>DEPALLET INPUT</h2>
-<form id="depallet-input" method="post" action="/lots/{{ current.ProductionID }}/depallet"><fieldset id="depallet-fields">
-<div class="depallet-input-row">
-{% if depallet_dates %}<div><label for="depallet-record">Saved Depallet dates</label><select id="depallet-record"><option value="">Select a saved date</option>{% for saved_date in depallet_dates %}<option value="{{ saved_date }}">{{ saved_date }}</option>{% endfor %}</select><span>Multiple records: select a saved date, or enter a new date.</span></div>{% endif %}
-<div><label for="depallet-date">Depallet Date</label><input id="depallet-date" name="depallet_date" type="date" value="{{ depallet.DepalletDate }}" required></div>
-<div><label for="depallet-shift">Shift</label><input id="depallet-shift" name="shift" maxlength="10" value="{{ depallet.Shift }}" required></div>
-<div><label for="depallet-lot">Depallet Lot</label><input id="depallet-lot" name="lot_no" maxlength="50" value="{{ depallet.LotNo }}" required></div>
-<div><label for="depallet-qty">Depallet Qty</label><input id="depallet-qty" name="depallet_qty" type="number" min="0" max="2147483647" step="1" value="{{ depallet.DepalletQty }}" required></div>
-<div><label for="depallet-good">Good Qty</label><input id="depallet-good" name="good_qty" type="number" min="0" max="2147483647" step="1" value="{{ depallet.GoodQty }}" required></div>
-<div class="depallet-remark"><label for="depallet-remark">Remark</label><input id="depallet-remark" name="remark" maxlength="500" value="{{ depallet.Remark or '' }}"></div>
-<button id="save-depallet" type="submit" class="primary" {% if not depallet.DepalletDate %}disabled{% endif %}>SAVE DEPALLET</button></div>
-<div id="depallet-rejects" class="reject-grid">
-{% for reason in reject_reasons %}<div><label for="reject-{{ reason.ReasonCode }}" title="{{ reason.ReasonCode }} {{ reason.ReasonNameTH }}">{{ reason.ReasonCode }} {{ reason.ReasonNameTH }}</label><input id="reject-{{ reason.ReasonCode }}" name="reject_{{ reason.ReasonCode }}" data-reject-code="{{ reason.ReasonCode }}" type="number" min="0" max="2147483647" step="1" value="{{ reject_values.get(reason.ReasonCode, '') }}" aria-label="{{ reason.ReasonCode }} {{ reason.ReasonNameTH }}"></div>{% endfor %}
-{% for reason in inactive_rejects %}<div><label for="reject-{{ reason.ReasonCode }}">{{ reason.ReasonCode }} {{ reason.ReasonNameTH or '' }} (inactive)</label><input id="reject-{{ reason.ReasonCode }}" data-reject-code="{{ reason.ReasonCode }}" type="number" value="{{ reason.Qty }}" readonly aria-label="{{ reason.ReasonCode }} inactive saved quantity"></div>{% endfor %}
-<div id="depallet-r99-row"><label for="depallet-r99">R99 อื่นๆ</label><input id="depallet-r99" type="number" min="0" step="1" value="{{ depallet.R99|default('') }}" readonly aria-label="R99 อื่นๆ"></div>
-</div><div class="calculated-data">
-<dl class="info-fields" aria-live="polite">
-<div><dt>Physical Reject</dt><dd><output id="depallet-physical">{{ depallet.PhysicalRejectQty|default('') }}</output></dd></div>
-<div><dt>Classified Reject</dt><dd><output id="depallet-reject-qty">{{ depallet.ClassifiedRejectQty|default('') }}</output></dd></div>
-<div><dt>Difference</dt><dd><output id="depallet-difference">{{ depallet.DifferenceQty|default('') }}</output></dd></div>
-<div><dt>Status</dt><dd><output id="depallet-balance">{{ ('All physical rejects classified.' if depallet.DifferenceQty == 0 else 'R99 อื่นๆ (คำนวณ) = ' ~ depallet.R99 if depallet.DifferenceQty > 0 else 'Classified reject exceeds physical reject by ' ~ (-depallet.DifferenceQty) ~ '. R99 = 0. Save is allowed.') if depallet.DifferenceQty is defined else '' }}</output></dd></div>
-</dl></div></fieldset></form></section>
-{% endif %}
 {% else %}<p class="muted">Select a Lot to enter production data.</p>{% endif %}
 </section></div></div>
 </main>
@@ -576,121 +536,5 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
     }
   });
   update();
-})();
-</script><script>
-(() => {
-  const loadError = document.getElementById('depallet-load-error');
-  if (loadError) window.lotStatus.add({ id: 'depallet', state: 'error', text: JSON.parse(loadError.textContent) });
-  const form = document.getElementById('depallet-input');
-  if (!form) return;
-  const fieldset = document.getElementById('depallet-fields');
-  const date = document.getElementById('depallet-date');
-  const quantity = document.getElementById('depallet-qty');
-  const good = document.getElementById('depallet-good');
-  const rejects = document.getElementById('depallet-rejects');
-  const button = document.getElementById('save-depallet');
-  const r99Row = document.getElementById('depallet-r99-row');
-  const outputs = {
-    PhysicalRejectQty: document.getElementById('depallet-physical'),
-    ClassifiedRejectQty: document.getElementById('depallet-reject-qty'),
-    R99: document.getElementById('depallet-r99'),
-    DifferenceQty: document.getElementById('depallet-difference'),
-    IsBalanced: document.getElementById('depallet-balance')
-  };
-  let busy = false;
-  let loadedDate = date.value;
-  function message(state, text) { window.lotStatus.add({ id: 'depallet', state, text }); }
-  function pieces(input, blankZero = false) {
-    if (blankZero && input.value.trim() === '') return 0;
-    if (!/^[0-9]+$/.test(input.value)) return null;
-    const value = Number(input.value);
-    return Number.isSafeInteger(value) && value >= 0 && value <= 2147483647 ? value : null;
-  }
-  function show(data) {
-    for (const [key, output] of Object.entries(outputs)) {
-      output.value = key === 'IsBalanced' ? (data.DifferenceQty === 0 ? 'All physical rejects classified.' :
-        data.DifferenceQty > 0 ? `R99 อื่นๆ (คำนวณ) = ${data.R99}` :
-        `Classified reject exceeds physical reject by ${-data.DifferenceQty}. R99 = 0. Save is allowed.`) :
-        String(data[key]);
-    }
-    outputs.IsBalanced.dataset.balanced = String(data.DifferenceQty >= 0);
-  }
-  function calculate() {
-    const total = pieces(quantity), accepted = pieces(good);
-    const values = Array.from(rejects.querySelectorAll('[data-reject-code]'), input => /^R(0[1-9]|1[0-9]|2[0-4])$/.test(input.dataset.rejectCode) ? pieces(input, true) : 0);
-    if (total === null || accepted === null || values.includes(null)) {
-      Object.values(outputs).forEach(output => { output.value = ''; });
-      outputs.IsBalanced.value = 'ENTER VALID QUANTITIES';
-      outputs.IsBalanced.dataset.balanced = 'false';
-      return false;
-    }
-    const rejected = values.reduce((sum, value) => sum + value, 0);
-    const accounted = accepted + rejected;
-    show({ PhysicalRejectQty: total - accepted, ClassifiedRejectQty: rejected, R99: Math.max(total - accounted, 0),
-      AccountedQty: accounted, DifferenceQty: total - accounted, IsBalanced: total === accounted });
-    return true;
-  }
-  function setBusy(value) {
-    busy = value; fieldset.disabled = value;
-    button.disabled = value || loadedDate !== date.value;
-  }
-  function populate(data) {
-    const entry = data.depallet;
-    date.value = entry.DepalletDate;
-    document.getElementById('depallet-shift').value = entry.Shift || '';
-    document.getElementById('depallet-lot').value = entry.LotNo;
-    quantity.value = entry.DepalletQty; good.value = entry.GoodQty;
-    document.getElementById('depallet-remark').value = entry.Remark || '';
-    rejects.replaceChildren();
-    const items = data.reject_reasons.map(reason => ({ ...reason, active: true, Qty: data.reject_values[reason.ReasonCode] ?? '' }))
-      .concat(data.inactive_rejects.map(reason => ({ ...reason, active: false })));
-    for (const reason of items) {
-      if (!/^R(0[1-9]|1[0-9]|2[0-4])$/.test(reason.ReasonCode)) continue;
-      const row = document.createElement('div'), label = document.createElement('label'), input = document.createElement('input');
-      input.id = 'reject-' + reason.ReasonCode; input.dataset.rejectCode = reason.ReasonCode;
-      input.type = 'number'; input.min = '0'; input.max = '2147483647'; input.step = '1'; input.value = reason.Qty;
-      if (reason.active) input.name = 'reject_' + reason.ReasonCode; else input.readOnly = true;
-      label.htmlFor = input.id;
-      label.textContent = reason.ReasonCode + ' ' + (reason.ReasonNameTH || '') + (reason.active ? '' : ' (inactive)');
-      label.title = label.textContent; input.setAttribute('aria-label', label.textContent);
-      row.append(label, input); rejects.append(row);
-    }
-    rejects.append(r99Row);
-    calculate();
-  }
-  form.addEventListener('input', event => {
-    if (event.target === quantity || event.target === good || event.target.dataset.rejectCode) calculate();
-  });
-  const record = document.getElementById('depallet-record');
-  if (record) record.addEventListener('change', () => {
-    date.value = record.value;
-    date.dispatchEvent(new Event('change'));
-  });
-  date.addEventListener('change', async () => {
-    if (!date.validity.valid || !date.value) { loadedDate = null; button.disabled = true; return; }
-    loadedDate = null; setBusy(true); message('info', 'Loading Depallet date...');
-    try {
-      const response = await fetch(form.action + '?depallet_date=' + encodeURIComponent(date.value), { headers: { Accept: 'application/json' }, cache: 'no-store' });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Unable to load Depallet date.');
-      populate(data); loadedDate = date.value; window.lotStatus.clear('depallet');
-    } catch (error) { message('error', error.message); }
-    finally { setBusy(false); }
-  });
-  form.addEventListener('submit', async event => {
-    event.preventDefault();
-    if (busy || loadedDate !== date.value) { message('error', 'Load the Depallet date before saving.'); return; }
-    if (!calculate()) { message('error', 'Enter valid whole-piece quantities before saving.'); return; }
-    const body = new FormData(form);
-    setBusy(true); message('info', 'Saving Depallet data...');
-    try {
-      const response = await fetch(form.action, { method: 'POST', body, headers: { Accept: 'application/json' } });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Unable to save Depallet data.');
-      show(data.depallet); message('success', data.message);
-    } catch (error) { message('error', error.message); }
-    finally { setBusy(false); }
-  });
-  calculate();
 })();
 </script></body></html>
