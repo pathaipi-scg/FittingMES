@@ -53,6 +53,10 @@ class FakeCursor:
             self.conn.capability_calls.append(args)
         elif sql.strip() == 'BEGIN TRANSACTION':
             self.conn.begins += 1
+        elif sql.strip() == 'COMMIT TRANSACTION':
+            self.conn.commits += 1
+        elif 'ROLLBACK TRANSACTION' in sql:
+            self.conn.rollbacks += 1
         elif 'EXEC dbo.sp_Press_' in sql:
             self.conn.proc_calls.append((sql,args))
         else:
@@ -74,7 +78,7 @@ class FakeConnection:
                     dict(EquipmentCode='LINE2',EquipmentName='Line 2',DisplayOrder=102)]
         self.matrix=list(PRODUCTS)
         self.sql=[]; self.proc_calls=[]; self.capability_calls=[]; self.begins=0
-        self.commits=0; self.rollbacks=0; self.fail=None; self.cur=FakeCursor(self)
+        self.commits=0; self.rollbacks=0; self.fail=None; self.autocommit=False; self.cur=FakeCursor(self)
     def cursor(self): return self.cur
     def commit(self): self.commits+=1
     def rollback(self): self.rollbacks+=1
@@ -180,11 +184,14 @@ class PressMcTests(unittest.TestCase):
             {'ProductFamily':'Family A','ProductCode':'02','CanProduce':True}],
             'operator note')
         self.assertEqual(changed,1)
-        self.assertEqual(conn.begins,0)
+        self.assertEqual(conn.begins,1)
         self.assertEqual(len(conn.capability_calls),1)
         self.assertEqual(conn.capability_calls[0],('F3','Family A','02',True,'operator note','FittingMES'))
         self.assertEqual(conn.commits,1)
-        self.assertFalse(any(sql.strip() == 'BEGIN TRANSACTION' for sql,_ in conn.sql))
+        self.assertTrue(conn.autocommit)
+        self.assertEqual([sql.strip() for sql,_ in conn.sql if sql.strip() in
+            {'BEGIN TRANSACTION','COMMIT TRANSACTION'}],['BEGIN TRANSACTION','COMMIT TRANSACTION'])
+        self.assertFalse(any(sql.strip() == 'IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION' for sql,_ in conn.sql))
         self.assertFalse(any('DELETE FROM dbo.PressProductCapability' in sql for sql,_ in conn.sql))
 
     def test_capability_http_route_passes_f1_composite_key_to_procedure_and_commits(self):
@@ -200,7 +207,9 @@ class PressMcTests(unittest.TestCase):
         self.assertEqual(json.loads(response.body)['message'],'Press capability changes saved.')
         self.assertEqual(conn.capability_calls,[('F3','Family B','01',True,'PressMc capability update','FittingMES')])
         self.assertEqual(conn.commits,1)
-        self.assertFalse(any(sql.strip() == 'BEGIN TRANSACTION' for sql,_ in conn.sql))
+        self.assertTrue(conn.autocommit)
+        self.assertIn('BEGIN TRANSACTION',[sql.strip() for sql,_ in conn.sql])
+        self.assertIn('COMMIT TRANSACTION',[sql.strip() for sql,_ in conn.sql])
 
     def test_capability_save_rolls_back_all_requested_changes_on_procedure_error(self):
         conn=FakeConnection(); conn.fail='EXEC dbo.sp_SetPressProductCapability'
@@ -208,6 +217,8 @@ class PressMcTests(unittest.TestCase):
             save_capabilities(conn,'F3',[{'ProductFamily':'Family A','ProductCode':'02','CanProduce':True}])
         self.assertEqual(conn.commits,0)
         self.assertEqual(conn.rollbacks,1)
+        self.assertTrue(conn.autocommit)
+        self.assertIn('IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION',[sql.strip() for sql,_ in conn.sql])
 
     def test_capability_request_rejects_unknown_product_and_duplicate_keys(self):
         for changes in (

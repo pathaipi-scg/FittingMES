@@ -153,7 +153,14 @@ def save_capabilities(conn, press_code, changes, remark=''):
         requested.append((family, code, active))
     if len(str(remark or '')) > 1000:
         raise ValueError('Remark must be at most 1000 characters.')
+    cursor = None
+    transaction_started = False
     try:
+        # The SQL procedure opens and commits its own transaction. Keep the
+        # connection in autocommit mode and explicitly own one outer SQL
+        # transaction so each procedure COMMIT remains nested until the batch
+        # itself is committed below.
+        conn.autocommit = True
         cursor = conn.cursor()
         current_matrix = read_capability_matrix(cursor, press_code)
         current = {(row['ProductFamily'], row['ProductCode']): bool(row['CanProduce'])
@@ -166,26 +173,28 @@ def save_capabilities(conn, press_code, changes, remark=''):
             if current[key] != active:
                 normalized.append((family, code, active))
         if not normalized:
-            conn.commit()
             logger.info('Press capability save had no changes: press=%s requested=%s', press_code, len(requested))
             return 0
         logger.info('Press capability save: press=%s requested=%s changes=%s keys=%s',
                     press_code, len(requested), len(normalized),
                     [(family, code, active) for family, code, active in normalized])
-        # pyodbc autocommit=False already has a connection-owned transaction
-        # from the matrix read. The stored procedure uses BEGIN/COMMIT itself;
-        # an extra BEGIN here would nest the transaction, leaving one level
-        # open after conn.commit() and causing close() to roll the work back.
+        cursor.execute('BEGIN TRANSACTION')
+        transaction_started = True
         for family, code, active in normalized:
             logger.info('Calling sp_SetPressProductCapability press=%s family=%s product=%s active=%s',
                         press_code, family, code, active)
             cursor.execute("""EXEC dbo.sp_SetPressProductCapability
                 @PressEquipmentCode=?,@ProductFamily=?,@ProductCode=?,@IsActive=?,@Remark=?,@ChangedBy=?""",
                 press_code, family, code, active, str(remark or '').strip(), CHANGED_BY)
-        conn.commit()
+        cursor.execute('COMMIT TRANSACTION')
+        transaction_started = False
         logger.info('Press capability save committed: press=%s changes=%s',press_code,len(normalized))
         return len(normalized)
     except Exception:
         logger.exception('Press capability save failed; rolling back press=%s',press_code)
-        conn.rollback()
+        if transaction_started and cursor is not None:
+            try:
+                cursor.execute('IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION')
+            except Exception:
+                logger.exception('Press capability SQL rollback failed: press=%s',press_code)
         raise

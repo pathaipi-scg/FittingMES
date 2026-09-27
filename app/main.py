@@ -23,6 +23,8 @@ from app.products import FAMILIES, lot_prefix, read_products, read_mapping, conf
 from app.production_data import read_production_data, save_production_data, calculate
 from app.press_mc import (page_context as press_mc_context, add_press, update_press_name,
                           assign_line, remove_from_line, set_active, save_capabilities)
+from app.mould import (page_context as mould_context, register_mould, update_mould_info,
+                       send_to_recondition, return_from_recondition, set_mould_status)
 
 app = FastAPI(title="FittingMES", version="0.1.0")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -542,6 +544,108 @@ async def press_mc_capability_route(press_code: str, request: Request):
         return JSONResponse({'error':str(exc)}, status_code=400)
     except Exception:
         return JSONResponse({'error':'Unable to save Press capability changes.'}, status_code=503)
+
+
+@app.get('/mould', response_class=HTMLResponse)
+def mould_page(request: Request, production_date: date | None = None, q: str = '',
+               product: str = '', status: str = '', mould_id: int | None = None,
+               message: str | None = None, message_type: str | None = None):
+    production_date = production_date or date.today()
+    context = dict(page_title='Mould', active_tab='mould', production_date=production_date,
+                   search=q, product_filter=product, status_filter=status, moulds=[], products=[],
+                   selected=None, status_history=[], recondition_history=[], usage_history=[],
+                   message=message, message_type=message_type, error=None)
+    response_status = 200
+    try:
+        with closing(get_connection()) as conn:
+            context.update(mould_context(conn.cursor(), q, product, status, mould_id))
+    except ValueError as exc:
+        context['error'] = str(exc)
+        response_status = 400
+    except Exception:
+        context['error'] = 'Unable to load Mould information. Please retry.'
+        response_status = 503
+    return templates.TemplateResponse(request=request, name='mould.html', context=context,
+                                      status_code=response_status,
+                                      headers={'Cache-Control': 'no-store'})
+
+
+def mould_redirect(mould_id=None, message=None, message_type='success'):
+    params = {}
+    if mould_id:
+        params['mould_id'] = mould_id
+    if message:
+        params['message'] = message
+        params['message_type'] = message_type
+    return RedirectResponse('/mould' + ('?' + urlencode(params) if params else ''), status_code=303)
+
+
+def run_mould_change(operation, *args):
+    with closing(get_connection()) as conn:
+        return operation(conn, *args)
+
+
+@app.post('/mould/register')
+async def mould_register_route(request: Request):
+    form = await request.form()
+    try:
+        mould = await run_in_threadpool(run_mould_change, register_mould, form.get('mould_name'),
+                                        form.get('product_family'), form.get('product_code'),
+                                        form.get('remark'))
+        return mould_redirect(mould['MouldID'], f"Registered {mould['MouldNo']}.")
+    except ValueError as exc:
+        return mould_redirect(message=str(exc), message_type='error')
+    except Exception:
+        return mould_redirect(message='Unable to register Mould. Please retry.', message_type='error')
+
+
+async def mould_mutation_route(request: Request, mould_id: int, operation, success_message):
+    form = await request.form()
+    try:
+        mould = await run_in_threadpool(run_mould_change, operation, mould_id, form.get('remark', ''))
+        return mould_redirect(mould['MouldID'], success_message)
+    except ValueError as exc:
+        return mould_redirect(mould_id, str(exc), 'error')
+    except Exception:
+        return mould_redirect(mould_id, 'Unable to update Mould. Please retry.', 'error')
+
+
+@app.post('/mould/{mould_id}/edit')
+async def mould_edit_route(request: Request, mould_id: int):
+    form = await request.form()
+    try:
+        mould = await run_in_threadpool(run_mould_change, update_mould_info, mould_id,
+                                        form.get('mould_name'), form.get('remark'))
+        return mould_redirect(mould['MouldID'], 'Mould information saved.')
+    except ValueError as exc:
+        return mould_redirect(mould_id, str(exc), 'error')
+    except Exception:
+        return mould_redirect(mould_id, 'Unable to update Mould information. Please retry.', 'error')
+
+
+@app.post('/mould/{mould_id}/recondition/start')
+async def mould_send_route(request: Request, mould_id: int):
+    return await mould_mutation_route(request, mould_id, send_to_recondition,
+                                      'Mould sent to recondition.')
+
+
+@app.post('/mould/{mould_id}/return')
+async def mould_return_route(request: Request, mould_id: int):
+    return await mould_mutation_route(request, mould_id, return_from_recondition,
+                                      'Mould returned to ACTIVE.')
+
+
+@app.post('/mould/{mould_id}/status')
+async def mould_status_route(request: Request, mould_id: int):
+    form = await request.form()
+    try:
+        mould = await run_in_threadpool(run_mould_change, set_mould_status, mould_id,
+                                        form.get('new_status'), form.get('remark', ''))
+        return mould_redirect(mould['MouldID'], f"Mould status changed to {mould['Status']}.")
+    except ValueError as exc:
+        return mould_redirect(mould_id, str(exc), 'error')
+    except Exception:
+        return mould_redirect(mould_id, 'Unable to change Mould status. Please retry.', 'error')
 
 
 @app.get('/usage', response_class=HTMLResponse)
