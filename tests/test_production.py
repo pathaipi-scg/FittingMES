@@ -113,11 +113,12 @@ class TransactionTests(unittest.TestCase):
         conn=MagicMock(); cursor=conn.cursor.return_value
         cursor.description=[(k,) for k in LOT]
         cursor.fetchall.return_value=[tuple(LOT.values())]
-        cursor.fetchone.side_effect=[(0,),(next_no,)]
+        cursor.fetchone.side_effect=[(0,),None,(next_no,)]
         return conn,cursor
 
     def test_latest_void_history_no_delete(self):
         conn,cursor=self.setup_update()
+        cursor.fetchone.side_effect=[(0,),None,(2,)]
         update_lot(conn,7,void=True)
         sqls=[c.args[0] for c in cursor.execute.call_args_list]
         self.assertTrue(any('SET IsActive=0' in s for s in sqls))
@@ -129,6 +130,14 @@ class TransactionTests(unittest.TestCase):
         conn,_=self.setup_update(3)
         with self.assertRaisesRegex(ValueError,'latest'): update_lot(conn,7,void=True)
         conn.rollback.assert_called_once(); conn.commit.assert_not_called()
+
+    def test_void_with_press_production_is_blocked_to_preserve_mould_usage(self):
+        conn,cursor=self.setup_update()
+        cursor.fetchone.side_effect=[(0,),('press row',)]
+        with self.assertRaisesRegex(ValueError,'Press Production records exist'):
+            update_lot(conn,7,void=True)
+        conn.rollback.assert_called_once()
+        conn.commit.assert_not_called()
 
     def test_plan_date_locked(self):
         conn,_=self.setup_update()

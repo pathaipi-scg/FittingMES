@@ -98,6 +98,16 @@ def update_lot(conn, production_id, selected=None, void=False):
             raise ValueError('This Lot is no longer active.')
         lot = found[0]
         if void:
+            cursor.execute('''SELECT TOP (1) press.PressProductionID
+                FROM dbo.PressProduction AS press
+                LEFT JOIN dbo.MouldUsage AS usage
+                  ON usage.PressProductionID=press.PressProductionID
+                WHERE press.ProductionID=?
+                  AND (usage.MouldUsageID IS NOT NULL
+                       OR (press.MouldID IS NOT NULL AND press.CounterQty>0))
+                ORDER BY press.PressProductionID''', production_id)
+            if cursor.fetchone():
+                raise ValueError('This Lot cannot be VOID because Press Production records exist; preserve their Mould usage attribution.')
             if next_running_no(cursor, lot['LotPrefix'], lot.get('ProductFamily'), lot['ProductCode'], lot['ProdDate']) - 1 != lot['RunningNo']:
                 raise ValueError('Only the latest active running number can be VOID.')
             cursor.execute('UPDATE dbo.ProductionLot SET IsActive=0, UpdatedAt=SYSDATETIME() WHERE ProductionID=?', production_id)

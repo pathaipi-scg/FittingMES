@@ -25,6 +25,8 @@ from app.press_mc import (page_context as press_mc_context, add_press, update_pr
                           assign_line, remove_from_line, set_active, save_capabilities)
 from app.mould import (page_context as mould_context, register_mould, update_mould_info,
                        send_to_recondition, return_from_recondition, set_mould_status)
+from app.press_production import (build_press_production_context,
+                                  save_press_production as save_press_production_row)
 
 app = FastAPI(title="FittingMES", version="0.1.0")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -70,11 +72,13 @@ def product_selection_context(cursor, selected):
 
 
 def production_page(request, plan_id=None, product_code=None, confirm=False,
-                    create=False, running_no=None, production_date=None, production_id=None, edit=False, save=False, void=False, production_input=None, data_saved=False, product_family=None, product_choices=None):
+                    create=False, running_no=None, production_date=None, production_id=None, edit=False, save=False, void=False, production_input=None, data_saved=False, product_family=None, product_choices=None, press_message=None, press_message_type=None):
     requested_date = production_date
     production_date = production_date or date.today()
     context = dict(families=FAMILIES, product_family=None, product_previews={}, production_data={}, calculated=calculate(None, None), data_saved=data_saved, production_date=production_date, lots=[], current=None, edit=edit, edit_plans=[], plans=[], selected=None, products=[], material_prefix=None,
-                   product_code=None, lot=None, error=None, running_no=None, created_lot=None)
+                   product_code=None, lot=None, error=None, running_no=None, created_lot=None,
+                   press_production=[], eligible_presses=[], eligible_moulds=[], press_product_error=None,
+                   press_message=press_message, press_message_type=press_message_type)
     status = 200
     try:
         with closing(get_connection()) as conn:
@@ -105,6 +109,11 @@ def production_page(request, plan_id=None, product_code=None, confirm=False,
                         MaterialName=effective["MaterialName"], PlanQty=effective["PlanCount"],
                         VersionNo=effective.get("VersionNo"))
                 context["current"] = current
+                try:
+                    context.update(build_press_production_context(cursor, current))
+                except Exception:
+                    context.update(press_production=[], eligible_presses=[], eligible_moulds=[],
+                                   press_product_error='Unable to load Press Production choices or rows.')
                 if production_input is not None:
                     context["production_data"] = production_input
                     context["current"]["Shift"] = production_input.get("Shift", current["Shift"])
@@ -169,8 +178,11 @@ def production_page(request, plan_id=None, product_code=None, confirm=False,
 
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request, plan_id: str | None = None, production_date: date | None = None,
-         production_id: int | None = None, edit: bool = False, data_saved: bool = False):
-    return production_page(request, plan_id, production_date=production_date, production_id=production_id, edit=edit, data_saved=data_saved)
+        production_id: int | None = None, edit: bool = False, data_saved: bool = False,
+        press_message: str | None = None, press_message_type: str | None = None):
+    return production_page(request, plan_id, production_date=production_date, production_id=production_id,
+                      edit=edit, data_saved=data_saved, press_message=press_message,
+                      press_message_type=press_message_type)
 
 
 @app.post("/", response_class=HTMLResponse)
@@ -230,6 +242,44 @@ def save_production(request: Request, production_id: int,
                CuringQty=curing, Remark=remark)
     return production_page(request, production_id=production_id,
                            production_date=production_date, production_input=raw)
+
+
+def save_press_production_change(production_id, data, press_production_id=None):
+    with closing(get_connection()) as conn:
+        return save_press_production_row(conn, production_id, data, press_production_id)
+
+
+def press_production_redirect(production_id, message, message_type='success'):
+    params = {'production_id': production_id, 'press_message': message,
+              'press_message_type': message_type}
+    return RedirectResponse('/?' + urlencode(params), status_code=303)
+
+
+async def save_press_production_route_action(request, production_id, press_production_id=None):
+    form = await request.form()
+    data = dict(MachineCode=form.get('machine_code'), MouldID=form.get('mould_id'),
+                DispatchQty=form.get('dispatch_qty'), CounterQty=form.get('counter_qty'),
+                CuringQty=form.get('curing_qty'),
+                ProductionStartTime=form.get('production_start_time'),
+                ProductionEndTime=form.get('production_end_time'), Remark=form.get('remark'))
+    try:
+        await run_in_threadpool(save_press_production_change, production_id, data, press_production_id)
+        return press_production_redirect(production_id, 'Press Production saved.')
+    except ValueError as exc:
+        return press_production_redirect(production_id, str(exc), 'error')
+    except Exception:
+        return press_production_redirect(production_id, 'Unable to save Press Production. Please retry.', 'error')
+
+
+@app.post('/lots/{production_id}/press-production')
+async def add_press_production_route(request: Request, production_id: int):
+    return await save_press_production_route_action(request, production_id)
+
+
+@app.post('/lots/{production_id}/press-production/{press_production_id}')
+async def update_press_production_route(request: Request, production_id: int,
+                                        press_production_id: int):
+    return await save_press_production_route_action(request, production_id, press_production_id)
 
 
 @app.get("/depallet", response_class=HTMLResponse)

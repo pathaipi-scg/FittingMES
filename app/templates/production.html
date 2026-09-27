@@ -113,6 +113,7 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
 .family-product-select{width:auto;max-width:170px}
 #family-product-form .family-lot-preview{display:flex;flex-basis:100%;flex-wrap:wrap;gap:8px}
 .family-lot-preview output{font-weight:600}
+.press-production-table{min-width:850px}.press-production-table th,.press-production-table td{padding:3px 4px}.press-production-actions{display:flex;gap:4px;align-items:end;flex-wrap:wrap;margin:3px 0}.press-production-actions label{display:flex;flex-direction:column;gap:2px}.press-production-actions input,.press-production-actions select{height:22px;min-width:75px;padding:1px 3px}.press-production-actions .press-choice{min-width:105px}.press-production-actions .mould-choice{min-width:150px}.press-production-message{margin:2px 0}.press-production-message.error{color:#9d2525}
 
 </style></head><body><main>
 <header>FittingMES / PRODUCTION · CRTC / 30A1 / SB2-3</header>
@@ -205,7 +206,45 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
 </dl></div>
 
 {% else %}<p class="muted">Select a Lot to enter production data.</p>{% endif %}
-</section></div></div>
+</section>
+{% if current %}
+<section class="panel" aria-label="Press Production">
+<div class="lot-input-heading"><h2>PRESS PRODUCTION</h2><span class="muted">Per-Press records for {{ current.LotNo }}</span></div>
+{% if press_message %}<p class="press-production-message{% if press_message_type == 'error' %} error{% endif %}" role="status">{{ press_message }}</p>{% endif %}
+{% if press_product_error %}<p class="error" role="alert">{{ press_product_error }}</p>{% endif %}
+{% for pp in press_production %}<form id="press-production-{{ pp.PressProductionID }}" method="post" action="/lots/{{ current.ProductionID }}/press-production/{{ pp.PressProductionID }}"></form>{% endfor %}
+<div class="table-scroll"><table class="press-production-table"><thead><tr><th>Press</th><th>Mould</th><th>Dispatch</th><th>Counter</th><th>Curing</th><th>Start</th><th>End</th><th>Remark</th><th>Save</th></tr></thead><tbody>
+{% for pp in press_production %}
+{% set assignment_locked = (pp.UsageCycles is not none) or ((pp.CounterQty or 0) > 0) %}
+<tr>
+<td>{{ pp.MachineCode }}{% if pp.MachineName %} / {{ pp.MachineName }}{% endif %}<input form="press-production-{{ pp.PressProductionID }}" type="hidden" name="machine_code" value="{{ pp.MachineCode }}"></td>
+<td>{% if assignment_locked %}{{ pp.MouldNo or 'Unknown Mould' }} / {{ pp.MouldName or '' }}<input form="press-production-{{ pp.PressProductionID }}" type="hidden" name="mould_id" value="{{ pp.MouldID }}">{% else %}<select form="press-production-{{ pp.PressProductionID }}" class="mould-choice" name="mould_id" aria-label="Mould for {{ pp.MachineCode }}"><option value="">No Mould / Select Mould</option>{% for mould in eligible_moulds %}<option value="{{ mould.MouldID }}" {% if pp.MouldID == mould.MouldID %}selected{% endif %}>{{ mould.MouldNo }} / {{ mould.MouldName }}</option>{% endfor %}{% if pp.MouldID and pp.MouldNo and pp.MouldID not in eligible_moulds|map(attribute='MouldID')|list %}<option value="{{ pp.MouldID }}" selected>{{ pp.MouldNo }} / {{ pp.MouldName }} (not eligible)</option>{% endif %}</select>{% endif %}</td>
+<td><input form="press-production-{{ pp.PressProductionID }}" name="dispatch_qty" type="number" min="0" step="1" value="{{ pp.DispatchQty if pp.DispatchQty is not none else '' }}" aria-label="Dispatch {{ pp.MachineCode }}"></td>
+<td><input form="press-production-{{ pp.PressProductionID }}" name="counter_qty" type="number" min="0" max="2147483647" step="1" value="{{ pp.CounterQty if pp.CounterQty is not none else '' }}" required aria-label="Counter {{ pp.MachineCode }}"></td>
+<td><input form="press-production-{{ pp.PressProductionID }}" name="curing_qty" type="number" min="0" max="2147483647" step="1" value="{{ pp.CuringQty if pp.CuringQty is not none else '' }}" aria-label="Curing {{ pp.MachineCode }}"></td>
+<td><input form="press-production-{{ pp.PressProductionID }}" name="production_start_time" type="datetime-local" step="1" value="{{ pp.ProductionStartTime.strftime('%Y-%m-%dT%H:%M:%S') if pp.ProductionStartTime else '' }}" aria-label="Start {{ pp.MachineCode }}"></td>
+<td><input form="press-production-{{ pp.PressProductionID }}" name="production_end_time" type="datetime-local" step="1" value="{{ pp.ProductionEndTime.strftime('%Y-%m-%dT%H:%M:%S') if pp.ProductionEndTime else '' }}" aria-label="End {{ pp.MachineCode }}"></td>
+<td><input form="press-production-{{ pp.PressProductionID }}" name="remark" maxlength="2000" value="{{ pp.Remark or '' }}" aria-label="Remark {{ pp.MachineCode }}"></td>
+<td><button form="press-production-{{ pp.PressProductionID }}" type="submit">Save</button></td>
+</tr>
+{% else %}<tr><td colspan="9" class="muted">No Press Production rows for this Lot.</td></tr>{% endfor %}
+</tbody></table></div>
+{% if eligible_presses and not press_product_error %}
+<form class="press-production-actions" method="post" action="/lots/{{ current.ProductionID }}/press-production">
+<label>Press<select class="press-choice" name="machine_code" required><option value="">Select Press</option>{% for press in eligible_presses %}{% if press.PressCode not in press_production|map(attribute='MachineCode')|list %}<option value="{{ press.PressCode }}">{{ press.PressCode }} / {{ press.PressName }}</option>{% endif %}{% endfor %}</select></label>
+<label>Mould<select class="mould-choice" name="mould_id" required><option value="">Select ACTIVE Mould</option>{% for mould in eligible_moulds %}<option value="{{ mould.MouldID }}">{{ mould.MouldNo }} / {{ mould.MouldName }}</option>{% endfor %}</select></label>
+<label>Dispatch<input name="dispatch_qty" type="number" min="0" step="1"></label>
+<label>Counter<input name="counter_qty" type="number" min="0" max="2147483647" step="1" required></label>
+<label>Curing<input name="curing_qty" type="number" min="0" max="2147483647" step="1"></label>
+<label>Start<input name="production_start_time" type="datetime-local" step="1"></label>
+<label>End<input name="production_end_time" type="datetime-local" step="1"></label>
+<label>Remark<input name="remark" maxlength="2000"></label>
+<button class="primary" type="submit" {% if not eligible_presses|rejectattr('PressCode','in',press_production|map(attribute='MachineCode')|list)|list or not eligible_moulds %}disabled{% endif %}>Add Press Production</button>
+</form>
+{% elif not press_product_error %}<p class="muted">No active Press is currently enabled for this Lot Product.</p>{% endif %}
+</section>
+{% endif %}
+</div></div>
 </main>
 <script>
 (() => {

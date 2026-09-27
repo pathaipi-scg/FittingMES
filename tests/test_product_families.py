@@ -193,7 +193,7 @@ class SequenceTests(unittest.TestCase):
             conn=MagicMock(); cursor=conn.cursor.return_value
             lot=dict(LOT,ProductFamily=family)
             cursor.description=[(k,) for k in lot]; cursor.fetchall.return_value=[tuple(lot.values())]
-            cursor.fetchone.side_effect=[(0,),(3,)]
+            cursor.fetchone.side_effect=[(0,),None,(3,)]
             with self.assertRaisesRegex(ValueError,'latest'): update_lot(conn,7,void=True)
             args=next(c.args for c in cursor.execute.call_args_list if 'MAX(RunningNo)' in c.args[0])
             self.assertEqual(args[1:],(family,'06',date(2026,9,1)))
