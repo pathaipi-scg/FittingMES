@@ -1,0 +1,148 @@
+{% extends 'api_base.html' %}
+{% block content %}
+<style>
+.pressmc-layout{display:grid;grid-template-columns:minmax(220px,280px) minmax(0,1fr);gap:7px;align-items:start}
+.pressmc-list{width:100%;table-layout:fixed}.pressmc-list th,.pressmc-list td{padding:3px 4px}
+.pressmc-list tr[aria-selected=true] td{background:#eaf4ff;border-top:1px solid #1765ad;border-bottom:1px solid #1765ad}
+.pressmc-list a{display:block;color:inherit;text-decoration:none}
+.pressmc-list .status-active{color:#25643b}.pressmc-list .status-inactive{color:#8b4d22}
+.pressmc-main{min-width:0}.pressmc-toolbar{display:flex;gap:5px;align-items:center;flex-wrap:wrap}
+.pressmc-toolbar form{display:flex;gap:4px;align-items:center;flex-wrap:wrap;margin:2px 0}
+.pressmc-toolbar input[type=text],.pressmc-toolbar select{height:23px;min-width:110px}
+.pressmc-matrix{display:grid;grid-template-columns:repeat(2,minmax(280px,1fr));gap:6px}
+.pressmc-family{border:1px solid #dbe2ea;border-radius:2px;min-width:0}
+.pressmc-family h3{margin:0;padding:4px 5px;background:#f1f4f7;font-size:10px}
+.pressmc-family table{table-layout:fixed}.pressmc-family td{padding:2px 4px}.pressmc-family .cap-check{width:34px;text-align:center}
+.pressmc-family input[type=checkbox]{height:auto;margin:0;vertical-align:middle}
+.pressmc-actions{display:flex;gap:4px;align-items:center;flex-wrap:wrap;margin-top:5px}
+.pressmc-history{max-height:190px;overflow:auto}.pressmc-history td,.pressmc-history th{padding:2px 4px}
+.pressmc-message{margin:4px 0;color:#25643b}.pressmc-message.error{color:#9d2525}
+#pressmc-save-capabilities:disabled{opacity:.45;cursor:not-allowed}
+@media(max-width:760px){.pressmc-layout{grid-template-columns:1fr}.pressmc-matrix{grid-template-columns:1fr}}
+</style>
+<h1>PressMc</h1>
+{% if error %}<div class="error" role="alert">{{ error }}</div>{% endif %}
+{% if message %}<div class="pressmc-message{% if message_type == 'error' %} error{% endif %}" role="status">{{ message }}</div>{% endif %}
+<div class="pressmc-layout">
+  <section class="panel">
+    <h2>Press Machines <span class="muted">{{ presses|length }}</span></h2>
+    <div class="table-scroll"><table class="pressmc-list">
+      <colgroup><col style="width:42px"><col><col style="width:52px"><col style="width:52px"></colgroup>
+      <thead><tr><th>Code</th><th>Name</th><th>Line</th><th>Status</th></tr></thead>
+      <tbody>{% for press in presses %}
+      <tr aria-selected="{{ 'true' if selected and selected.PressCode == press.PressCode else 'false' }}">
+        <td><a href="/press-mc?production_date={{ production_date }}&amp;press_code={{ press.PressCode }}">{{ press.PressCode }}</a></td>
+        <td><a href="/press-mc?production_date={{ production_date }}&amp;press_code={{ press.PressCode }}">{{ press.PressName or '' }}</a></td>
+        <td>{{ press.CurrentLine or '—' }}</td>
+        <td class="{{ 'status-active' if press.IsActive else 'status-inactive' }}">{{ 'Active' if press.IsActive else 'Inactive' }}</td>
+      </tr>{% endfor %}</tbody>
+    </table></div>
+  </section>
+
+  <div class="pressmc-main">
+  {% if selected %}
+    <section class="panel">
+      <h2>{{ selected.PressCode }} / {{ selected.PressName or '' }}</h2>
+      <div class="pressmc-toolbar">
+        <form method="post" action="/press-mc/{{ selected.PressCode }}/name">
+          <input type="hidden" name="production_date" value="{{ production_date }}">
+          <label for="press-name">Press Name</label>
+          <input id="press-name" name="press_name" type="text" maxlength="100" value="{{ selected.PressName or '' }}" required>
+          <button type="submit">Save Name</button>
+        </form>
+        <form method="post" action="/press-mc/{{ selected.PressCode }}/line" data-confirm="Move this Press to the selected Line?">
+          <input type="hidden" name="production_date" value="{{ production_date }}">
+          <label for="press-line">Current Line</label>
+          <select id="press-line" name="line_code"><option value="">Unassigned</option>
+            {% for line in lines %}<option value="{{ line.EquipmentCode }}" {% if line.EquipmentCode == selected.CurrentLine %}selected{% endif %}>{{ line.EquipmentCode }} / {{ line.EquipmentName }}</option>{% endfor %}
+          </select><input type="hidden" name="remark" value="PressMc line assignment">
+          <button type="submit">Save Line</button>
+        </form>
+        {% if selected.CurrentLine %}
+        <form method="post" action="/press-mc/{{ selected.PressCode }}/remove-line" data-confirm="Remove this Press from its current Line? Historical line assignment will be retained.">
+          <input type="hidden" name="production_date" value="{{ production_date }}">
+          <input type="hidden" name="remark" value="PressMc unassignment"><button type="submit">Remove from Line</button>
+        </form>{% endif %}
+        <form method="post" action="/press-mc/{{ selected.PressCode }}/active" data-confirm="{{ 'Disable' if selected.IsActive else 'Enable' }} this Press? The Press record will be retained.">
+          <input type="hidden" name="production_date" value="{{ production_date }}">
+          <input type="hidden" name="is_active" value="{{ '0' if selected.IsActive else '1' }}">
+          <input type="hidden" name="remark" value="PressMc status change">
+          <button type="submit">{{ 'Disable Press' if selected.IsActive else 'Enable Press' }}</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Product Capability</h2>
+      <form id="pressmc-capability-form" data-press-code="{{ selected.PressCode }}">
+        <div class="pressmc-matrix">
+          {% for group in capability_groups %}
+          <section class="pressmc-family">
+            <h3>{{ group.ProductFamily }}</h3>
+            <table><colgroup><col class="cap-check"><col style="width:42px"><col><col style="width:40%"></colgroup>
+              <tbody>{% for product in group.products %}<tr>
+                <td class="cap-check"><input type="checkbox" data-family="{{ product.ProductFamily }}" data-product-code="{{ product.ProductCode }}" data-original="{{ '1' if product.CanProduce else '0' }}" {% if product.CanProduce %}checked{% endif %} aria-label="{{ product.ProductFamily }} {{ product.ProductCode }} {{ product.ProductName }}"></td>
+                <td>{{ product.ProductCode }}</td><td>{{ product.ProductName }}</td><td>{{ product.ProductNameTH or '' }}</td>
+              </tr>{% endfor %}</tbody>
+            </table>
+          </section>
+          {% endfor %}
+        </div>
+        <div class="pressmc-actions"><button id="pressmc-save-capabilities" class="primary" type="submit" disabled>Save Capability Changes</button><span id="pressmc-capability-status" role="status" aria-live="polite"></span></div>
+      </form>
+    </section>
+    <section class="panel">
+      <h2>Configuration History</h2>
+      {% if history %}<div class="table-scroll pressmc-history"><table><thead><tr><th>Type</th><th>Detail</th><th>Change</th><th>From</th><th>To</th><th>Remark</th><th>Changed By</th></tr></thead><tbody>
+        {% for row in history %}<tr><td>{{ row.HistoryType }}</td><td>{{ row.Detail }}</td><td>{{ row.ChangeType }}</td><td>{{ row.OccurredAt }}</td><td>{{ row.EffectiveTo or '' }}</td><td>{{ row.Remark or '' }}</td><td>{{ row.ChangedBy or '' }}</td></tr>{% endfor %}
+      </tbody></table></div>{% else %}<span class="muted">No history recorded.</span>{% endif %}
+    </section>
+  {% else %}<section class="panel"><p class="muted">No Press Machines registered.</p></section>{% endif %}
+
+  <section class="panel">
+    <h2>Add Press Machine</h2>
+    <form method="post" action="/press-mc/add" class="pressmc-toolbar">
+    <input type="hidden" name="production_date" value="{{ production_date }}">
+      <label for="new-press-code">Press Code</label><input id="new-press-code" name="press_code" type="text" maxlength="20" required>
+      <label for="new-press-name">Press Name</label><input id="new-press-name" name="press_name" type="text" maxlength="100" required>
+      <label for="new-press-line">Line</label><select id="new-press-line" name="line_code"><option value="">Unassigned</option>{% for line in lines %}<option value="{{ line.EquipmentCode }}">{{ line.EquipmentCode }} / {{ line.EquipmentName }}</option>{% endfor %}</select>
+      <input type="hidden" name="remark" value="PressMc initial registration"><button type="submit">Add Press</button>
+    </form>
+  </section>
+  </div>
+</div>
+<script>
+(() => {
+  for (const form of document.querySelectorAll('form[data-confirm]')) {
+    form.addEventListener('submit', event => {
+      if (!window.confirm(form.dataset.confirm)) event.preventDefault();
+    });
+  }
+  const form = document.getElementById('pressmc-capability-form');
+  if (!form) return;
+  const button = document.getElementById('pressmc-save-capabilities');
+  const status = document.getElementById('pressmc-capability-status');
+  const checkboxes = Array.from(form.querySelectorAll('input[type="checkbox"][data-family]'));
+  const changes = () => checkboxes.filter(item => item.checked !== (item.dataset.original === '1'));
+  const update = () => { button.disabled = changes().length === 0; };
+  form.addEventListener('change', update);
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const changed = changes();
+    if (!changed.length) return;
+    button.disabled = true; status.textContent = 'Saving capability changes...';
+    try {
+      const response = await fetch('/press-mc/' + encodeURIComponent(form.dataset.pressCode) + '/capabilities', {
+        method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},
+        body:JSON.stringify({changes:changed.map(item => ({ProductFamily:item.dataset.family,
+          ProductCode:item.dataset.productCode,CanProduce:item.checked})),remark:'PressMc capability update'})
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Unable to save capability changes.');
+      const url = new URL(window.location.href); url.searchParams.set('press_code',form.dataset.pressCode);
+      window.location.assign(url);
+    } catch (error) { status.textContent = error.message; button.disabled = false; }
+  });
+})();
+</script>
+{% endblock %}

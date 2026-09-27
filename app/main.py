@@ -3,6 +3,7 @@ import json
 from contextlib import closing
 from pathlib import Path
 from datetime import date, time
+from urllib.parse import urlencode
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.encoders import jsonable_encoder
 from starlette.concurrency import run_in_threadpool
@@ -20,6 +21,8 @@ from app.depallet import (read_context as read_depallet_context, read_reasons as
                           reorder_depallet_run)
 from app.products import FAMILIES, lot_prefix, read_products, read_mapping, confirm_mapping, selected_product, month_start
 from app.production_data import read_production_data, save_production_data, calculate
+from app.press_mc import (page_context as press_mc_context, add_press, update_press_name,
+                          assign_line, remove_from_line, set_active, save_capabilities)
 
 app = FastAPI(title="FittingMES", version="0.1.0")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -410,6 +413,135 @@ def prod_api_page(request: Request, production_date: date | None = None,
 def reject_api_page(request: Request, production_date: date | None = None):
     return templates.TemplateResponse(request=request, name="reject_api.html", context=dict(
         page_title="REJECT API", active_tab="reject-api", production_date=production_date or date.today()))
+
+
+@app.get("/press-mc", response_class=HTMLResponse)
+def press_mc_page(request: Request, production_date: date | None = None,
+                  press_code: str | None = None, message: str | None = None,
+                  message_type: str | None = None):
+    production_date = production_date or date.today()
+    context = dict(page_title="PressMc", active_tab="press-mc", production_date=production_date,
+                   presses=[], lines=[], selected=None, capability_groups=[], history=[], error=None,
+                   message=message, message_type=message_type)
+    status = 200
+    try:
+        with closing(get_connection()) as conn:
+            context.update(press_mc_context(conn.cursor(), press_code))
+    except ValueError as exc:
+        context['error'] = str(exc)
+        status = 400
+    except Exception:
+        context['error'] = 'Unable to load Press configuration. Please retry.'
+        status = 503
+    return templates.TemplateResponse(request=request, name='press_mc.html', context=context,
+                                      status_code=status, headers={'Cache-Control':'no-store'})
+
+
+def press_mc_redirect(press_code=None, message=None, message_type='success', production_date=None):
+    params = {}
+    if production_date:
+        params['production_date'] = str(production_date)
+    if press_code:
+        params['press_code'] = press_code
+    if message:
+        params['message'] = message
+        params['message_type'] = message_type
+    return RedirectResponse('/press-mc' + ('?' + urlencode(params) if params else ''), status_code=303)
+
+
+def run_press_mc_change(operation, *args):
+    try:
+        with closing(get_connection()) as conn:
+            result = operation(conn, *args)
+        return result
+    except ValueError:
+        raise
+
+
+def save_press_mc_capabilities(press_code, changes, remark):
+    with closing(get_connection()) as conn:
+        return save_capabilities(conn, press_code, changes, remark)
+
+
+@app.post('/press-mc/add')
+async def press_mc_add_route(request: Request):
+    form = await request.form()
+    try:
+        press_code = await run_in_threadpool(run_press_mc_change, add_press,
+            form.get('press_code'), form.get('press_name'), form.get('line_code'), form.get('remark'))
+        return press_mc_redirect(press_code, 'Press machine added.', production_date=form.get('production_date'))
+    except ValueError as exc:
+        return press_mc_redirect(form.get('press_code'), str(exc), 'error', form.get('production_date'))
+    except Exception:
+        return press_mc_redirect(form.get('press_code'), 'Unable to add Press machine.', 'error', form.get('production_date'))
+
+
+@app.post('/press-mc/{press_code}/name')
+async def press_mc_name_route(press_code: str, request: Request):
+    form = await request.form()
+    try:
+        await run_in_threadpool(run_press_mc_change, update_press_name, press_code, form.get('press_name'))
+        return press_mc_redirect(press_code, 'Press name saved.', production_date=form.get('production_date'))
+    except ValueError as exc:
+        return press_mc_redirect(press_code, str(exc), 'error', form.get('production_date'))
+    except Exception:
+        return press_mc_redirect(press_code, 'Unable to update Press name.', 'error', form.get('production_date'))
+
+
+@app.post('/press-mc/{press_code}/line')
+async def press_mc_line_route(press_code: str, request: Request):
+    form = await request.form()
+    try:
+        await run_in_threadpool(run_press_mc_change, assign_line, press_code,
+                                form.get('line_code'), form.get('remark'))
+        return press_mc_redirect(press_code, 'Press Line assignment saved.', production_date=form.get('production_date'))
+    except ValueError as exc:
+        return press_mc_redirect(press_code, str(exc), 'error', form.get('production_date'))
+    except Exception:
+        return press_mc_redirect(press_code, 'Unable to update Press Line.', 'error', form.get('production_date'))
+
+
+@app.post('/press-mc/{press_code}/remove-line')
+async def press_mc_remove_line_route(press_code: str, request: Request):
+    form = await request.form()
+    try:
+        await run_in_threadpool(run_press_mc_change, remove_from_line, press_code, form.get('remark'))
+        return press_mc_redirect(press_code, 'Press is now unassigned from a Line.', production_date=form.get('production_date'))
+    except ValueError as exc:
+        return press_mc_redirect(press_code, str(exc), 'error', form.get('production_date'))
+    except Exception:
+        return press_mc_redirect(press_code, 'Unable to remove Press from Line.', 'error', form.get('production_date'))
+
+
+@app.post('/press-mc/{press_code}/active')
+async def press_mc_active_route(press_code: str, request: Request):
+    form = await request.form()
+    try:
+        active = str(form.get('is_active') or '') == '1'
+        await run_in_threadpool(run_press_mc_change, set_active, press_code, active, form.get('remark'))
+        return press_mc_redirect(press_code, 'Press status updated.', production_date=form.get('production_date'))
+    except ValueError as exc:
+        return press_mc_redirect(press_code, str(exc), 'error', form.get('production_date'))
+    except Exception:
+        return press_mc_redirect(press_code, 'Unable to update Press status.', 'error', form.get('production_date'))
+
+
+@app.post('/press-mc/{press_code}/capabilities')
+async def press_mc_capability_route(press_code: str, request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({'error':'Invalid capability request.'}, status_code=400)
+    if not isinstance(payload, dict) or set(payload) - {'changes','remark'} or 'changes' not in payload:
+        return JSONResponse({'error':'Invalid capability request.'}, status_code=400)
+    try:
+        await run_in_threadpool(save_press_mc_capabilities, press_code,
+                                payload['changes'], payload.get('remark',''))
+        return JSONResponse({'message':'Press capability changes saved.'})
+    except ValueError as exc:
+        return JSONResponse({'error':str(exc)}, status_code=400)
+    except Exception:
+        return JSONResponse({'error':'Unable to save Press capability changes.'}, status_code=503)
 
 
 @app.get('/usage', response_class=HTMLResponse)
