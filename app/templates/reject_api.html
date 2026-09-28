@@ -1,2 +1,36 @@
 {% extends 'api_base.html' %}
-{% block content %}<section class="panel"><h1>REJECT API</h1><p>Coming next</p></section>{% endblock %}
+{% block content %}
+<section class="panel"><h1>REJECT API</h1>
+<p class="muted">CB contract review and GET OutputDetails preview only. ChangeStatus POST is disabled.</p></section>
+{% if error %}<div class="error" role="alert">{{ error }}</div>{% endif %}
+<section class="panel" aria-label="Reject records">
+<form method="get" action="/reject-api">
+<input type="hidden" name="production_date" value="{{ production_date }}">
+<div class="table-scroll"><table><thead><tr><th>Select</th><th>Production Date</th><th>Shift</th><th>Lot No.</th><th>Material Code</th><th>Product</th><th>Counter</th><th>Curing</th><th>Wet Reject</th><th>Ready</th><th>Local status</th></tr></thead><tbody>
+{% for row in records %}<tr>
+<td><input type="radio" name="production_id" value="{{ row.ProductionID }}" aria-label="Select {{ row.LotNo }}" {% if selected_id == row.ProductionID %}checked{% endif %}></td>
+<td>{{ row.ProdDate }}</td><td>{{ row.Shift or '-' }}</td><td>{{ row.LotNo or '-' }}</td><td>{{ row.MaterialCode or '-' }}</td>
+<td>{{ row.ProductFamily or '' }} {{ row.ProductCode or '' }}{% if row.MaterialName %} &middot; {{ row.MaterialName }}{% endif %}</td>
+<td>{{ row.CounterQty if row.CounterQty is not none else '-' }}</td><td>{{ row.CuringQty if row.CuringQty is not none else '-' }}</td><td>{{ row.RecordedRejectTotal }}</td>
+<td class="status">{% if row.RejectReadiness.ready %}READY{% else %}NOT READY: {{ row.RejectReadiness.missing|join(', ') }}{% endif %}</td><td class="status">{{ row.RejectPISStatus }}</td>
+</tr>{% else %}<tr><td colspan="11" class="muted">No active Production Lots for this date.</td></tr>{% endfor %}
+</tbody></table></div>
+<button class="primary" type="submit" name="preview_one" value="true" {% if not records %}disabled{% endif %}>PREVIEW REJECT</button>
+<button class="primary" type="submit" name="preview_all" value="true" {% if not records %}disabled{% endif %}>PREVIEW ALL REJECT</button>
+<button class="primary" type="submit" name="lookup_one" value="true" {% if not records %}disabled{% endif %}>LOOKUP OUTPUTDETAILS</button>
+<button class="primary" type="submit" name="lookup_all" value="true" {% if not records %}disabled{% endif %}>LOOKUP ALL OUTPUTDETAILS</button>
+</form></section>
+{% if lookup_errors %}<section class="panel"><div class="error" role="alert">{% for message in lookup_errors %}<div>{{ message }}</div>{% endfor %}</div></section>{% endif %}
+{% if lookup_results %}<section class="panel" aria-label="OutputDetails preview"><h2>OUTPUTDETAILS / CHANGESTATUS PREVIEW</h2>
+<p class="muted">GET completed. No ChangeStatus POST was made.</p>
+{% for result in lookup_results %}<h2>{{ result.record.LotNo }} &middot; ProductionID {{ result.record.ProductionID }}</h2>
+<p>OutputDetail rows: {{ result.output_details|length }} &middot; Curing remaining: {{ result.summary.curingRemaining }} &middot; Curing OutputDetail ID: {{ result.summary.curingOutputDetailId or 'NOT FOUND' }} &middot; PIS reject total: {{ result.summary.totalReject }}</p>
+<pre class="reject-preview">{{ result.payload | tojson(indent=2) }}</pre>
+{% endfor %}</section>{% endif %}
+{% if previews %}<section class="panel" aria-label="Reject preview"><h2>CHANGE STATUS PREVIEW &middot; {{ production_date }}</h2>
+<p class="muted">Dry run only. No request is sent. Locally known reject quantities use persisted WetReject rows.</p>
+{% for preview in previews %}<h2>{{ preview.record.LotNo }} &middot; ProductionID {{ preview.record.ProductionID }}</h2>
+<p>READY FOR REVIEW. fromOutputDetailId and updateDate remain unresolved until the CB GET OutputDetails state is available.</p>
+<pre class="reject-preview">{{ preview.payload | tojson(indent=2) }}</pre>
+{% endfor %}</section>{% endif %}
+{% endblock %}

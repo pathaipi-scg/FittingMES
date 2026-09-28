@@ -206,12 +206,12 @@ class ProdApiTests(unittest.TestCase):
                 self.assertEqual(asyncio.run(get_page(path,method='POST'))[0],405)
             connection.assert_not_called()
 
-    def test_reject_placeholder_has_navigation_without_database_access(self):
+    def test_reject_page_is_read_only_and_has_navigation(self):
         with patch('app.main.get_connection') as connection:
             status,body = asyncio.run(get_page('/reject-api','production_date=2026-09-22'))
-        connection.assert_not_called()
+        connection.assert_called_once()
         self.assertEqual(status,200)
-        self.assertIn('Coming next',body)
+        self.assertIn('No active Production Lots',body)
         self.assertRegex(body,r'href="/reject-api\?production_date=2026-09-22" aria-current="page"')
         scripts=re.findall(r'<script>(.*?)</script>',body,re.S)
         self.assertEqual(len(scripts),1)

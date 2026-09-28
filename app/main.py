@@ -14,11 +14,15 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from app.database import get_connection
 from app.pis_config import PISConfig
-from app.pis_client import PISClient
+from app.pis_client import PISClient, PISClientError
 from app.usage import read_usage_context, save_usage
 from app.prod_api import read_prod_records, build_pis_date_preview, field_mapping, lot_readiness, preview_readiness
 from app.production_pis_log import latest_states
 from app.production_pis_send import FAILED, SUCCESS, UNKNOWN, send_ready_groups
+from app.reject_api import (read_reject_records, reject_readiness, build_reject_preview,
+                            build_output_details_query, parse_output_details_response,
+                            summarize_output_details, build_change_status_preview)
+from app.reject_pis_log import latest_states as latest_reject_states
 from app.depallet import (read_context as read_depallet_context, read_reasons as read_depallet_reasons,
                           read_curing_lots, read_daily_work, save_depallet, save_depallet_batch,
                           reorder_depallet_run)
@@ -673,9 +677,80 @@ def send_all_prod(request: Request, production_date: date = Form(...)):
 
 
 @app.get("/reject-api", response_class=HTMLResponse)
-def reject_api_page(request: Request, production_date: date | None = None):
-    return templates.TemplateResponse(request=request, name="reject_api.html", context=dict(
-        page_title="REJECT API", active_tab="reject-api", production_date=production_date or date.today()))
+def reject_api_page(request: Request, production_date: date | None = None,
+                    production_id: int | None = None, preview_one: bool = False,
+                    preview_all: bool = False, lookup_one: bool = False,
+                    lookup_all: bool = False):
+    production_date = production_date or date.today()
+    context = dict(page_title='REJECT API', active_tab='reject-api', production_date=production_date,
+                   records=[], selected_id=production_id, previews=[], lookup_results=[],
+                   error=None, lookup_errors=[], preview_one=preview_one, preview_all=preview_all,
+                   lookup_one=lookup_one, lookup_all=lookup_all)
+    status = 200
+    try:
+        with closing(get_connection()) as conn:
+            records = read_reject_records(conn.cursor(), production_date)
+            for record in records:
+                reject_readiness(record)
+            try:
+                states = latest_reject_states(conn.cursor(), [row['ProductionID'] for row in records])
+            except Exception:
+                # RejectPISLog is optional history; its migration may not exist on SB23 yet.
+                states = {}
+            for record in records:
+                state = states.get(record['ProductionID'])
+                record['RejectPISStatus'] = state['Outcome'] if state else 'NOT SENT'
+            context['records'] = records
+            if preview_one or preview_all:
+                if preview_one:
+                    selected = next((row for row in records if row['ProductionID'] == production_id), None)
+                    if selected is None:
+                        raise ValueError('Select one Production Lot for PREVIEW REJECT.')
+                    candidates = [selected]
+                else:
+                    candidates = records
+                for record in candidates:
+                    if record['RejectReadiness']['ready']:
+                        context['previews'].append(dict(record=record, payload=build_reject_preview(record)))
+                    elif preview_one:
+                        raise ValueError('NOT READY: ' + '; '.join(record['RejectReadiness']['missing']))
+            if lookup_one or lookup_all:
+                if lookup_one:
+                    selected = next((row for row in records if row['ProductionID'] == production_id), None)
+                    if selected is None:
+                        raise ValueError('Select one Production Lot for OUTPUTDETAILS LOOKUP.')
+                    candidates = [selected]
+                else:
+                    candidates = records
+                config = PISConfig.from_environment()
+                if not config.endpoint_configured or not config.authentication_configured:
+                    context['lookup_errors'].append('PIS lookup unavailable: endpoint or authentication is not configured.')
+                else:
+                    client = PISClient(config)
+                    for record in candidates:
+                        if not record['RejectReadiness']['ready']:
+                            context['lookup_errors'].append(
+                                f"{record['LotNo']}: NOT READY: " + '; '.join(record['RejectReadiness']['missing']))
+                            continue
+                        try:
+                            query = build_output_details_query(record)
+                            response = client.get_output_details(query)
+                            output_details = parse_output_details_response(response)
+                            summary = summarize_output_details(output_details)
+                            payload = build_change_status_preview(record, summary)
+                            context['lookup_results'].append(dict(record=record, query=query,
+                                                                  output_details=output_details,
+                                                                  summary=summary, payload=payload))
+                        except (PISClientError, ValueError) as exc:
+                            context['lookup_errors'].append(f"{record['LotNo']}: {exc}")
+    except ValueError as exc:
+        context['error'] = str(exc)
+        status = 400
+    except Exception:
+        context['error'] = 'Unable to load Reject API records. Please retry.'
+        status = 503
+    return templates.TemplateResponse(request=request, name='reject_api.html', context=context,
+                                      status_code=status, headers={'Cache-Control': 'no-store'})
 
 
 @app.get("/press-mc", response_class=HTMLResponse)

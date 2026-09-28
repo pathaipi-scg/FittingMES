@@ -11,6 +11,8 @@ from fastapi.encoders import jsonable_encoder
 from app.pis_config import PISConfig
 
 PRODORDERS_PATH = '/api/v1/ProdOrders'
+OUTPUT_DETAILS_PATH = '/api/v2/OutputDetails'
+CHANGE_STATUS_PATH = '/api/v1/OutputDetails/ChangeStatus'
 
 
 class PISClientError(RuntimeError):
@@ -58,6 +60,55 @@ class PISClient:
             raise
         except Exception:
             # Transport exceptions can include sensitive request details.
+            raise PISClientError('PIS request failed.') from None
+        finally:
+            if connection is not None:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+
+    def get_output_details(self, query):
+        """GET the CB OutputDetails state for one lot; never retries."""
+        if not isinstance(query, dict):
+            raise PISClientError('An OutputDetails query is required.')
+        return self._request('GET', OUTPUT_DETAILS_PATH, body=query)
+
+    def post_change_status(self, payload):
+        """POST one already-built CB ChangeStatus body; never retries."""
+        if not isinstance(payload, dict) or not payload.get('changeTo'):
+            raise PISClientError('A ChangeStatus payload is required.')
+        return self._request('POST', CHANGE_STATUS_PATH, body=payload)
+
+    def _request(self, method, path, *, query=None, body=None):
+        if not self._config.endpoint_configured:
+            raise PISClientError('PIS endpoint is not configured correctly.')
+        if not self._config.authentication_configured:
+            raise PISClientError('PIS authentication is not configured.')
+        try:
+            encoded_body = (json.dumps(jsonable_encoder(body), ensure_ascii=False,
+                                       allow_nan=False).encode('utf-8') if body is not None else None)
+        except (TypeError, ValueError):
+            raise PISClientError('PIS payload could not be serialized.') from None
+        url = urlsplit(self._config.base_url)
+        credentials = (self._config.username + ':' + self._config.password).encode('utf-8')
+        headers = {'Accept': 'application/json',
+                   'Authorization': 'Basic ' + base64.b64encode(credentials).decode('ascii')}
+        if encoded_body is not None:
+            headers['Content-Type'] = 'application/json'
+        connection = None
+        try:
+            connection = self._connection_factory(url.hostname, port=url.port, timeout=self._timeout)
+            connection.request(method, path, body=encoded_body, headers=headers)
+            response = connection.getresponse()
+            status = response.status
+            if not 200 <= status < 300:
+                raise PISClientError('PIS returned an unsuccessful HTTP status.')
+            result = response.read().decode('utf-8')
+            return dict(status_code=status, body=result)
+        except PISClientError:
+            raise
+        except Exception:
             raise PISClientError('PIS request failed.') from None
         finally:
             if connection is not None:
