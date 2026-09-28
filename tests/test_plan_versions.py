@@ -87,7 +87,6 @@ class EffectivePlanTests(unittest.TestCase):
         self.assertEqual(current['LotNo'], LOT['LotNo'])
         self.assertEqual(response.context['edit_plans'][0]['VersionNo'], '10')
         self.assertIsNone(response.context['edit_plans'][0]['used_by'])
-        self.assertIn('Plan Version', response.body.decode())
         conn.commit.assert_not_called()
 
     def test_create_uses_effective_fields(self):

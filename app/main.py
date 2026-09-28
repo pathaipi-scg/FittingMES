@@ -2,7 +2,7 @@ import hashlib
 import json
 from contextlib import closing
 from pathlib import Path
-from datetime import date, time
+from datetime import date, datetime, time
 from urllib.parse import urlencode
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.encoders import jsonable_encoder
@@ -27,6 +27,7 @@ from app.mould import (page_context as mould_context, register_mould, update_mou
                        send_to_recondition, return_from_recondition, set_mould_status)
 from app.press_production import (build_press_production_context,
                                   save_press_production as save_press_production_row)
+from app.wet_reject import build_wet_reject_context, save_wet_reject, save_wet_reject_batch
 
 app = FastAPI(title="FittingMES", version="0.1.0")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -72,13 +73,17 @@ def product_selection_context(cursor, selected):
 
 
 def production_page(request, plan_id=None, product_code=None, confirm=False,
-                    create=False, running_no=None, production_date=None, production_id=None, edit=False, save=False, void=False, production_input=None, data_saved=False, product_family=None, product_choices=None, press_message=None, press_message_type=None):
+                    create=False, running_no=None, production_date=None, production_id=None, edit=False, save=False, void=False, production_input=None, data_saved=False, product_family=None, product_choices=None, press_message=None, press_message_type=None, wet_reject_message=None, wet_reject_message_type=None):
     requested_date = production_date
     production_date = production_date or date.today()
-    context = dict(families=FAMILIES, product_family=None, product_previews={}, production_data={}, calculated=calculate(None, None), data_saved=data_saved, production_date=production_date, lots=[], current=None, edit=edit, edit_plans=[], plans=[], selected=None, products=[], material_prefix=None,
+    context = dict(families=FAMILIES, product_family=None, product_previews={}, production_data={}, calculated=calculate(None, None), data_saved=data_saved, production_date=production_date, lots=[], lots_for_date=[], production_data_by_lot={}, calculated_by_lot={}, current=None, edit=edit, edit_plans=[], plans=[], selected=None, products=[], material_prefix=None,
                    product_code=None, lot=None, error=None, running_no=None, created_lot=None,
                    press_production=[], eligible_presses=[], eligible_moulds=[], press_product_error=None,
-                   press_message=press_message, press_message_type=press_message_type)
+                   press_message=press_message, press_message_type=press_message_type,
+                   wet_reject_reasons=[], wet_reject_events=[], wet_reject_summary=[], wet_reject_total=0,
+                   wet_reject_reason_groups=[], wet_reject_summary_groups=[],
+                   wet_reject_now=datetime.now().strftime('%Y-%m-%dT%H:%M:%S'),
+                   wet_reject_message=wet_reject_message, wet_reject_message_type=wet_reject_message_type)
     status = 200
     try:
         with closing(get_connection()) as conn:
@@ -95,6 +100,16 @@ def production_page(request, plan_id=None, product_code=None, confirm=False,
                     elif day(selected_lot['ProdDate']) != production_date:
                         production_id = None
                         context['edit'] = False
+            context["lots_for_date"] = [lot for lot in context["lots"] if day(lot["ProdDate"]) == production_date]
+            # The merged Production Lot row needs each Lot's own saved ProductionData,
+            # not just the selected one; reuse the existing single-row reader per Lot.
+            try:
+                context["production_data_by_lot"] = {lot["ProductionID"]: read_production_data(cursor, lot["ProductionID"])
+                                                     for lot in context["lots_for_date"]}
+            except Exception:
+                context["production_data_by_lot"] = {}
+            context["calculated_by_lot"] = {pid: calculate(data.get("CounterQty"), data.get("CuringQty"))
+                                            for pid, data in context["production_data_by_lot"].items()}
             if production_id is not None:
                 current = next((lot for lot in context["lots"] if lot["ProductionID"] == production_id), None)
                 if current is None:
@@ -114,6 +129,10 @@ def production_page(request, plan_id=None, product_code=None, confirm=False,
                 except Exception:
                     context.update(press_production=[], eligible_presses=[], eligible_moulds=[],
                                    press_product_error='Unable to load Press Production choices or rows.')
+                try:
+                    context.update(build_wet_reject_context(cursor, production_id, production_date))
+                except Exception:
+                    pass
                 if production_input is not None:
                     context["production_data"] = production_input
                     context["current"]["Shift"] = production_input.get("Shift", current["Shift"])
@@ -179,10 +198,12 @@ def production_page(request, plan_id=None, product_code=None, confirm=False,
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request, plan_id: str | None = None, production_date: date | None = None,
         production_id: int | None = None, edit: bool = False, data_saved: bool = False,
-        press_message: str | None = None, press_message_type: str | None = None):
+        press_message: str | None = None, press_message_type: str | None = None,
+        wet_reject_message: str | None = None, wet_reject_message_type: str | None = None):
     return production_page(request, plan_id, production_date=production_date, production_id=production_id,
                       edit=edit, data_saved=data_saved, press_message=press_message,
-                      press_message_type=press_message_type)
+                      press_message_type=press_message_type, wet_reject_message=wet_reject_message,
+                      wet_reject_message_type=wet_reject_message_type)
 
 
 @app.post("/", response_class=HTMLResponse)
@@ -280,6 +301,58 @@ async def add_press_production_route(request: Request, production_id: int):
 async def update_press_production_route(request: Request, production_id: int,
                                         press_production_id: int):
     return await save_press_production_route_action(request, production_id, press_production_id)
+
+
+def save_wet_reject_change(production_id, data, wet_reject_id=None):
+    with closing(get_connection()) as conn:
+        return save_wet_reject(conn, production_id, data, wet_reject_id)
+
+
+def wet_reject_redirect(production_id, message, message_type='success'):
+    params = {'production_id': production_id, 'wet_reject_message': message,
+              'wet_reject_message_type': message_type}
+    return RedirectResponse('/?' + urlencode(params), status_code=303)
+
+
+async def save_wet_reject_route_action(request, production_id, wet_reject_id=None):
+    form = await request.form()
+    data = dict(ReasonCode=form.get('reason_code'), Qty=form.get('qty'), Remark=form.get('remark'))
+    try:
+        await run_in_threadpool(save_wet_reject_change, production_id, data, wet_reject_id)
+        return wet_reject_redirect(production_id, 'Wet Reject saved.')
+    except ValueError as exc:
+        return wet_reject_redirect(production_id, str(exc), 'error')
+    except Exception:
+        return wet_reject_redirect(production_id, 'Unable to save Wet Reject. Please retry.', 'error')
+
+
+@app.post('/lots/{production_id}/wet-reject')
+async def add_wet_reject_route(request: Request, production_id: int):
+    return await save_wet_reject_route_action(request, production_id)
+
+
+def save_wet_reject_batch_change(production_id, data):
+    with closing(get_connection()) as conn:
+        return save_wet_reject_batch(conn, production_id, data)
+
+
+@app.post('/lots/{production_id}/wet-reject/batch')
+async def add_wet_reject_batch_route(request: Request, production_id: int):
+    form = await request.form()
+    quantities = {key[len('qty_'):]: value for key, value in form.multi_items() if key.startswith('qty_')}
+    data = dict(Remark=form.get('remark'), Quantities=quantities)
+    try:
+        await run_in_threadpool(save_wet_reject_batch_change, production_id, data)
+        return wet_reject_redirect(production_id, 'Wet Reject saved.')
+    except ValueError as exc:
+        return wet_reject_redirect(production_id, str(exc), 'error')
+    except Exception:
+        return wet_reject_redirect(production_id, 'Unable to save Wet Reject. Please retry.', 'error')
+
+
+@app.post('/lots/{production_id}/wet-reject/{wet_reject_id}')
+async def update_wet_reject_route(request: Request, production_id: int, wet_reject_id: int):
+    return await save_wet_reject_route_action(request, production_id, wet_reject_id)
 
 
 @app.get("/depallet", response_class=HTMLResponse)

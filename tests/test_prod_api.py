@@ -225,7 +225,7 @@ class ProdApiTests(unittest.TestCase):
         body=response.body.decode()
         self.assertIn('href="/prod-api?production_date=2026-09-21"',body)
         self.assertRegex(body,r'href="/\?production_date=2026-09-21&amp;production_id=7" aria-current="page"')
-        self.assertIn('SAVE PRODUCTION',body)
+        self.assertIn('action="/lots/7/production"',body)
 
     def test_unresolved_and_ambiguous_sources_are_not_guessed(self):
         missing=resolve_plan(RECORD,[])

@@ -45,7 +45,7 @@ class ProductionTests(unittest.TestCase):
         response,_=self.render(production_id=7)
         self.assertEqual(response.status_code,200)
         text=response.body.decode()
-        for value in ['B006690901','Product brown','3,600','USED: B006690901','disabled','PRODUCTION INPUT','Locked','VOID LOT','aria-current="true"']:
+        for value in ['B006690901','Product brown','3,600','USED: B006690901','disabled','PRODUCTION LOT','VOID LOT','aria-current="true"']:
             self.assertIn(value,text)
         self.assertNotIn('name="MaterialName"',text)
         self.assertNotIn('replacement_plan',text)

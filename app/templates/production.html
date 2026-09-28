@@ -3,7 +3,7 @@
 <style>
 *{box-sizing:border-box}
 body{margin:0;background:#eef2f6;color:#243348;font:9.75px/1.2 system-ui,sans-serif}
-main{padding:4.5px;max-width:1920px;margin:auto;height:100vh;display:flex;flex-direction:column}
+main{padding:4.5px;max-width:1920px;margin:auto;min-height:100vh;display:flex;flex-direction:column}
 header{color:#66758a;font-size:9.75px;line-height:13.5px;margin-bottom:3px}
 .panel{background:white;border:0.75px solid #dbe2ea;border-radius:2.25px;padding:4.5px;margin-bottom:4.5px}
 form,.toolbar{display:flex;align-items:center;gap:4.5px;flex-wrap:wrap}
@@ -24,30 +24,36 @@ option:disabled{color:#929aa4}
 .workflow{margin-top:3.75px;border-top:0.75px solid #edf0f4;padding-top:3.75px}
 .workflow .plan-control{display:flex;align-items:center;gap:4.5px}
 .workflow .plan-control select{flex:1;width:0}
+.create-lot-panel{display:flex;align-items:center;flex-wrap:nowrap;gap:3px 6px}
+.create-lot-panel>form.top-controls{flex:0 1 auto;min-width:0}
+.create-lot-panel>.workflow{flex:1 1 auto;min-width:0;margin:0;border:0;padding:0;border-left:0.75px solid #edf0f4;padding-left:5px}
 .muted{color:#718096}
-.columns{display:grid;grid-template-columns:minmax(0,var(--lot-width,25%)) 4.5px minmax(0,1fr);gap:0;align-items:start;flex:1;min-height:0}
-.columns>div{min-width:0}
-.list-panel{padding:0;overflow:hidden;display:flex;flex-direction:column;max-height:100%;margin-bottom:0}
 h2{font-size:10.5px;font-weight:600;line-height:1.2;letter-spacing:0;margin:3px 0 4.5px}
-.list-title{padding:3.75px 6px;border-bottom:0.75px solid #e4e9ef;margin:0}
-.lot-list{min-height:0;overflow-y:auto}
-.lot-item{display:flex;flex-direction:column;justify-content:center;min-height:36px;text-decoration:none;color:inherit;padding:3.75px 6px;border-bottom:0.75px solid #edf0f4;border-left:2.25px solid transparent;font-size:9.75px;line-height:1.15}
-.lot-item:hover{background:#f5f9fd}
-.lot-item.selected{background:#eaf4ff;border-left-color:#1765ad}
-.lot-item strong{font-size:10.5px;line-height:1.15;font-weight:700;white-space:nowrap}
-.lot-top,.lot-bottom{display:flex;align-items:baseline;gap:6px;min-width:0}
-.lot-plan,.lot-product{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.lot-product{flex:1;min-width:0}
-.lot-qty{flex:none;font-variant-numeric:tabular-nums;text-align:right}
-.info-heading{display:flex;align-items:center;justify-content:space-between;gap:4.5px;margin-bottom:3px;flex-wrap:wrap}
-.info-heading h2{margin:3px 0 4.5px}
-.info-fields{display:flex;flex-wrap:wrap;align-items:baseline;gap:3px 10.5px;margin:0}
-.info-fields>div{display:flex;align-items:baseline;gap:3.75px;min-width:0;max-width:100%}
-.info-secondary{margin-top:3.75px}
-dt{color:#66758a;font-size:9px;line-height:1.2;white-space:nowrap}
-dd{margin:0;font-size:9.75px;line-height:1.2;font-weight:500;overflow-wrap:anywhere}
-.lot-number{font-size:10.5px;line-height:1.2;font-weight:700;white-space:nowrap}
-.locked{font-size:9px}
+/* Shared compact grid pattern matching the DEPALLET LOTS table. */
+.depallet-grid{border-collapse:separate;border-spacing:0;border-top:0.75px solid #c7d2df;border-left:0.75px solid #c7d2df;font-variant-numeric:tabular-nums;width:100%}
+.depallet-grid th,.depallet-grid td{padding:2.25px 3.375px;border-right:0.75px solid #c7d2df;border-bottom:0.75px solid #c7d2df;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
+.depallet-grid th{text-align:center;background:#eaf0f6}
+.depallet-grid td{background:#f8fafc}
+.depallet-grid td.editable{padding:0;background:white}
+.depallet-grid input,.depallet-grid select{width:100%;min-width:0;height:22px;padding:1px 3px;border:0;border-radius:0;background:transparent}
+.depallet-grid input[type=number]{text-align:right}
+.depallet-grid input[readonly]{background:#f4f6f8}
+.depallet-grid .select-cell{text-align:center;overflow:visible;background:white}
+.depallet-grid tr.selected td{background:#eaf4ff;border-top:0.75px solid #1765ad;border-bottom:0.75px solid #1765ad}
+.depallet-grid td.lot-actions{display:flex;align-items:center;gap:3px;white-space:normal;overflow:visible;background:#f8fafc}
+.depallet-grid tfoot td{background:#eaf0f6;font-weight:600}
+.depallet-grid .wet-rej-cell{font-variant-numeric:tabular-nums}
+.lot-table input[name="shift"]{width:34px}
+.lot-table input[type="time"]{width:108px}
+.lot-table input[name="counter"],.lot-table input[name="curing"]{width:52px}
+.lot-table th:nth-child(6),.lot-table td:nth-child(6){width:58px}
+.lot-table th:nth-child(8),.lot-table td:nth-child(8),.lot-table th:nth-child(9),.lot-table td:nth-child(9){width:112px}
+.lot-table th:nth-child(10),.lot-table td:nth-child(10),.lot-table th:nth-child(11),.lot-table td:nth-child(11){width:58px}
+.lot-table th:nth-child(12),.lot-table td:nth-child(12){width:88px}
+.lot-table th:nth-child(15),.lot-table td:nth-child(15){width:108px}
+.lot-table td.lot-actions{white-space:nowrap}
+.lot-table input[name="remark"]{width:100%;min-width:90px}
+.lot-edit-row td{background:#f8fafc}
 .future{border-style:dashed}
 .future p{margin:0;font-size:9.75px}
 .empty{padding:6px 0;color:#718096}
@@ -55,34 +61,18 @@ dd{margin:0;font-size:9.75px;line-height:1.2;font-weight:500;overflow-wrap:anywh
 .danger{color:#af3030;border-color:#ecc1c1}
 .preview{font-size:10.5px;line-height:1.2;font-family:monospace}
 input[readonly]{background:#f4f6f8;width:48px}
-@media(max-width:750px){.top-controls{flex-wrap:wrap}.top-controls .plan-control{min-width:225px}.workflow .plan-control{flex-wrap:wrap}.workflow .plan-control select{width:100%;flex-basis:100%}}
-@media(max-width:600px){main{height:auto;min-height:100vh}.columns{min-height:225px}.lot-list{max-height:195px}.top-controls .plan-control{min-width:180px}}
-@media(max-width:360px){.top-controls .plan-control{flex-basis:100%;order:1}.info-fields{gap:2.25px 7.5px}.workflow>div,.workflow form>div{flex-wrap:wrap}}
-.panel[aria-label="Lot Information"]{padding-bottom:7.5px}
+@media(max-width:750px){.create-lot-panel{flex-wrap:wrap}.top-controls{flex-wrap:wrap}.top-controls .plan-control{min-width:225px}.workflow .plan-control{flex-wrap:wrap}.workflow .plan-control select{width:100%;flex-basis:100%}}
+@media(max-width:600px){main{height:auto;min-height:100vh}.top-controls .plan-control{min-width:180px}}
+@media(max-width:360px){.top-controls .plan-control{flex-basis:100%;order:1}.workflow>div,.workflow form>div{flex-wrap:wrap}}
 main>header,main>.panel,main>.error{flex-shrink:0}
-.lot-top{margin-bottom:2.25px}
 
 [hidden]{display:none!important}
-.columns{min-width:0}
-.list-panel{height:100%;min-width:0}
-.list-header{display:flex;align-items:center;justify-content:space-between;border-bottom:0.75px solid #e4e9ef;flex-shrink:0}
-.list-header .list-title{border:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.list-header button{height:18px;padding:0 3.75px;margin-right:2.25px;flex:none}
-.lot-list{flex:1;overflow-x:hidden}
-.lot-splitter{align-self:stretch;cursor:col-resize;touch-action:none;position:relative;background:#dbe2ea;border-left:1.5px solid #eef2f6;border-right:1.5px solid #eef2f6}
-.lot-splitter:hover,.lot-splitter:focus-visible{background:#1765ad}
-body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:none!important}
-.columns.lots-collapsed{grid-template-columns:18px minmax(0,1fr);column-gap:4.5px}
-.lots-rail{height:auto;align-self:stretch;width:18px;padding:4.5px 1.5px;writing-mode:vertical-rl;justify-content:flex-start;font-size:9px}
-.right-content{min-width:0}
-.info-fields dd{min-width:0}
 .workflow select{max-width:100%}
-@media(max-width:600px){.list-panel{max-height:270px}.lot-splitter{min-height:225px}.top-controls .plan-control{min-width:0}}
 
 /* Progressive enhancement: native selects retain all submitted plan tokens. */
 .plan-control.custom-plan-control{flex:0 1 auto;min-width:0;max-width:100%;flex-basis:auto}
 .plan-dropdown{position:relative;display:inline-block;min-width:0;max-width:100%}
-.plan-trigger{display:inline-flex;width:max-content;max-width:min(420px,100%);gap:5px;justify-content:flex-start}
+.plan-trigger{display:inline-flex;width:max-content;max-width:min(200px,100%);gap:5px;justify-content:flex-start}
 .plan-trigger-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .plan-trigger-arrow{flex:none;font-size:8px}
 .plan-popup{position:fixed;z-index:1000;width:max-content;min-width:0;margin:0;padding:2px;border:0.75px solid #c7d2df;border-radius:2.25px;background:white;box-shadow:0 2px 6px #24334826;overflow:auto}
@@ -90,13 +80,6 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
 .plan-option[aria-disabled="true"]{color:#929aa4;cursor:not-allowed}
 .plan-option.is-highlighted{background:#eaf4ff;color:#243348}
 .plan-option[aria-selected="true"]{font-weight:600}
-
-#production-input>div{display:flex;align-items:center;gap:4px}
-#production-input input[type=number]{width:70px}
-#production-shift{width:38px}
-#production-input .production-remark{flex:1;min-width:150px}
-#production-remark{width:100%;min-width:0}
-.calculated-data{border-top:0.75px solid #edf0f4;margin-top:3px;padding-top:2px}
 
 .lot-input-heading{display:flex;align-items:baseline;gap:6px;min-width:0}
 .lot-input-heading h2{flex:none}
@@ -108,18 +91,38 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
 .lot-status-error{background:#fdeaea;color:#9d2525}
 .lot-status-info{background:#eaf2fc;color:#245b92}
 
-#family-product-form{gap:4.5px}
-#family-product-form .family-product-field{display:flex;align-items:center;gap:3px}
-.family-product-select{width:auto;max-width:170px}
+.wet-reject-batch-toolbar{align-items:end;gap:6px;margin:3px 0}
+.wet-reject-batch-toolbar label{display:flex;flex-direction:column;gap:2px}
+.wet-reject-heading{display:flex;align-items:center;gap:7px;min-width:0;flex-wrap:wrap}
+.wet-reject-heading h2{margin-right:2px}
+.wet-reject-total{font-weight:700;white-space:nowrap}
+.wet-reject-heading .wet-reject-remark{display:flex;align-items:center;gap:3px}
+.wet-reject-heading .wet-reject-remark input{width:180px}
+@media(max-width:700px){.wet-reject-heading .wet-reject-remark{margin-left:0}.wet-reject-heading .wet-reject-remark input{width:min(180px,45vw)}}
+.wet-reject-groups{display:grid;grid-template-columns:repeat(3,minmax(245px,285px));gap:6px;width:max-content;max-width:100%;margin:4px 0}
+.wet-reject-groups .depallet-grid{width:285px;table-layout:fixed}
+.wet-reject-groups .depallet-grid th:nth-child(1),.wet-reject-groups .depallet-grid td:nth-child(1){width:38px}
+.wet-reject-groups .depallet-grid th:nth-child(2),.wet-reject-groups .depallet-grid td:nth-child(2){width:auto}
+.wet-reject-groups .depallet-grid th:nth-child(3),.wet-reject-groups .depallet-grid td:nth-child(3){width:50px}
+.wet-reject-groups .depallet-grid th:nth-child(4),.wet-reject-groups .depallet-grid td:nth-child(4){width:58px}
+.wet-reject-groups td.reason-name{white-space:normal;overflow-wrap:anywhere}
+.wet-reject-total{margin:4px 0;font-weight:600}
+@media(max-width:900px){.wet-reject-groups{grid-template-columns:minmax(245px,285px);width:100%;max-width:285px}}
+
+.material-prefix{white-space:nowrap;flex:none}
+#family-product-form{gap:3px}
+#family-product-form .family-product-field{display:flex;align-items:center;gap:2px}
+.family-product-select{width:auto;max-width:118px}
 #family-product-form .family-lot-preview{display:flex;flex-basis:100%;flex-wrap:wrap;gap:8px}
 .family-lot-preview output{font-weight:600}
-.press-production-table{min-width:850px}.press-production-table th,.press-production-table td{padding:3px 4px}.press-production-actions{display:flex;gap:4px;align-items:end;flex-wrap:wrap;margin:3px 0}.press-production-actions label{display:flex;flex-direction:column;gap:2px}.press-production-actions input,.press-production-actions select{height:22px;min-width:75px;padding:1px 3px}.press-production-actions .press-choice{min-width:105px}.press-production-actions .mould-choice{min-width:150px}.press-production-message{margin:2px 0}.press-production-message.error{color:#9d2525}
+.press-production-message{margin:2px 0}.press-production-message.error{color:#9d2525}
+.press-choice{min-width:105px}.mould-choice{min-width:150px}
 
 </style></head><body><main>
 <header>FittingMES / PRODUCTION · CRTC / 30A1 / SB2-3</header>
 {% include 'navigation.html' %}
 {% if error %}<div class="error" role="alert">{{ error }}</div>{% endif %}
-<section class="panel" aria-label="Create a new Lot">
+<section class="panel create-lot-panel" aria-label="Create a new Lot">
 <form class="top-controls" method="get" action="/">
 <input type="hidden" name="production_date" value="{{ production_date }}">
 <div class="plan-control"><label for="plan_id">Production Plan</label><select id="plan_id" name="plan_id" onchange="this.form.requestSubmit()">
@@ -133,17 +136,18 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
 <div><label>Lot No. preview</label><output class="preview">{{ lot }}{{ '%02d'|format(running_no) }}</output></div><button class="primary" type="submit">CREATE LOT</button></form>
 {% else %}<form method="post" action="/" id="family-product-form">
 <input type="hidden" name="production_date" value="{{ production_date }}"><input type="hidden" name="plan_id" value="{{ selected.selection_id }}">
-<span class="material-prefix">Material prefix <strong>{{ material_prefix }}</strong></span>
+<span class="material-prefix" hidden>Material prefix <strong>{{ material_prefix }}</strong></span>
 {% set field_names = ['neufit','oriental','special_ridge','prestige_common'] %}
+{% set short_labels = {'NeuFit / NeuStile': 'NeuStile', 'Oriental': 'Oriental', 'Special Ridge': 'Ridge', 'Prestige Common': 'Prestige'} %}
 {% for family, letter in families %}
 {% set choices = products|selectattr('ProductFamily','equalto',family)|list %}
-<div class="family-product-field"><label for="family-product-{{ loop.index }}">{{ family }}</label>
+<div class="family-product-field"><label for="family-product-{{ loop.index }}">{{ short_labels.get(family, family) }}</label>
 <select id="family-product-{{ loop.index }}" name="{{ field_names[loop.index0] }}" class="family-product-select" data-family="{{ family }}" {% if not choices %}disabled{% endif %}>
 <option value="">{{ '- / Select Product' if choices else '- / No master rows' }}</option>
 {% for product in choices %}<option value="{{ product.ProductCode }}">{{ product.ProductCode }} &mdash; {{ product.ProductName }}</option>{% endfor %}
 </select></div>
 {% endfor %}
-<button type="submit" class="primary" {% if not products %}disabled{% endif %}>Confirm ProductCode</button>
+<button type="submit" class="primary" {% if not products %}disabled{% endif %}>Confirm</button>
 <div id="family-lot-preview" class="family-lot-preview" aria-live="polite" hidden>
 <span>Product <output data-preview="ProductFamily"></output> / <output data-preview="ProductCode"></output></span>
 <span>Prefix <output data-preview="LotPrefix"></output></span>
@@ -154,186 +158,117 @@ body.resizing-lots,body.resizing-lots *{cursor:col-resize!important;user-select:
 <script type="application/json" id="family-preview-data">{{ product_previews|tojson }}</script>
 </form>{% endif %}
 </div>{% endif %}</section>
-<div class="columns" id="production-workspace">
-<button type="button" class="lots-rail" id="open-lots" aria-controls="lot-panel" aria-expanded="false" title="Open Lot List" hidden>&#9654; LOTS</button>
-<aside class="panel list-panel" id="lot-panel"><div class="list-header"><h2 class="list-title">ACTIVE LOTS &middot; {{ lots|length }}</h2><button type="button" id="close-lots" aria-controls="lot-panel" aria-expanded="true" title="Close Lot List" aria-label="Close Lot List">&#9664;</button></div>
-<nav class="lot-list" aria-label="Active Lots">{% for item in lots %}<a class="lot-item {{ 'selected' if current and current.ProductionID == item.ProductionID else '' }}" {% if current and current.ProductionID == item.ProductionID %}aria-current="true"{% endif %} href="/?production_id={{ item.ProductionID }}&production_date={{ item.ProdDate }}">
-<div class="lot-top"><strong>{{ item.LotNo }}</strong><span class="lot-plan" title="{{ item.PlanName }}">{{ item.PlanName }}</span></div>
-<div class="lot-bottom"><span class="lot-product" title="{{ item.MaterialName }}">{{ item.MaterialName }}</span><span class="lot-qty" aria-label="Plan quantity">{{ '{:,.0f}'.format(item.PlanQty or 0) }}</span></div></a>{% else %}<div class="empty">No active Lots.</div>{% endfor %}</nav></aside>
-<div id="lot-splitter" class="lot-splitter" role="separator" tabindex="0" aria-label="Resize Lot List" aria-orientation="vertical" aria-controls="lot-panel" aria-valuemin="18" aria-valuemax="45" aria-valuenow="25" title="Drag to resize; double-click to reset. Arrow keys resize."></div>
-<div class="right-content"><section class="panel" aria-label="Lot Information">
-{% if current %}<div class="info-heading"><h2>LOT INFORMATION &middot; {{ 'EDIT' if edit else 'VIEW' }}</h2>
-{% if not edit %}<div class="toolbar"><a class="button" href="/?production_id={{ current.ProductionID }}&edit=true&production_date={{ production_date }}">EDIT</a>
-{% if current.CanVoid %}<form method="post" action="/lots/{{ current.ProductionID }}/void" onsubmit="return confirm('VOID this Lot? Its plan and running number will become available again. History will be retained.')"><button class="danger" type="submit">VOID LOT</button></form>{% endif %}</div>{% endif %}</div>
-<dl class="info-fields info-primary">
-<div><dt>Lot No.</dt><dd class="lot-number">{{ current.LotNo }}</dd></div>
-<div><dt>Plan Date <span class="muted locked">&middot; Locked</span></dt><dd>{{ current.ProdDate.strftime('%d/%m/%Y') }}</dd></div>
-<div><dt>Plan No.</dt><dd>{{ current.PlanName }}</dd></div>
-<div><dt>Plan Version</dt><dd>{{ current.VersionNo if current.VersionNo is defined and current.VersionNo is not none else '—' }}</dd></div>
-<div><dt>Product Family</dt><dd>{{ current.ProductFamily or 'Unconfirmed legacy' }}</dd></div>
-<div><dt>Product Code</dt><dd>{{ current.ProductCode }}</dd></div>
-<div><dt>Plan Qty</dt><dd>{{ '{:,.0f}'.format(current.PlanQty or 0) }}</dd></div>
-</dl>
-<dl class="info-fields info-secondary">
-<div><dt>Material Code</dt><dd>{{ current.MaterialCode }}</dd></div>
-<div><dt>Product</dt><dd>{{ current.MaterialName }}</dd></div>
-
-</dl>
-{% if edit %}<form class="workflow" method="post" action="/lots/{{ current.ProductionID }}/plan">
-<div class="plan-control"><label for="replacement_plan">Replacement Plan · {{ current.ProdDate }}</label><select id="replacement_plan" name="plan_id" required><option value="">Select a plan</option>
-{% for plan in edit_plans %}<option value="{{ plan.selection_id }}" {% if plan.used_by %}disabled{% endif %} {% if plan.PlanName == current.PlanName and plan.MaterialCode == current.MaterialCode %}selected{% endif %}>{{ plan.PlanName }} | {{ plan.MaterialName }} | {{ '{:,.0f}'.format(plan.PlanCount or 0) }}{% if plan.used_by %} | USED: {{ plan.used_by }}{% endif %}</option>{% endfor %}
-</select></div><button class="primary" type="submit">SAVE</button><a class="button" href="/?production_id={{ current.ProductionID }}&production_date={{ production_date }}">CANCEL</a></form>{% endif %}
-{% else %}<h2>LOT INFORMATION</h2><div class="empty">Select a Lot from the list, or create a new Lot above.</div>{% endif %}</section>
-<section class="panel production-data" aria-label="Production Input">
-<div class="lot-input-heading"><h2>PRODUCTION INPUT</h2>
+<section class="panel" aria-label="Production Lot">
+<div class="lot-input-heading"><h2>PRODUCTION LOT &middot; {{ lots_for_date|length }}</h2>
 <div id="lot-status-bar" class="lot-status-bar" role="status" aria-live="polite" aria-atomic="true" aria-label="Lot status messages">{% if data_saved and current %}<span class="lot-status lot-status-success" data-status-id="production-save" data-state="success" title="Production data saved.">Production data saved.</span>{% endif %}</div>
 </div>
-{% if current %}
-<form id="production-input" method="post" action="/lots/{{ current.ProductionID }}/production">
-<input type="hidden" name="production_date" value="{{ production_date }}">
-<div><label for="production-shift">Shift</label><input id="production-shift" name="shift" maxlength="10" value="{{ current.Shift or '' }}" required></div>
-<div><label for="production-start">Start</label><input id="production-start" name="start_time" type="time" step="1" value="{{ production_data.get('ProductionStartTime', '') }}" required></div>
-<div><label for="production-end">End</label><input id="production-end" name="end_time" type="time" step="1" value="{{ production_data.get('ProductionEndTime', '') }}" required></div>
-<div><label for="production-counter">Counter</label><input id="production-counter" name="counter" type="number" min="0" max="2147483647" step="1" value="{{ production_data.get('CounterQty', '') }}" required></div>
-<div><label for="production-curing">Curing</label><input id="production-curing" name="curing" type="number" min="0" max="2147483647" step="1" value="{{ production_data.get('CuringQty', '') }}" required></div>
-<div class="production-remark"><label for="production-remark">Remark</label><input id="production-remark" name="remark" maxlength="1000" value="{{ production_data.get('Remark') or '' }}"></div>
-<button class="primary" type="submit">SAVE PRODUCTION</button>
-</form>
-<div class="calculated-data">
-<dl class="info-fields" aria-live="polite">
-<div><dt>Wet Reject Qty</dt><dd><output id="wet-reject-qty">{{ calculated.WetRejectQty if calculated.WetRejectQty is not none else '' }}</output></dd></div>
-<div><dt>Wet Reject %</dt><dd><output id="wet-reject-percent">{{ '{:.2f} %'.format(calculated.WetRejectPercent) if calculated.WetRejectPercent is not none else '' }}</output></dd></div>
-</dl></div>
-
-{% else %}<p class="muted">Select a Lot to enter production data.</p>{% endif %}
+{% for item in lots_for_date %}<form id="production-input-{{ item.ProductionID }}" method="post" action="/lots/{{ item.ProductionID }}/production"><input type="hidden" name="production_date" value="{{ production_date }}"></form>{% endfor %}
+<div class="table-scroll"><table class="depallet-grid lot-table"><thead><tr>
+<th>Select</th><th>No.</th><th>Lot No.</th><th>Plan</th><th>Product</th><th>Plan</th>
+<th>Shift</th><th>Start</th><th>End</th><th>Counter</th><th>Curing</th><th>Wet Rej.</th><th>Remark</th><th>Save</th><th>Action</th>
+</tr></thead><tbody>
+{% for item in lots_for_date %}
+{% set row_data = production_data_by_lot.get(item.ProductionID, {}) %}
+{% set row_calc = calculated_by_lot.get(item.ProductionID) or {'WetRejectQty': none, 'WetRejectPercent': none} %}
+{% set is_current = current and current.ProductionID == item.ProductionID %}
+<tr class="{{ 'selected' if is_current else '' }}" {% if is_current %}aria-current="true"{% endif %}>
+<td class="select-cell"><input type="radio" name="production-lot" value="{{ item.ProductionID }}" {% if is_current %}checked{% endif %} onchange="location.href='/?production_id={{ item.ProductionID }}&production_date={{ item.ProdDate }}'" aria-label="Select Lot {{ item.LotNo }}"></td>
+<td>{{ item.RunningNo }}</td>
+<td>{{ item.LotNo }}</td>
+<td title="{{ item.PlanName }}">{{ item.PlanName }}</td>
+<td title="{{ item.MaterialName }}">{{ item.MaterialName }}</td>
+<td>{{ '{:,.0f}'.format(item.PlanQty or 0) }}</td>
+<td class="editable"><input form="production-input-{{ item.ProductionID }}" name="shift" maxlength="10" value="{{ item.Shift or '' }}" required aria-label="Shift {{ item.LotNo }}"></td>
+<td class="editable"><input form="production-input-{{ item.ProductionID }}" name="start_time" type="time" step="1" value="{{ row_data.get('ProductionStartTime', '') }}" required aria-label="Start {{ item.LotNo }}"></td>
+<td class="editable"><input form="production-input-{{ item.ProductionID }}" name="end_time" type="time" step="1" value="{{ row_data.get('ProductionEndTime', '') }}" required aria-label="End {{ item.LotNo }}"></td>
+<td class="editable"><input form="production-input-{{ item.ProductionID }}" name="counter" type="number" min="0" max="2147483647" step="1" value="{{ row_data.get('CounterQty', '') }}" required aria-label="Counter {{ item.LotNo }}"></td>
+<td class="editable"><input form="production-input-{{ item.ProductionID }}" name="curing" type="number" min="0" max="2147483647" step="1" value="{{ row_data.get('CuringQty', '') }}" required aria-label="Curing {{ item.LotNo }}"></td>
+<td class="wet-rej-cell">{% if row_calc.WetRejectQty is not none %}{{ row_calc.WetRejectQty }} / {{ '{:.2f} %'.format(row_calc.WetRejectPercent) }}{% endif %}</td>
+<td class="editable"><input form="production-input-{{ item.ProductionID }}" name="remark" maxlength="1000" value="{{ row_data.get('Remark') or '' }}" aria-label="Remark {{ item.LotNo }}"></td>
+<td><button form="production-input-{{ item.ProductionID }}" type="submit">Save</button></td>
+<td class="lot-actions">{% if is_current and edit %}<span class="muted">Editing plan below</span>{% else %}<a class="button" href="/?production_id={{ item.ProductionID }}&edit=true&production_date={{ production_date }}">EDIT</a>
+{% if item.CanVoid %}<form method="post" action="/lots/{{ item.ProductionID }}/void" onsubmit="return confirm('VOID this Lot? Its plan and running number will become available again. History will be retained.')"><button class="danger" type="submit">VOID LOT</button></form>{% endif %}{% endif %}</td>
+</tr>
+{% if is_current and edit %}<tr class="lot-edit-row"><td colspan="15">
+<form class="workflow" method="post" action="/lots/{{ current.ProductionID }}/plan">
+<div class="plan-control"><label for="replacement_plan">Replacement Plan · {{ current.ProdDate }}</label><select id="replacement_plan" name="plan_id" required><option value="">Select a plan</option>
+{% for plan in edit_plans %}<option value="{{ plan.selection_id }}" {% if plan.used_by %}disabled{% endif %} {% if plan.PlanName == current.PlanName and plan.MaterialCode == current.MaterialCode %}selected{% endif %}>{{ plan.PlanName }} | {{ plan.MaterialName }} | {{ '{:,.0f}'.format(plan.PlanCount or 0) }}{% if plan.used_by %} | USED: {{ plan.used_by }}{% endif %}</option>{% endfor %}
+</select></div><button class="primary" type="submit">SAVE</button><a class="button" href="/?production_id={{ current.ProductionID }}&production_date={{ production_date }}">CANCEL</a></form>
+</td></tr>{% endif %}
+{% else %}<tr><td colspan="15" class="empty">No Production Lots for this date.</td></tr>{% endfor %}
+</tbody></table></div>
 </section>
 {% if current %}
-<section class="panel" aria-label="Press Production">
-<div class="lot-input-heading"><h2>PRESS PRODUCTION</h2><span class="muted">Per-Press records for {{ current.LotNo }}</span></div>
+<section class="panel" aria-label="Add Fitting">
+<div class="lot-input-heading"><h2>ADD FITTING</h2><span class="muted">Assign a Press/Mould to {{ current.LotNo }}</span></div>
 {% if press_message %}<p class="press-production-message{% if press_message_type == 'error' %} error{% endif %}" role="status">{{ press_message }}</p>{% endif %}
 {% if press_product_error %}<p class="error" role="alert">{{ press_product_error }}</p>{% endif %}
+{% if eligible_presses and not press_product_error %}
+<form id="add-fitting-form" method="post" action="/lots/{{ current.ProductionID }}/press-production"></form>
+<div class="table-scroll"><table class="depallet-grid"><thead><tr><th>Press</th><th>Mould</th><th>Dispatch</th><th>Counter</th><th>Curing</th><th>Start</th><th>End</th><th>Remark</th><th>Add</th></tr></thead><tbody><tr>
+<td class="editable"><select form="add-fitting-form" class="press-choice" name="machine_code" required><option value="">Select Press</option>{% for press in eligible_presses %}{% if press.PressCode not in press_production|map(attribute='MachineCode')|list %}<option value="{{ press.PressCode }}">{{ press.PressCode }} / {{ press.PressName }}</option>{% endif %}{% endfor %}</select></td>
+<td class="editable"><select form="add-fitting-form" class="mould-choice" name="mould_id" required><option value="">Select ACTIVE Mould</option>{% for mould in eligible_moulds %}<option value="{{ mould.MouldID }}">{{ mould.MouldNo }} / {{ mould.MouldName }}</option>{% endfor %}</select></td>
+<td class="editable"><input form="add-fitting-form" name="dispatch_qty" type="number" min="0" step="1"></td>
+<td class="editable"><input form="add-fitting-form" name="counter_qty" type="number" min="0" max="2147483647" step="1" required></td>
+<td class="editable"><input form="add-fitting-form" name="curing_qty" type="number" min="0" max="2147483647" step="1"></td>
+<td class="editable"><input form="add-fitting-form" name="production_start_time" type="datetime-local" step="1"></td>
+<td class="editable"><input form="add-fitting-form" name="production_end_time" type="datetime-local" step="1"></td>
+<td class="editable"><input form="add-fitting-form" name="remark" maxlength="2000"></td>
+<td><button form="add-fitting-form" class="primary" type="submit" {% if not eligible_presses|rejectattr('PressCode','in',press_production|map(attribute='MachineCode')|list)|list or not eligible_moulds %}disabled{% endif %}>ADD FITTING</button></td>
+</tr></tbody></table></div>
+{% elif not press_product_error %}<p class="muted">No active Press is currently enabled for this Lot Product.</p>{% endif %}
+</section>
+<section class="panel" aria-label="Press Production">
+<div class="lot-input-heading"><h2>PRESS PRODUCTION</h2><span class="muted">Per-Press records for {{ current.LotNo }}</span></div>
 {% for pp in press_production %}<form id="press-production-{{ pp.PressProductionID }}" method="post" action="/lots/{{ current.ProductionID }}/press-production/{{ pp.PressProductionID }}"></form>{% endfor %}
-<div class="table-scroll"><table class="press-production-table"><thead><tr><th>Press</th><th>Mould</th><th>Dispatch</th><th>Counter</th><th>Curing</th><th>Start</th><th>End</th><th>Remark</th><th>Save</th></tr></thead><tbody>
+<div class="table-scroll"><table class="depallet-grid"><thead><tr><th>Press</th><th>Mould</th><th>Dispatch</th><th>Counter</th><th>Curing</th><th>Start</th><th>End</th><th>Remark</th><th>Save</th></tr></thead><tbody>
 {% for pp in press_production %}
 {% set assignment_locked = (pp.UsageCycles is not none) or ((pp.CounterQty or 0) > 0) %}
 <tr>
 <td>{{ pp.MachineCode }}{% if pp.MachineName %} / {{ pp.MachineName }}{% endif %}<input form="press-production-{{ pp.PressProductionID }}" type="hidden" name="machine_code" value="{{ pp.MachineCode }}"></td>
-<td>{% if assignment_locked %}{{ pp.MouldNo or 'Unknown Mould' }} / {{ pp.MouldName or '' }}<input form="press-production-{{ pp.PressProductionID }}" type="hidden" name="mould_id" value="{{ pp.MouldID }}">{% else %}<select form="press-production-{{ pp.PressProductionID }}" class="mould-choice" name="mould_id" aria-label="Mould for {{ pp.MachineCode }}"><option value="">No Mould / Select Mould</option>{% for mould in eligible_moulds %}<option value="{{ mould.MouldID }}" {% if pp.MouldID == mould.MouldID %}selected{% endif %}>{{ mould.MouldNo }} / {{ mould.MouldName }}</option>{% endfor %}{% if pp.MouldID and pp.MouldNo and pp.MouldID not in eligible_moulds|map(attribute='MouldID')|list %}<option value="{{ pp.MouldID }}" selected>{{ pp.MouldNo }} / {{ pp.MouldName }} (not eligible)</option>{% endif %}</select>{% endif %}</td>
-<td><input form="press-production-{{ pp.PressProductionID }}" name="dispatch_qty" type="number" min="0" step="1" value="{{ pp.DispatchQty if pp.DispatchQty is not none else '' }}" aria-label="Dispatch {{ pp.MachineCode }}"></td>
-<td><input form="press-production-{{ pp.PressProductionID }}" name="counter_qty" type="number" min="0" max="2147483647" step="1" value="{{ pp.CounterQty if pp.CounterQty is not none else '' }}" required aria-label="Counter {{ pp.MachineCode }}"></td>
-<td><input form="press-production-{{ pp.PressProductionID }}" name="curing_qty" type="number" min="0" max="2147483647" step="1" value="{{ pp.CuringQty if pp.CuringQty is not none else '' }}" aria-label="Curing {{ pp.MachineCode }}"></td>
-<td><input form="press-production-{{ pp.PressProductionID }}" name="production_start_time" type="datetime-local" step="1" value="{{ pp.ProductionStartTime.strftime('%Y-%m-%dT%H:%M:%S') if pp.ProductionStartTime else '' }}" aria-label="Start {{ pp.MachineCode }}"></td>
-<td><input form="press-production-{{ pp.PressProductionID }}" name="production_end_time" type="datetime-local" step="1" value="{{ pp.ProductionEndTime.strftime('%Y-%m-%dT%H:%M:%S') if pp.ProductionEndTime else '' }}" aria-label="End {{ pp.MachineCode }}"></td>
-<td><input form="press-production-{{ pp.PressProductionID }}" name="remark" maxlength="2000" value="{{ pp.Remark or '' }}" aria-label="Remark {{ pp.MachineCode }}"></td>
+<td class="editable">{% if assignment_locked %}{{ pp.MouldNo or 'Unknown Mould' }} / {{ pp.MouldName or '' }}<input form="press-production-{{ pp.PressProductionID }}" type="hidden" name="mould_id" value="{{ pp.MouldID }}">{% else %}<select form="press-production-{{ pp.PressProductionID }}" class="mould-choice" name="mould_id" aria-label="Mould for {{ pp.MachineCode }}"><option value="">No Mould / Select Mould</option>{% for mould in eligible_moulds %}<option value="{{ mould.MouldID }}" {% if pp.MouldID == mould.MouldID %}selected{% endif %}>{{ mould.MouldNo }} / {{ mould.MouldName }}</option>{% endfor %}{% if pp.MouldID and pp.MouldNo and pp.MouldID not in eligible_moulds|map(attribute='MouldID')|list %}<option value="{{ pp.MouldID }}" selected>{{ pp.MouldNo }} / {{ pp.MouldName }} (not eligible)</option>{% endif %}</select>{% endif %}</td>
+<td class="editable"><input form="press-production-{{ pp.PressProductionID }}" name="dispatch_qty" type="number" min="0" step="1" value="{{ pp.DispatchQty if pp.DispatchQty is not none else '' }}" aria-label="Dispatch {{ pp.MachineCode }}"></td>
+<td class="editable"><input form="press-production-{{ pp.PressProductionID }}" name="counter_qty" type="number" min="0" max="2147483647" step="1" value="{{ pp.CounterQty if pp.CounterQty is not none else '' }}" required aria-label="Counter {{ pp.MachineCode }}"></td>
+<td class="editable"><input form="press-production-{{ pp.PressProductionID }}" name="curing_qty" type="number" min="0" max="2147483647" step="1" value="{{ pp.CuringQty if pp.CuringQty is not none else '' }}" aria-label="Curing {{ pp.MachineCode }}"></td>
+<td class="editable"><input form="press-production-{{ pp.PressProductionID }}" name="production_start_time" type="datetime-local" step="1" value="{{ pp.ProductionStartTime.strftime('%Y-%m-%dT%H:%M:%S') if pp.ProductionStartTime else '' }}" aria-label="Start {{ pp.MachineCode }}"></td>
+<td class="editable"><input form="press-production-{{ pp.PressProductionID }}" name="production_end_time" type="datetime-local" step="1" value="{{ pp.ProductionEndTime.strftime('%Y-%m-%dT%H:%M:%S') if pp.ProductionEndTime else '' }}" aria-label="End {{ pp.MachineCode }}"></td>
+<td class="editable"><input form="press-production-{{ pp.PressProductionID }}" name="remark" maxlength="2000" value="{{ pp.Remark or '' }}" aria-label="Remark {{ pp.MachineCode }}"></td>
 <td><button form="press-production-{{ pp.PressProductionID }}" type="submit">Save</button></td>
 </tr>
 {% else %}<tr><td colspan="9" class="muted">No Press Production rows for this Lot.</td></tr>{% endfor %}
 </tbody></table></div>
-{% if eligible_presses and not press_product_error %}
-<form class="press-production-actions" method="post" action="/lots/{{ current.ProductionID }}/press-production">
-<label>Press<select class="press-choice" name="machine_code" required><option value="">Select Press</option>{% for press in eligible_presses %}{% if press.PressCode not in press_production|map(attribute='MachineCode')|list %}<option value="{{ press.PressCode }}">{{ press.PressCode }} / {{ press.PressName }}</option>{% endif %}{% endfor %}</select></label>
-<label>Mould<select class="mould-choice" name="mould_id" required><option value="">Select ACTIVE Mould</option>{% for mould in eligible_moulds %}<option value="{{ mould.MouldID }}">{{ mould.MouldNo }} / {{ mould.MouldName }}</option>{% endfor %}</select></label>
-<label>Dispatch<input name="dispatch_qty" type="number" min="0" step="1"></label>
-<label>Counter<input name="counter_qty" type="number" min="0" max="2147483647" step="1" required></label>
-<label>Curing<input name="curing_qty" type="number" min="0" max="2147483647" step="1"></label>
-<label>Start<input name="production_start_time" type="datetime-local" step="1"></label>
-<label>End<input name="production_end_time" type="datetime-local" step="1"></label>
-<label>Remark<input name="remark" maxlength="2000"></label>
-<button class="primary" type="submit" {% if not eligible_presses|rejectattr('PressCode','in',press_production|map(attribute='MachineCode')|list)|list or not eligible_moulds %}disabled{% endif %}>Add Press Production</button>
-</form>
-{% elif not press_product_error %}<p class="muted">No active Press is currently enabled for this Lot Product.</p>{% endif %}
+</section>
+<section class="panel" aria-label="Wet Reject">
+<div class="wet-reject-heading"><h2>WET REJECT - {{ current.LotNo }}</h2><span class="wet-reject-total">Total Wet Reject &middot; <strong>{{ wet_reject_total }}</strong></span>
+{% if wet_reject_message %}<p class="press-production-message{% if wet_reject_message_type == 'error' %} error{% endif %}" role="status">{{ wet_reject_message }}</p>{% endif %}
+{% if not wet_reject_reasons %}<p class="error" role="alert">No active Wet Reject Reasons are configured in WetRejectReasonMaster. Add active reasons before recording Wet Reject.</p>{% endif %}
+<form id="wet-reject-batch-form" method="post" action="/lots/{{ current.ProductionID }}/wet-reject/batch"></form>
+<label class="wet-reject-remark">Remark<input form="wet-reject-batch-form" name="remark" maxlength="1000"></label>
+<button form="wet-reject-batch-form" class="primary" type="submit" {% if not wet_reject_reasons %}disabled{% endif %}>SAVE WET REJECT</button>
+</div>
+{% if wet_reject_summary_groups %}<div class="wet-reject-groups" data-total-wet-reject="{{ wet_reject_total }}">
+{% for group in wet_reject_summary_groups %}<table class="depallet-grid"><thead><tr><th>Code</th><th>Reject Reason</th><th>Qty</th><th>Qty / Day</th></tr></thead><tbody>
+{% for item in group %}<tr><td>{{ item.ReasonCode }}</td><td class="reason-name" title="{{ item.ReasonNameTH }}">{{ item.ReasonNameTH }}</td><td class="editable"><input form="wet-reject-batch-form" name="qty_{{ item.ReasonCode }}" type="number" min="0" max="2147483647" step="1" value="{{ item.Qty }}" {% if item.ReasonCode == 'R99' %}readonly{% endif %} aria-label="Qty {{ item.ReasonCode }} {{ item.ReasonNameTH }}"></td><td>{{ item.QtyPerDay }}</td></tr>{% endfor %}
+</tbody></table>{% endfor %}
+</div>{% else %}<p class="muted">No active Wet Reject Reasons.</p>{% endif %}
 </section>
 {% endif %}
-</div></div>
 </main>
 <script>
 (() => {
-  const workspace = document.getElementById('production-workspace');
-  const panel = document.getElementById('lot-panel');
-  const splitter = document.getElementById('lot-splitter');
-  const openButton = document.getElementById('open-lots');
-  const closeButton = document.getElementById('close-lots');
-  const storageKey = 'fittingmes.production.lotLayout';
-  const clamp = value => Math.min(45, Math.max(18, value));
-  let width = 25;
-  let collapsed = false;
-  let pointerId = null;
-  let grabOffset = 0;
-  try {
-    const saved = JSON.parse(localStorage.getItem(storageKey));
-    if (saved && typeof saved.width === 'number' && Number.isFinite(saved.width)) width = clamp(saved.width);
-    if (saved && typeof saved.collapsed === 'boolean') collapsed = saved.collapsed;
-  } catch (_) { /* Layout remains usable when storage is unavailable. */ }
-
-  function persist() {
-    try { localStorage.setItem(storageKey, JSON.stringify({ width, collapsed })); } catch (_) {}
+  const grid = document.querySelector('.wet-reject-groups');
+  if (!grid) return;
+  const total = Number(grid.dataset.totalWetReject || 0);
+  const inputs = [...grid.querySelectorAll('input[name^="qty_"]')];
+  const r99 = grid.querySelector('input[name="qty_R99"]');
+  if (!r99) return;
+  function updateR99() {
+    const classified = inputs.filter(input => input !== r99)
+      .reduce((sum, input) => sum + (Number(input.value) || 0), 0);
+    r99.value = String(Math.max(total - classified, 0));
   }
-  function render() {
-    workspace.style.setProperty('--lot-width', width + '%');
-    workspace.classList.toggle('lots-collapsed', collapsed);
-    panel.hidden = collapsed;
-    splitter.hidden = collapsed;
-    openButton.hidden = !collapsed;
-    closeButton.setAttribute('aria-expanded', String(!collapsed));
-    splitter.setAttribute('aria-valuenow', String(Math.round(width)));
-    splitter.setAttribute('aria-valuetext', Math.round(width) + '% Lot List width');
-  }
-  function finishDrag() {
-    if (pointerId === null) return;
-    const previousId = pointerId;
-    pointerId = null;
-    document.body.classList.remove('resizing-lots');
-    if (splitter.hasPointerCapture(previousId)) splitter.releasePointerCapture(previousId);
-    persist();
-  }
-  splitter.addEventListener('pointerdown', event => {
-    if (event.button !== 0 || collapsed || pointerId !== null) return;
-    event.preventDefault();
-    pointerId = event.pointerId;
-    grabOffset = event.clientX - splitter.getBoundingClientRect().left;
-    splitter.setPointerCapture(pointerId);
-    splitter.focus();
-    document.body.classList.add('resizing-lots');
-  });
-  splitter.addEventListener('pointermove', event => {
-    if (event.pointerId !== pointerId) return;
-    const bounds = workspace.getBoundingClientRect();
-    if (bounds.width <= 0) return;
-    width = clamp((event.clientX - bounds.left - grabOffset) / bounds.width * 100);
-    render();
-  });
-  splitter.addEventListener('pointerup', finishDrag);
-  splitter.addEventListener('pointercancel', finishDrag);
-  splitter.addEventListener('lostpointercapture', finishDrag);
-  window.addEventListener('blur', finishDrag);
-  splitter.addEventListener('dblclick', () => {
-    finishDrag();
-    width = 25;
-    render();
-    persist();
-  });
-  splitter.addEventListener('keydown', event => {
-    const values = { ArrowLeft: width - 1, ArrowRight: width + 1, Home: 18, End: 45 };
-    if (!(event.key in values)) return;
-    event.preventDefault();
-    width = clamp(values[event.key]);
-    render();
-    persist();
-  });
-  closeButton.addEventListener('click', () => {
-    finishDrag();
-    collapsed = true;
-    render();
-    persist();
-    openButton.focus();
-  });
-  openButton.addEventListener('click', () => {
-    collapsed = false;
-    render();
-    persist();
-    closeButton.focus();
-  });
-  render();
+  inputs.filter(input => input !== r99).forEach(input => input.addEventListener('input', updateR99));
+  updateR99();
 })();
 </script>
 <script>

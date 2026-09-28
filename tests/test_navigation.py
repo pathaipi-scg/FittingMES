@@ -69,14 +69,17 @@ class NavigationTests(unittest.TestCase):
     def test_production_refresh_retains_only_same_date_lot(self):
         body=self.page('/','production_date=2026-09-21&production_id=7')
         self.assertIn('name="production_id" value="7"',self.shared_form(body))
-        self.assertIn('SAVE PRODUCTION',body)
+        self.assertIn('action="/lots/7/production"',body)
         self.assertIn('production_date=2026-09-21&amp;production_id=7',body)
         changed=self.page('/','production_date=2026-09-22&production_id=7&edit=true')
         self.assertNotIn('name="production_id"',self.shared_form(changed))
-        self.assertNotIn('SAVE PRODUCTION',changed)
+        self.assertNotIn('action="/lots/7/production"',changed)
         self.assertIn('value="2026-09-22"',self.shared_form(changed))
         self.assertNotIn('aria-current="true"',changed)
-        self.assertIn('href="/?production_id=7&production_date=2026-09-21"',changed)
+        # The Lot belongs to 2026-09-21; the Production Lot table for
+        # 2026-09-22 must not offer it as a selectable row.
+        self.assertNotIn('href="/?production_id=7&production_date=2026-09-21"',changed)
+        self.assertIn('No Production Lots for this date.',changed)
 
     def test_lot_only_deep_link_uses_lot_date_and_plan_form_keeps_date(self):
         body=self.page('/','production_id=7')

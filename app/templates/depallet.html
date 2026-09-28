@@ -25,7 +25,10 @@
 #depallet-detail th,#depallet-detail td{padding:1px 2px}#depallet-detail td.editable{padding:0}
 #depallet-detail input{width:100%;max-width:100%;min-width:0;height:21px;padding:1px 2px}
 #depallet-detail .reason label{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;white-space:normal;overflow-wrap:anywhere;line-height:1.2;max-height:2.4em}
-.depallet-totals{display:flex;gap:12px;flex-wrap:wrap;margin:5px 0}.depallet-controls{display:flex;gap:5px;align-items:center;flex-wrap:wrap}
+.reject-detail-heading{display:flex;align-items:center;gap:10px;min-width:0;flex-wrap:wrap;margin-bottom:4px}
+.reject-detail-heading h2{margin:3px 0 4px}
+.depallet-totals{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:0;font-weight:700;white-space:nowrap}.depallet-controls{display:flex;gap:5px;align-items:center;flex-wrap:wrap}
+.depallet-controls #depallet-status{font-weight:400;white-space:normal}
 #depallet-warning{min-height:14px;color:#946200}#depallet-status[data-state=error]{color:#9d2525}#depallet-status[data-state=success]{color:#25643b}
 #depallet-balance[data-balanced=true]{color:#25643b}#depallet-balance[data-balanced=false]{color:#946200}
 @media(max-width:760px){ #depallet-selectors{grid-template-columns:1fr 1fr}#depallet-selectors label:nth-child(3){grid-column:1/-1}#depallet-rejects{grid-template-columns:1fr;max-width:420px}}
@@ -60,10 +63,10 @@
 <td class="editable"><input data-field="remark" maxlength="500" value="{{ d.Remark or '' }}" aria-label="{{ run.LotNo }} Remark"></td></tr>{% endfor %}</tbody></table></div>
 <div id="depallet-warning" role="alert" aria-live="assertive"></div>
 </section>
-<section class="panel"><h2 id="reject-detail-title">REJECT DETAIL</h2>
-<div id="depallet-detail"><div id="depallet-rejects"></div></div>
+<section class="panel"><div class="reject-detail-heading"><h2 id="reject-detail-title">REJECT DETAIL</h2>
 <div class="depallet-totals" aria-live="polite"><span>Total Reject: <output id="depallet-total-reject"></output></span><span>Classified Reject: <output id="depallet-reject-qty"></output></span><span>Difference: <output id="depallet-difference"></output></span><output id="depallet-balance"></output></div>
-<div class="depallet-controls"><button id="save-depallet" class="primary" type="submit">SAVE DEPALLET</button><span id="depallet-status" role="status" aria-live="polite"></span></div>
+<div class="depallet-controls"><span id="depallet-status" role="status" aria-live="polite"></span><button id="save-depallet" class="primary" type="submit">SAVE REJECT</button></div></div>
+<div id="depallet-detail"><div id="depallet-rejects"></div></div>
 </section></fieldset></form>
 <script id="depallet-lots-data" type="application/json">{{ lots_json|tojson }}</script>
 <script id="depallet-products-data" type="application/json">{{ products_json|tojson }}</script>
@@ -232,7 +235,7 @@
     for (const reason of inactive) byCode.set(reason.ReasonCode,{...reason,active:false,Qty:reason.Qty});
     const source = Array.from(byCode.values()).sort((left,right) => left.ReasonCode.localeCompare(right.ReasonCode));
     const daily = totalsForDay();
-    const groups = [[1,10],[11,20],[21,24]].map(([start,stop],index) => {
+    const groups = [[0,8],[8,16],[16,source.length]].map(([start,stop],index) => {
       const table = document.createElement('table'); table.className = 'depallet-grid reject-group';
       table.dataset.rejectGroup = String(index + 1);
       const columns = document.createElement('colgroup');
@@ -242,10 +245,9 @@
       head.append(heading); const body = document.createElement('tbody'); table.append(columns,head,body); rejects.append(table);
       return {start,stop,body,index};
     });
-    for (const reason of source) {
+    for (const [sourceIndex, reason] of source.entries()) {
       if (!manualCode.test(reason.ReasonCode)) continue;
-      const number = Number(reason.ReasonCode.slice(1));
-      const group = groups.find(item => number >= item.start && number <= item.stop);
+      const group = groups.find(item => sourceIndex >= item.start && sourceIndex < item.stop);
       const row = document.createElement('tr'), code = document.createElement('td'); code.textContent = reason.ReasonCode;
       const name = document.createElement('td'); name.className = 'reason';
       const label = document.createElement('label'), input = document.createElement('input');

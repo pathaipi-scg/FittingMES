@@ -803,7 +803,7 @@ class DepalletTests(unittest.TestCase):
         with patch('app.main.get_connection',return_value=conn),patch('app.main.read_lots',return_value=[LOT]),patch('app.main.read_plans',return_value=[PLAN]),patch('app.main.read_production_data',return_value={}),patch('app.main.read_depallet_context') as reader:
             response=production_page(request(),production_id=7,production_date=DAY)
         self.assertEqual(response.status_code,200)
-        self.assertIn(b'SAVE PRODUCTION',response.body)
+        self.assertIn(b'action="/lots/7/production"',response.body)
         self.assertNotIn(b'id="depallet-input"',response.body)
         self.assertNotIn(b'data-reject-code',response.body)
         reader.assert_not_called()
@@ -916,5 +916,5 @@ class DepalletTests(unittest.TestCase):
         with patch('app.main.get_connection',return_value=conn),patch('app.main.read_lots',return_value=[LOT]),patch('app.main.read_plans',return_value=[PLAN]),patch('app.main.read_production_data',return_value={}),patch('app.main.read_depallet_context',side_effect=RuntimeError('unavailable')):
             response=production_page(request(),production_id=7)
         self.assertEqual(response.status_code,200)
-        self.assertIn(b'SAVE PRODUCTION',response.body)
+        self.assertIn(b'action="/lots/7/production"',response.body)
         self.assertNotIn(b'id="depallet-input"',response.body)
