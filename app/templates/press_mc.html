@@ -9,10 +9,11 @@
 .pressmc-main{min-width:0}.pressmc-toolbar{display:flex;gap:5px;align-items:center;flex-wrap:wrap}
 .pressmc-toolbar form{display:flex;gap:4px;align-items:center;flex-wrap:wrap;margin:2px 0}
 .pressmc-toolbar input[type=text],.pressmc-toolbar select{height:23px;min-width:110px}
+.pressmc-layout input:not([type=hidden]),.pressmc-layout select,.pressmc-layout button{font:400 9.75px/1.2 system-ui,sans-serif}
 .pressmc-matrix{display:grid;grid-template-columns:repeat(2,minmax(280px,1fr));gap:6px}
 .pressmc-family{border:1px solid #dbe2ea;border-radius:2px;min-width:0}
 .pressmc-family h3{margin:0;padding:4px 5px;background:#f1f4f7;font-size:10px}
-.pressmc-family table{table-layout:fixed}.pressmc-family td{padding:2px 4px}.pressmc-family .cap-check{width:34px;text-align:center}
+.pressmc-family table{table-layout:fixed}.pressmc-family td{padding:2px 4px}.pressmc-family .cap-check{width:34px;text-align:center}.pressmc-family .cap-speed{width:90px}.pressmc-family .cap-speed input{width:70px}
 .pressmc-family input[type=checkbox]{height:auto;margin:0;vertical-align:middle}
 .pressmc-actions{display:flex;gap:4px;align-items:center;flex-wrap:wrap;margin-top:5px}
 .pressmc-history{max-height:190px;overflow:auto}.pressmc-history td,.pressmc-history th{padding:2px 4px}
@@ -79,10 +80,12 @@
           {% for group in capability_groups %}
           <section class="pressmc-family">
             <h3>{{ group.ProductFamily }}</h3>
-            <table><colgroup><col class="cap-check"><col style="width:42px"><col><col style="width:40%"></colgroup>
+            <table><colgroup><col class="cap-check"><col style="width:42px"><col><col style="width:30%"><col class="cap-speed"></colgroup>
+              <thead><tr><th></th><th>Code</th><th>Product</th><th>ไทย</th><th>Speed<br>pcs/min</th></tr></thead>
               <tbody>{% for product in group.products %}<tr>
                 <td class="cap-check"><input type="checkbox" data-family="{{ product.ProductFamily }}" data-product-code="{{ product.ProductCode }}" data-original="{{ '1' if product.CanProduce else '0' }}" {% if product.CanProduce %}checked{% endif %} aria-label="{{ product.ProductFamily }} {{ product.ProductCode }} {{ product.ProductName }}"></td>
                 <td>{{ product.ProductCode }}</td><td>{{ product.ProductName }}</td><td>{{ product.ProductNameTH or '' }}</td>
+                <td class="cap-speed"><input type="number" min="0.01" step="0.01" data-speed data-original-speed="{{ product.StandardSpeed if product.StandardSpeed is not none else '' }}" value="{{ product.StandardSpeed if product.StandardSpeed is not none else '' }}" aria-label="Speed {{ product.ProductFamily }} {{ product.ProductCode }}" {% if not product.CanProduce %}disabled{% endif %}></td>
               </tr>{% endfor %}</tbody>
             </table>
           </section>
@@ -123,9 +126,17 @@
   const button = document.getElementById('pressmc-save-capabilities');
   const status = document.getElementById('pressmc-capability-status');
   const checkboxes = Array.from(form.querySelectorAll('input[type="checkbox"][data-family]'));
-  const changes = () => checkboxes.filter(item => item.checked !== (item.dataset.original === '1'));
+  const speedFor = item => item.closest('tr').querySelector('[data-speed]');
+  const changes = () => checkboxes.filter(item => {
+    const speed = speedFor(item);
+    return item.checked !== (item.dataset.original === '1') ||
+      (item.checked && speed.value !== speed.dataset.originalSpeed);
+  });
   const update = () => { button.disabled = changes().length === 0; };
-  form.addEventListener('change', update);
+  form.addEventListener('change', event => {
+    if (event.target.matches('input[type="checkbox"][data-family]')) speedFor(event.target).disabled = !event.target.checked;
+    update();
+  });
   form.addEventListener('submit', async event => {
     event.preventDefault();
     const changed = changes();
@@ -134,8 +145,8 @@
     try {
       const response = await fetch('/press-mc/' + encodeURIComponent(form.dataset.pressCode) + '/capabilities', {
         method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},
-        body:JSON.stringify({changes:changed.map(item => ({ProductFamily:item.dataset.family,
-          ProductCode:item.dataset.productCode,CanProduce:item.checked})),remark:'PressMc capability update'})
+        body:JSON.stringify({changes:changed.map(item => { const speed=speedFor(item); return {ProductFamily:item.dataset.family,
+          ProductCode:item.dataset.productCode,CanProduce:item.checked,StandardSpeed:speed.value || null}; }),remark:'PressMc capability update'})
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Unable to save capability changes.');

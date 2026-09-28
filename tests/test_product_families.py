@@ -130,11 +130,11 @@ class FamilyTests(unittest.TestCase):
 
     def test_create_persists_family_and_revalidates_mapping(self):
         conn=MagicMock(); cursor=conn.cursor.return_value
-        cursor.fetchone.side_effect=[(0,),('06',),(SPECIAL,'06'),None,(1,),(9,)]
+        cursor.fetchone.side_effect=[(0,),('06',),(SPECIAL,'06'),None,(1,),(1,),(9,)]
         insert_lot(conn,PLAN,'06','I066909',1,product_family=SPECIAL)
         args=next(c.args for c in cursor.execute.call_args_list if 'INSERT INTO dbo.ProductionLot\n' in c.args[0])
-        self.assertEqual(args[-1],SPECIAL)
-        self.assertEqual(args[-3],'I06690901')
+        self.assertEqual(args[-2],SPECIAL)
+        self.assertEqual(args[-4],'I06690901')
         cursor.fetchone.side_effect=[(0,),('06',),(NEU,'06')]
         with self.assertRaisesRegex(ValueError,'mapping changed'):
             insert_lot(conn,PLAN,'06','I066909',1,product_family=SPECIAL)
@@ -167,14 +167,15 @@ class SequenceTests(unittest.TestCase):
         self.db.execute("ATTACH DATABASE ':memory:' AS dbo")
         self.db.execute('''CREATE TABLE dbo.ProductionLot (
             ProductionID INTEGER,ProductFamily TEXT,ProductCode TEXT,SequenceMonth TEXT,
-            LotPrefix TEXT,RunningNo INTEGER,IsActive INTEGER,UpdatedAt TEXT)''')
-        self.db.executemany('INSERT INTO dbo.ProductionLot VALUES (?,?,?,?,?,?,?,?)',[
-            (1,NEU,'06','2026-09-01','B066909',1,1,'2026-09-21'),
-            (2,NEU,'06','2026-09-01','B066909',2,1,'2026-09-22'),
-            (3,SPECIAL,'06','2026-09-01','I066909',1,1,'2026-09-22'),
-            (4,SPECIAL,'06','2026-09-01','I066909',2,0,'2026-09-22'),
-            (5,None,'06','2026-09-01','B0066909',1,1,'2026-09-21'),
-            (6,None,'06','2026-09-01','B0066909',2,1,'2026-09-22'),
+            LotPrefix TEXT,RunningNo INTEGER,IsActive INTEGER,UpdatedAt TEXT,
+            ProdDate TEXT,LotSequence INTEGER)''')
+        self.db.executemany('INSERT INTO dbo.ProductionLot VALUES (?,?,?,?,?,?,?,?,?,?)',[
+            (1,NEU,'06','2026-09-01','B066909',1,1,'2026-09-21','2026-09-21',1),
+            (2,NEU,'06','2026-09-01','B066909',2,1,'2026-09-22','2026-09-21',2),
+            (3,SPECIAL,'06','2026-09-01','I066909',1,1,'2026-09-22','2026-09-21',3),
+            (4,SPECIAL,'06','2026-09-01','I066909',2,0,'2026-09-22','2026-09-21',4),
+            (5,None,'06','2026-09-01','B0066909',1,1,'2026-09-21','2026-09-21',4),
+            (6,None,'06','2026-09-01','B0066909',2,1,'2026-09-22','2026-09-21',5),
         ])
         self.cursor=Cursor(self.db.cursor())
 

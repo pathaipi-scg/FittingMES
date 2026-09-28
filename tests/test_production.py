@@ -47,6 +47,9 @@ class ProductionTests(unittest.TestCase):
         text=response.body.decode()
         for value in ['B006690901','Product brown','3,600','USED: B006690901','disabled','PRODUCTION LOT','VOID LOT','aria-current="true"']:
             self.assertIn(value,text)
+        self.assertIn('class="clock-input"', text)
+        self.assertIn('placeholder="HH:mm"', text)
+        self.assertNotIn('type="time"', text)
         self.assertNotIn('name="MaterialName"',text)
         self.assertNotIn('replacement_plan',text)
 
@@ -66,7 +69,7 @@ class ProductionTests(unittest.TestCase):
         cursor=MagicMock(); cursor.fetchall.return_value=[]
         read_lots(cursor)
         sql=cursor.execute.call_args.args[0]
-        self.assertIn('ORDER BY p.UpdatedAt DESC, p.ProductionID DESC',sql)
+        self.assertIn('ORDER BY p.ProdDate DESC, p.LotSequence, p.ProductionID',sql)
         self.assertIn('WHERE p.IsActive=1',sql)
 
     def test_mapping_and_create_redirect(self):
@@ -88,9 +91,31 @@ class ProductionTests(unittest.TestCase):
         conn.commit.assert_called_once()
 
 class TransactionTests(unittest.TestCase):
+    def test_reorder_lot_swaps_persisted_sequence(self):
+        conn=MagicMock(); cursor=conn.cursor.return_value
+        cursor.description=[('ProductionID',),('LotSequence',)]
+        cursor.fetchall.return_value=[(7,1),(8,2),(9,3)]
+        cursor.fetchone.side_effect=[(0,),(3,)]
+        from app.lots import reorder_lot
+        result=reorder_lot(conn,DAY,8,'up')
+        self.assertEqual(result, {'moved':True,'ProductionID':8,'LotSequence':1})
+        updates=[entry.args for entry in cursor.execute.call_args_list if 'UPDATE dbo.ProductionLot SET LotSequence' in entry.args[0]]
+        self.assertEqual(len(updates),6)
+        conn.commit.assert_called_once()
+
+    def test_reorder_lot_boundary_is_noop(self):
+        conn=MagicMock(); cursor=conn.cursor.return_value
+        cursor.description=[('ProductionID',),('LotSequence',)]
+        cursor.fetchall.return_value=[(7,1),(8,2)]
+        cursor.fetchone.return_value=(0,)
+        from app.lots import reorder_lot
+        result=reorder_lot(conn,DAY,7,'up')
+        self.assertFalse(result['moved'])
+        self.assertEqual([entry for entry in cursor.execute.call_args_list if 'UPDATE dbo.ProductionLot SET LotSequence' in entry.args[0]], [])
+        conn.commit.assert_called_once()
     def test_create_history_and_lock(self):
         conn=MagicMock(); cursor=conn.cursor.return_value
-        cursor.fetchone.side_effect=[(0,),('06',),('NeuFit / NeuStile','06'),None,(1,),(7,)]
+        cursor.fetchone.side_effect=[(0,),('06',),('NeuFit / NeuStile','06'),None,(1,),(1,),(7,)]
         self.assertEqual(insert_lot(conn,PLAN,'06','B066909',1,product_family='NeuFit / NeuStile'),7)
         sqls=[c.args[0] for c in cursor.execute.call_args_list]
         self.assertIn('sp_getapplock',sqls[0])
@@ -161,7 +186,7 @@ class TransactionTests(unittest.TestCase):
     def test_void_releases_plan_and_reuses_number(self):
         conn,cursor=self.setup_update()
         update_lot(conn,7,void=True)
-        cursor.fetchone.side_effect=[(0,),('06',),('NeuFit / NeuStile','06'),None,(1,),(8,)]
+        cursor.fetchone.side_effect=[(0,),('06',),('NeuFit / NeuStile','06'),None,(1,),(1,),(8,)]
         self.assertEqual(insert_lot(conn,PLAN,'06','B066909',1,product_family='NeuFit / NeuStile'),8)
         checks=[c.args[0] for c in cursor.execute.call_args_list if 'MAX(RunningNo)' in c.args[0] or 'SELECT LotNo' in c.args[0]]
         self.assertTrue(all('IsActive=1' in sql for sql in checks))

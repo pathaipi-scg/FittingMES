@@ -7,7 +7,7 @@ from urllib.parse import urlencode
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.encoders import jsonable_encoder
 from starlette.concurrency import run_in_threadpool
-from app.lots import rows, day, read_lots, update_lot, insert_lot, next_running_no
+from app.lots import rows, day, read_lots, update_lot, insert_lot, next_running_no, reorder_lot
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse
@@ -77,8 +77,8 @@ def production_page(request, plan_id=None, product_code=None, confirm=False,
     requested_date = production_date
     production_date = production_date or date.today()
     context = dict(families=FAMILIES, product_family=None, product_previews={}, production_data={}, calculated=calculate(None, None), data_saved=data_saved, production_date=production_date, lots=[], lots_for_date=[], production_data_by_lot={}, calculated_by_lot={}, current=None, edit=edit, edit_plans=[], plans=[], selected=None, products=[], material_prefix=None,
-                   product_code=None, lot=None, error=None, running_no=None, created_lot=None,
-                   press_production=[], eligible_presses=[], eligible_moulds=[], press_product_error=None,
+                   product_code=None, lot=None, error=None, lots_load_failed=False, running_no=None, created_lot=None,
+                   press_production=[], day_start_time=None, eligible_presses=[], eligible_moulds=[], press_product_error=None,
                    press_message=press_message, press_message_type=press_message_type,
                    wet_reject_reasons=[], wet_reject_events=[], wet_reject_summary=[], wet_reject_total=0,
                    wet_reject_reason_groups=[], wet_reject_summary_groups=[],
@@ -88,7 +88,11 @@ def production_page(request, plan_id=None, product_code=None, confirm=False,
     try:
         with closing(get_connection()) as conn:
             cursor = conn.cursor()
-            context["lots"] = read_lots(cursor)
+            try:
+                context["lots"] = read_lots(cursor)
+            except Exception:
+                context["lots_load_failed"] = True
+                raise
             # Navigation may retain a lot only when it belongs to the selected date.
             # Keep all mutation paths and their validation/save behavior unchanged.
             if production_id is not None and not (confirm or create or save or void or production_input is not None):
@@ -101,6 +105,9 @@ def production_page(request, plan_id=None, product_code=None, confirm=False,
                         production_id = None
                         context['edit'] = False
             context["lots_for_date"] = [lot for lot in context["lots"] if day(lot["ProdDate"]) == production_date]
+            for index, lot in enumerate(context["lots_for_date"]):
+                lot['CanMoveUp'] = index > 0
+                lot['CanMoveDown'] = index < len(context["lots_for_date"]) - 1
             # The merged Production Lot row needs each Lot's own saved ProductionData,
             # not just the selected one; reuse the existing single-row reader per Lot.
             try:
@@ -224,6 +231,27 @@ def health():
     return {"status": "ok", "service": "FittingMES"}
 
 
+def reorder_lot_response(production_date, production_id, direction):
+    try:
+        with closing(get_connection()) as conn:
+            return JSONResponse(jsonable_encoder(reorder_lot(conn, production_date, production_id, direction)))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception:
+        return JSONResponse({"error": "Unable to reorder Production Lots. No changes were saved."}, status_code=503)
+
+
+@app.post('/lots/{production_id}/move')
+async def reorder_lot_route(production_id: int, request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid reorder request."}, status_code=400)
+    if not isinstance(payload, dict) or set(payload) != {'production_date', 'direction'}:
+        return JSONResponse({"error": "Invalid reorder request."}, status_code=400)
+    return await run_in_threadpool(reorder_lot_response, payload['production_date'], production_id, payload['direction'])
+
+
 def mark_used(plans, lots, exclude_id=None):
     plans = [dict(plan) for plan in plans]
     for plan in plans:
@@ -279,10 +307,14 @@ def press_production_redirect(production_id, message, message_type='success'):
 async def save_press_production_route_action(request, production_id, press_production_id=None):
     form = await request.form()
     data = dict(MachineCode=form.get('machine_code'), MouldID=form.get('mould_id'),
+                ProductionDate=form.get('production_date'),
                 DispatchQty=form.get('dispatch_qty'), CounterQty=form.get('counter_qty'),
                 CuringQty=form.get('curing_qty'),
                 ProductionStartTime=form.get('production_start_time'),
-                ProductionEndTime=form.get('production_end_time'), Remark=form.get('remark'))
+                ProductionEndTime=form.get('production_end_time'), Remark=form.get('remark'),
+                SetupMinutes=form.get('setup_minutes'), ChgOverMinutes=form.get('chgover_minutes'),
+                IdleMinutes=form.get('idle_minutes'), CleaningMinutes=form.get('cleaning_minutes'),
+                BreakdownMinutes=form.get('breakdown_minutes'))
     try:
         await run_in_threadpool(save_press_production_change, production_id, data, press_production_id)
         return press_production_redirect(production_id, 'Press Production saved.')

@@ -85,7 +85,7 @@ class ProductionDataTests(unittest.TestCase):
         conn.rollback.assert_called_once(); conn.commit.assert_not_called()
 
     def test_new_lot_defaults_shift_from_effective_plan(self):
-        conn=MagicMock(); conn.cursor.return_value.fetchone.side_effect=[(0,),('06',),('NeuFit / NeuStile','06'),None,(1,),(7,)]
+        conn=MagicMock(); conn.cursor.return_value.fetchone.side_effect=[(0,),('06',),('NeuFit / NeuStile','06'),None,(1,),(1,),(7,)]
         insert_lot(conn,dict(PLAN,Shift='3'),'06','B066909',1,product_family='NeuFit / NeuStile')
         args=next(c.args for c in conn.cursor.return_value.execute.call_args_list if 'INSERT INTO dbo.ProductionLot\n' in c.args[0])
         self.assertEqual(args[2],'3')

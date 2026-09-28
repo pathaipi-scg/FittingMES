@@ -29,7 +29,7 @@ def read_lots(cursor):
         AND later.RunningNo>p.RunningNo
         ) THEN 0 ELSE 1 END AS CanVoid
         FROM dbo.ProductionLot p WHERE p.IsActive=1
-        ORDER BY p.UpdatedAt DESC, p.ProductionID DESC""")
+        ORDER BY p.ProdDate DESC, p.LotSequence, p.ProductionID""")
     return rows(cursor)
 
 
@@ -73,16 +73,53 @@ def insert_lot(conn, selected, product_code, prefix, running_no, product_family=
         if running_no != next_running_no(cursor, prefix, product_family, product_code, selected["StartTime"]):
             raise ValueError('Running number has changed. Refresh and use the next suggested number.')
         lot_no = f'{prefix}{running_no:02d}'
+        cursor.execute('''SELECT ISNULL(MAX(LotSequence),0)+1
+            FROM dbo.ProductionLot WITH (UPDLOCK,HOLDLOCK) WHERE ProdDate=? AND IsActive=1''',
+            day(selected['StartTime']))
+        lot_sequence = int(cursor.fetchone()[0])
         cursor.execute("""INSERT INTO dbo.ProductionLot
-            (ProdDate,Shift,PlanName,MaterialCode,MaterialName,ProductCode,LotPrefix,RunningNo,LotNo,PlanQty,ProductFamily)
-            OUTPUT INSERTED.ProductionID VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (ProdDate,Shift,PlanName,MaterialCode,MaterialName,ProductCode,LotPrefix,RunningNo,LotNo,PlanQty,ProductFamily,LotSequence)
+            OUTPUT INSERTED.ProductionID VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             day(selected['StartTime']), selected['Shift'], selected['PlanName'],
             selected['MaterialCode'], selected['MaterialName'], product_code,
-            prefix, running_no, lot_no, selected['PlanCount'], product_family)
+            prefix, running_no, lot_no, selected['PlanCount'], product_family, lot_sequence)
         production_id = cursor.fetchone()[0]
         history(cursor, production_id, None, lot_no, None, selected['PlanName'], 'CREATE')
         conn.commit()
         return production_id
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def reorder_lot(conn, production_date, production_id, direction):
+    try:
+        selected_date = day(production_date)
+        if direction not in ('up', 'down'):
+            raise ValueError('Direction must be up or down.')
+        cursor = conn.cursor()
+        lock_lots(cursor)
+        cursor.execute("""SELECT ProductionID,LotSequence FROM dbo.ProductionLot WITH (UPDLOCK,HOLDLOCK)
+            WHERE ProdDate=? AND IsActive=1 ORDER BY LotSequence,ProductionID""", selected_date)
+        lots = rows(cursor)
+        index = next((i for i, lot in enumerate(lots) if lot['ProductionID'] == production_id), None)
+        if index is None:
+            raise ValueError('This Production Lot is no longer active for the selected date.')
+        neighbor_index = index - 1 if direction == 'up' else index + 1
+        if neighbor_index < 0 or neighbor_index >= len(lots):
+            conn.commit()
+            return dict(moved=False, ProductionID=production_id, LotSequence=lots[index]['LotSequence'])
+        lots[index], lots[neighbor_index] = lots[neighbor_index], lots[index]
+        cursor.execute('SELECT ISNULL(MAX(LotSequence),0) FROM dbo.ProductionLot WITH (UPDLOCK,HOLDLOCK) WHERE ProdDate=?', selected_date)
+        temporary_base = int(cursor.fetchone()[0]) + len(lots) + 1
+        for offset, lot in enumerate(lots, start=1):
+            cursor.execute('UPDATE dbo.ProductionLot SET LotSequence=? WHERE ProductionID=? AND ProdDate=?',
+                           temporary_base + offset, lot['ProductionID'], selected_date)
+        for sequence, lot in enumerate(lots, start=1):
+            cursor.execute('UPDATE dbo.ProductionLot SET LotSequence=? WHERE ProductionID=? AND ProdDate=?',
+                           sequence, lot['ProductionID'], selected_date)
+        conn.commit()
+        return dict(moved=True, ProductionID=production_id, LotSequence=neighbor_index + 1)
     except Exception:
         conn.rollback()
         raise

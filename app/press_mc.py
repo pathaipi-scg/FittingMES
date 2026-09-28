@@ -1,5 +1,6 @@
 """Press machine configuration backed by the existing history-aware SQL model."""
 import logging
+from decimal import Decimal, InvalidOperation
 from app.lots import rows
 
 CHANGED_BY = 'FittingMES'
@@ -20,7 +21,7 @@ def read_lines(cursor):
 
 def read_capability_matrix(cursor, press_code):
     cursor.execute("""SELECT PressCode,PressName,CurrentLine,CurrentLineName,ProductFamily,
-        ProductCode,ProductName,ProductNameTH,CanProduce
+        ProductCode,ProductName,ProductNameTH,CanProduce,StandardSpeed
         FROM dbo.vw_PressMcCapabilityMatrix WHERE PressCode=?
         ORDER BY ProductFamily,ProductCode""", press_code)
     return rows(cursor)
@@ -144,13 +145,23 @@ def save_capabilities(conn, press_code, changes, remark=''):
         family = str(change.get('ProductFamily') or '').strip()
         code = str(change.get('ProductCode') or '').strip()
         active = change.get('CanProduce')
+        speed = change.get('StandardSpeed')
         if not family or len(family) > 30 or not code or len(code) != 2 or not isinstance(active, bool):
             raise ValueError('Invalid Product capability selection.')
+        if speed in (None, ''):
+            normalized_speed = None
+        else:
+            try:
+                normalized_speed = Decimal(str(speed))
+            except (InvalidOperation, ValueError):
+                raise ValueError('Standard Speed must be a number greater than 0.') from None
+            if not normalized_speed > 0 or normalized_speed.as_tuple().exponent < -2:
+                raise ValueError('Standard Speed must be a number greater than 0 with at most 2 decimals.')
         identity = family, code
         if identity in seen:
             raise ValueError('Duplicate Product capability selection.')
         seen.add(identity)
-        requested.append((family, code, active))
+        requested.append((family, code, active, normalized_speed))
     if len(str(remark or '')) > 1000:
         raise ValueError('Remark must be at most 1000 characters.')
     cursor = None
@@ -163,29 +174,37 @@ def save_capabilities(conn, press_code, changes, remark=''):
         conn.autocommit = True
         cursor = conn.cursor()
         current_matrix = read_capability_matrix(cursor, press_code)
-        current = {(row['ProductFamily'], row['ProductCode']): bool(row['CanProduce'])
+        current = {(row['ProductFamily'], row['ProductCode']): (bool(row['CanProduce']), row.get('StandardSpeed'))
                    for row in current_matrix}
         normalized = []
-        for family, code, active in requested:
+        for family, code, active, speed in requested:
             key = family, code
             if key not in current:
                 raise ValueError('The selected Product is not active in the Product master.')
-            if current[key] != active:
-                normalized.append((family, code, active))
+            current_active, current_speed = current[key]
+            speed_changed = (speed is not None and current_speed is None) or (
+                speed is not None and current_speed is not None and Decimal(str(current_speed)) != speed)
+            if current_active != active or (active and speed_changed):
+                normalized.append((family, code, active, speed, speed_changed))
         if not normalized:
             logger.info('Press capability save had no changes: press=%s requested=%s', press_code, len(requested))
             return 0
         logger.info('Press capability save: press=%s requested=%s changes=%s keys=%s',
                     press_code, len(requested), len(normalized),
-                    [(family, code, active) for family, code, active in normalized])
+                    [(family, code, active, speed) for family, code, active, speed, _ in normalized])
         cursor.execute('BEGIN TRANSACTION')
         transaction_started = True
-        for family, code, active in normalized:
+        for family, code, active, speed, speed_changed in normalized:
             logger.info('Calling sp_SetPressProductCapability press=%s family=%s product=%s active=%s',
                         press_code, family, code, active)
-            cursor.execute("""EXEC dbo.sp_SetPressProductCapability
-                @PressEquipmentCode=?,@ProductFamily=?,@ProductCode=?,@IsActive=?,@Remark=?,@ChangedBy=?""",
-                press_code, family, code, active, str(remark or '').strip(), CHANGED_BY)
+            if current[(family, code)][0] != active:
+                cursor.execute("""EXEC dbo.sp_SetPressProductCapability
+                    @PressEquipmentCode=?,@ProductFamily=?,@ProductCode=?,@IsActive=?,@Remark=?,@ChangedBy=?""",
+                    press_code, family, code, active, str(remark or '').strip(), CHANGED_BY)
+            if active and speed_changed:
+                cursor.execute("""EXEC dbo.sp_SetPressProductCapabilitySpeed
+                    @PressEquipmentCode=?,@ProductFamily=?,@ProductCode=?,@StandardSpeed=?""",
+                    press_code, family, code, speed)
         cursor.execute('COMMIT TRANSACTION')
         transaction_started = False
         logger.info('Press capability save committed: press=%s changes=%s',press_code,len(normalized))
