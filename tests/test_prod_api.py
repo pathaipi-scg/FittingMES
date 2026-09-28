@@ -7,7 +7,7 @@ import unittest
 from datetime import date, time
 from unittest.mock import patch
 from app.main import app, production_page
-from app.prod_api import read_prod_records, resolve_plan, build_pis_prodorders_payload, field_mapping, build_pis_date_preview, preview_readiness
+from app.prod_api import read_prod_records, resolve_plan, build_pis_prodorders_payload, field_mapping, build_pis_date_preview, lot_readiness, preview_readiness
 from test_production import LOT, PLAN, request
 
 DAY = date(2026, 9, 22)
@@ -29,16 +29,24 @@ class ReadOnlyConnection:
         self.closed = False
     def cursor(self): return self
     def execute(self, sql, *args):
-        if not sql.lstrip().startswith('SELECT'):
+        if not (sql.lstrip().startswith('SELECT') or sql.lstrip().startswith('WITH')):
             raise AssertionError('Viewing must only SELECT')
         self.sql.append((sql,args))
-        if 'FROM dbo.P_ActivePlan' in sql:
+        if 'FROM Ranked' in sql:
+            self.result = []
+            self.description = [('PISLogID',), ('ProductionID',), ('LotNo',), ('ProductionDate',),
+                                ('ShiftCode',), ('PlantCode',), ('MachineCode',), ('RequestGroupID',),
+                                ('HTTPStatus',), ('Outcome',), ('ErrorMessage',), ('AttemptedAt',), ('CreatedAt',)]
+        elif 'FROM dbo.P_ActivePlan' in sql:
             self.result = [PLAN_SOURCE] if args[-1] == DAY else []
             self.description = [(key,) for key in PLAN_SOURCE]
         else:
             self.result = [record for record in self.records if record['ProdDate'] == args[0]]
             self.description = [(key,) for key in RECORD]
-    def fetchall(self): return [tuple(record[key[0]] for key in self.description) for record in self.result]
+    def fetchall(self):
+        if self.description and self.description[0][0] == 'PISLogID':
+            return self.result
+        return [tuple(record[key[0]] for key in self.description) for record in self.result]
     def close(self): self.closed = True
     def commit(self): raise AssertionError('Viewing must not commit')
     def rollback(self): raise AssertionError('Viewing must not write')
@@ -66,7 +74,7 @@ class ProdApiTests(unittest.TestCase):
             status, body = asyncio.run(get_page('/prod-api',query))
         self.assertEqual(conn.records,before)
         self.assertTrue(conn.closed)
-        self.assertEqual(len(conn.sql),2)
+        self.assertIn(len(conn.sql),(2,3))
         return status, body, conn
 
     def test_query_uses_existing_tables_parameterized_date_and_active_lots(self):
@@ -84,7 +92,7 @@ class ProdApiTests(unittest.TestCase):
         for text in ['B006690902','07:30:00','15:30:00','12345678XX','Saved product',
                      'NeuFit / NeuStile','>100<','>90<','Saved &lt;remark&gt;', 'NOT SENT']:
             self.assertIn(text,body)
-        self.assertIn('local preview label',body)
+        self.assertIn('PRODUCTION SEND: DISABLED',body)
         self.assertEqual(body.count('aria-current="page"'),1)
         self.assertRegex(body,r'href="/prod-api\?production_date=2026-09-22" aria-current="page"')
         self.assertIn('href="/reject-api?production_date=2026-09-22"',body)
@@ -94,7 +102,7 @@ class ProdApiTests(unittest.TestCase):
         self.assertIn("dateInput.addEventListener('change'",scripts[0])
         self.assertNotRegex(scripts[0],r'fetch\s*\(|XMLHttpRequest|\.submit\s*\(|\.requestSubmit\s*\(')
         self.assertNotIn('https://',body)
-        self.assertNotIn('method="post"',body)
+        self.assertIn('formmethod="post"',body)
         self.assertNotIn('>SEND<',body)
 
     def test_default_today_and_historical_filter(self):
@@ -142,9 +150,10 @@ class ProdApiTests(unittest.TestCase):
     def test_missing_measurements_remain_null_and_zero_is_displayed(self):
         record = dict(RECORD,CounterQty=0,CuringQty=None,ProductionStartTime=None,ProductionEndTime=None,Remark=None)
         status,body,_ = self.page('production_date=2026-09-22&preview_all=true',ReadOnlyConnection([record]))
-        self.assertEqual(status,200)
+        self.assertEqual(status,400)
         self.assertIn('>0<',body)
-        self.assertIn('"gross0": null',html.unescape(body))
+        self.assertIn('NOT READY',body)
+        self.assertIn('Start, End, Curing Qty',body)
 
     def test_empty_date_has_no_request(self):
         status,body,_ = self.page('production_date=2020-01-01&preview_all=true')
@@ -174,12 +183,12 @@ class ProdApiTests(unittest.TestCase):
         status,body,_=self.page('production_date=2026-09-22&preview_all=true',ReadOnlyConnection([RECORD,other]))
         self.assertEqual(status,200)
         groups=[json.loads(html.unescape(value)) for value in re.findall(r'<pre id="prod-preview-\d+" class="prod-preview">(.*?)</pre>',body,re.S)]
-        self.assertEqual([group['shiftCode'] for group in groups],['1','2'])
-        self.assertEqual(sum(len(group['productionItems']) for group in groups),2)
-        self.assertIsNone(groups[1]['productionItems'][0]['itemOutputs'][0]['gross0'])
+        self.assertEqual([group['shiftCode'] for group in groups],['1'])
+        self.assertEqual(sum(len(group['productionItems']) for group in groups),1)
+        self.assertEqual(groups[0]['productionItems'][0]['itemOutputs'][0]['gross0'],90)
         self.assertIn('Each group below is a separate ProdOrders request body',body)
         self.assertIn('no batch wrapper',body)
-        self.assertEqual(len(groups),2)
+        self.assertEqual(len(groups),1)
 
     def test_date_builder_checks_date_and_keeps_unmapped_records(self):
         rows=[dict(RECORD,Plant='30A1',Machine='SB2-3'),dict(RECORD,ProductionID=3,LotNo='UNMAPPED')]
@@ -276,7 +285,7 @@ class ProdApiTests(unittest.TestCase):
         self.assertEqual(len(scripts),1)
         self.assertIn("dateInput.addEventListener('change'",scripts[0])
         self.assertNotRegex(scripts[0],r'fetch\s*\(|XMLHttpRequest|\.submit\s*\(|\.requestSubmit\s*\(')
-        self.assertNotIn('method="post"',body)
+        self.assertIn('formmethod="post"',body)
         # get_page blocks socket connections throughout route execution.
         self.assertNotIn('Unable to load',body)
 
@@ -299,18 +308,18 @@ class ProdApiTests(unittest.TestCase):
                          ['B006690902','SECOND','THIRD'])
         self.assertRegex(body,r'name="preview_all"[^>]*formnovalidate')
 
-    def test_no_production_send_action_or_endpoint(self):
+    def test_production_send_routes_are_post_only_and_preview_remains_get(self):
         status,body,_=self.page('production_date=2026-09-22')
         self.assertEqual(status,200)
-        self.assertNotIn('SEND PROD',body)
-        self.assertNotIn('SEND LOT PROD',body)
-        self.assertNotIn('SEND ALL PROD',body)
-        self.assertNotIn('method="post"',body)
-        self.assertFalse(any('send' in route.path.lower() for route in app.routes))
+        self.assertIn('SEND PROD',body)
+        self.assertIn('SEND ALL PROD',body)
+        self.assertIn('formmethod="post"',body)
+        self.assertTrue(any(route.path == '/prod-api/send' for route in app.routes))
+        self.assertTrue(any(route.path == '/prod-api/send-all' for route in app.routes))
         self.assertEqual(next(route for route in app.routes if route.path=='/prod-api').methods,{'GET'})
         with patch('app.main.get_connection') as connection:
-            for path in ('/prod-api','/prod-api/2/send','/lots/2/send-prod'):
-                self.assertIn(asyncio.run(get_page(path,method='POST'))[0],(404,405))
+            for path in ('/prod-api','/prod-api/send','/prod-api/send-all'):
+                self.assertIn(asyncio.run(get_page(path,method='POST'))[0],(404,405,422))
             connection.assert_not_called()
 
     def test_local_same_day_overnight_and_calendar_boundaries(self):
@@ -379,14 +388,13 @@ class ProdApiTests(unittest.TestCase):
         self.assertNotIn('MISSING REQUIRED DATA',body)
         self.assertNotIn('followPlan source not implemented',body)
 
-    def test_group_missing_fields_do_not_omit_lots(self):
+    def test_group_missing_fields_skip_not_ready_lots(self):
         status,body,_=self.page('production_date=2026-09-22&preview_all=true',ReadOnlyConnection([
             RECORD,dict(RECORD,ProductionID=3,LotNo='SECOND',CuringQty=None,ProductionEndTime=None)]))
         self.assertEqual(status,200)
-        self.assertIn('2 lots included',body)
-        self.assertIn('Item 2: gross0 (CuringQty)',body)
-        self.assertIn('Item 2: dateTimeEnd',body)
-        self.assertIn('MISSING REQUIRED DATA',body)
+        self.assertIn('1 lots included',body)
+        self.assertIn('NOT READY: End, Curing Qty',body)
+        self.assertNotIn('SECOND',html.unescape(body).split('PIS JSON PREVIEW')[1])
 
     def test_followplan_uses_saved_plan_per_lot_not_counter_or_aggregate(self):
         from decimal import Decimal
@@ -418,17 +426,16 @@ class ProdApiTests(unittest.TestCase):
                 self.assertTrue(any(source in message for message in readiness['missing']))
             for mode in ('preview_one=true&production_id=2','preview_all=true'):
                 status,body,_=self.page('production_date=2026-09-22&'+mode,ReadOnlyConnection([row]))
-                self.assertEqual(status,200)
-                self.assertIn('"followPlan": null',html.unescape(body))
-                for source in expected: self.assertIn(source,body)
+                self.assertEqual(status,400)
+                self.assertIn('NOT READY',body)
 
     def test_both_preview_modes_use_each_saved_plan_quantity(self):
         records=[dict(RECORD,PlanQty=1800,CuringQty=1790,CounterQty=5000),
                  dict(RECORD,ProductionID=3,LotNo='SECOND',PlanQty=1000,CuringQty=1050,CounterQty=5000)]
         for mode,expected in [('preview_one=true&production_id=2',[False]),
-                              ('preview_one=true&production_id=3',[True]),('preview_all=true',[False,True])]:
+                              ('preview_one=true&production_id=3',[]),('preview_all=true',[False])]:
             status,body,_=self.page('production_date=2026-09-22&'+mode,ReadOnlyConnection(records))
-            self.assertEqual(status,200)
+            self.assertEqual(status,200 if mode != 'preview_one=true&production_id=3' else 400)
             groups=[json.loads(html.unescape(value)) for value in re.findall(
                 r'<pre id="prod-preview-\d+" class="prod-preview">(.*?)</pre>',body,re.S)]
             self.assertEqual([item['followPlan'] for group in groups for item in group['productionItems']],expected)
@@ -442,10 +449,16 @@ class ProdApiTests(unittest.TestCase):
                     ReadOnlyConnection([dict(RECORD,PlanQty=value)]))
                 self.assertEqual(status,200)
                 self.assertIn('<th>Product</th><th>Plan Qty</th><th>Counter</th><th>Curing</th>'
-                              '<th>Wet Reject</th><th>Remark</th><th>Local status</th>',body)
+                              '<th>Wet Reject</th><th>Remark</th><th>Ready</th><th>Local status</th>',body)
                 table=re.search(r'<table>(.*?)</table>',body,re.S)[1]
                 cells=re.findall(r'<td[^>]*>(.*?)</td>',table,re.S)
                 self.assertEqual(cells[10],display)
                 self.assertEqual(cells[11],'100')
         _,body,_=self.page('production_date=2020-01-01')
-        self.assertIn('colspan="16"',body)
+        self.assertIn('colspan="17"',body)
+
+    def test_lot_readiness_uses_only_confirmed_required_fields(self):
+        ready = dict(RECORD, **resolve_plan(RECORD, [PLAN_SOURCE]))
+        self.assertEqual(lot_readiness(ready), {'ready': True, 'missing': []})
+        missing = dict(ready, Plant=None, CuringQty=None, ProductionEndTime=None)
+        self.assertEqual(lot_readiness(missing), {'ready': False, 'missing': ['Plant', 'End', 'Curing Qty']})

@@ -2,21 +2,25 @@
 {% block content %}
 <section class="panel"><h1>PROD API</h1>
 <p class="muted">PIS endpoint: {{ 'configured' if pis_config.endpoint_configured else 'NOT CONFIGURED' }} &middot; PIS authentication: {{ 'configured' if pis_config.authentication_configured else 'NOT CONFIGURED' }}. DRY RUN / NO PIS SEND.</p>
-<p class="muted">DRY RUN / NO PIS SEND. Production review only. NOT SENT is a local preview label; delivery status is not tracked here.</p></section>
-{% if error %}<div class="error" role="alert">{{ error }}</div>{% endif %}
+<p class="muted">PRODUCTION SEND: {{ 'ENABLED' if pis_config.production_send_enabled else 'DISABLED' }}</p></section>
+{% if error or send_error %}<div class="error" role="alert">{{ error or send_error }}</div>{% endif %}
+{% if send_message %}<section class="panel" aria-label="Production send summary"><h2>{{ send_message }}</h2>
+<p>Groups attempted: {{ send_groups }} &middot; Lots attempted: {{ send_lots }} &middot; SUCCESS: {{ send_success }} &middot; FAILED: {{ send_failed }} &middot; UNKNOWN: {{ send_unknown }}</p>
+<p>Skipped NOT READY: {{ skipped_not_ready }} &middot; Skipped SENT: {{ skipped_sent }} &middot; Skipped UNKNOWN: {{ skipped_unknown }}</p></section>{% endif %}
 <section class="panel" aria-label="Production records">
 <form method="get" action="/prod-api">
 <input type="hidden" name="production_date" value="{{ production_date }}">
-<div class="table-scroll"><table><thead><tr><th>Select</th><th>Production Date</th><th>Shift</th><th>Start</th><th>End</th><th>Plan</th><th>Version</th><th>Material Code</th><th>Lot No.</th><th>Product</th><th>Plan Qty</th><th>Counter</th><th>Curing</th><th>Wet Reject</th><th>Remark</th><th>Local status</th></tr></thead><tbody>
+<div class="table-scroll"><table><thead><tr><th>Select</th><th>Production Date</th><th>Shift</th><th>Start</th><th>End</th><th>Plan</th><th>Version</th><th>Material Code</th><th>Lot No.</th><th>Product</th><th>Plan Qty</th><th>Counter</th><th>Curing</th><th>Wet Reject</th><th>Remark</th><th>Ready</th><th>Local status</th></tr></thead><tbody>
 {% for row in records %}<tr>
 <td><input type="radio" name="production_id" value="{{ row.ProductionID }}" aria-label="Select {{ row.LotNo }}" required {% if selected_id == row.ProductionID %}checked{% endif %}></td>
 {% for key in ['ProdDate','Shift','ProductionStartTime','ProductionEndTime','PlanName','VersionNo','MaterialCode','LotNo'] %}<td>{{ row[key] if row[key] is not none else '-' }}</td>{% endfor %}
 <td>{{ row.ProductFamily or '' }} {{ row.ProductCode or '' }}{% if row.MaterialName %} &middot; {{ row.MaterialName }}{% endif %}</td>
-<td>{{ '{:,.0f}'.format(row.PlanQty) if row.PlanQty is not none else '-' }}</td><td>{{ row.CounterQty if row.CounterQty is not none else '-' }}</td><td>{{ row.CuringQty if row.CuringQty is not none else '-' }}</td><td>{{ row.WetRejectQty if row.WetRejectQty is not none else '-' }}</td><td class="remark">{{ row.Remark or '' }}</td><td class="status">NOT SENT</td>
-</tr>{% else %}<tr><td colspan="16" class="muted">No active Production Lots for this date.</td></tr>{% endfor %}
+<td>{{ '{:,.0f}'.format(row.PlanQty) if row.PlanQty is not none else '-' }}</td><td>{{ row.CounterQty if row.CounterQty is not none else '-' }}</td><td>{{ row.CuringQty if row.CuringQty is not none else '-' }}</td><td>{{ row.WetRejectQty if row.WetRejectQty is not none else '-' }}</td><td class="remark">{{ row.Remark or '' }}</td><td class="status">{% set readiness = lot_readiness(row) %}{% if readiness.ready %}READY{% else %}NOT READY: {{ readiness.missing|join(', ') }}{% endif %}</td><td class="status">{{ row.DeliveryStatus }}{% if readiness.ready and row.DeliveryStatus == 'NOT SENT' %}<br><button type="submit" name="production_id" value="{{ row.ProductionID }}" formmethod="post" formaction="/prod-api/send" formnovalidate onclick="return confirm('Send production lot {{ row.LotNo }}?\nProduction Date: {{ row.ProdDate }}\nPlant: {{ row.Plant }}\nMachine: {{ row.Machine }}')">SEND PROD</button>{% elif readiness.ready and row.DeliveryStatus == 'FAILED' %}<br><button type="submit" name="production_id" value="{{ row.ProductionID }}" formmethod="post" formaction="/prod-api/send" formnovalidate onclick="return confirm('Retry production lot {{ row.LotNo }}?\nProduction Date: {{ row.ProdDate }}\nPlant: {{ row.Plant }}\nMachine: {{ row.Machine }}')">RETRY</button>{% elif readiness.ready and row.DeliveryStatus == 'UNKNOWN' %}<br><button type="submit" name="production_id" value="{{ row.ProductionID }}" formmethod="post" formaction="/prod-api/retry-unknown" formnovalidate onclick="return confirm('The previous delivery result is unknown.\nPIS may already have received this production record.\nRetry may cause a duplicate submission.\n\nLot No.: {{ row.LotNo }}\nProduction Date: {{ row.ProdDate }}\nPlant: {{ row.Plant }}\nMachine: {{ row.Machine }}')">RETRY UNKNOWN</button>{% endif %}</td>
+</tr>{% else %}<tr><td colspan="17" class="muted">No active Production Lots for this date.</td></tr>{% endfor %}
 </tbody></table></div>
 <button class="primary" type="submit" name="preview_one" value="true" {% if not records %}disabled{% endif %}>PREVIEW PROD</button>
 <button class="primary" type="submit" name="preview_all" value="true" formnovalidate {% if not records %}disabled{% endif %}>PREVIEW ALL PROD</button>
+<button class="primary" type="submit" name="send_all" value="true" formmethod="post" formaction="/prod-api/send-all" formnovalidate {% if not records or not pis_config.production_send_enabled %}disabled{% endif %} onclick="return confirm('Send all eligible READY production lots for {{ production_date }}?\nNOT READY, SENT, and UNKNOWN lots will be skipped. Failed lots may be retried.')">SEND ALL PROD</button>
 </form></section>
 {% if previews %}
 {% for diagnostic in diagnostics %}
@@ -31,7 +35,7 @@
 <section class="panel" aria-label="Production preview"><h2>PIS JSON PREVIEW &middot; {{ 'ALL PROD' if preview_all else 'SELECTED LOT' }} &middot; {{ production_date }}</h2>
 <p>{{ 'MISSING REQUIRED DATA' if missing else 'READY FOR PIS PREVIEW' }}</p>
 {% for diagnostic in diagnostics %}{% if diagnostic.missing %}<p>{{ diagnostic.record.LotNo }} &mdash; Missing: {{ diagnostic.missing|join(', ') }}</p>{% endif %}{% endfor %}
-<p>{{ preview_count }} lots included across {{ group_count }} date/shift/plant/machine group(s). No lots are omitted for missing mappings or measurements.</p>
+<p>{{ preview_count }} lots included across {{ group_count }} date/shift/plant/machine group(s); all included lots are READY. NOT READY lots are skipped for PREVIEW ALL PROD.</p>
 <p>Each group below is a separate ProdOrders request body. PREVIEW ALL PROD covers the complete date-level operation; no batch wrapper is added.</p>
 <p class="muted">Dry run only. No request is sent. Empty arrays and blank structural fields follow the supplied reference; they are not measured values.</p>
 {% for preview in previews %}

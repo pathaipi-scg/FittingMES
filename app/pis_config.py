@@ -13,11 +13,14 @@ class PISConfig:
     base_url: str = field(repr=False)
     username: str = field(repr=False)
     password: str = field(repr=False)
+    production_send_enabled: bool = False
 
     @classmethod
     def from_environment(cls):
         return cls(os.getenv('PIS_BASE_URL', '').strip().rstrip('/'),
-                   os.getenv('PIS_USERNAME', ''), os.getenv('PIS_PASSWORD', ''))
+                   os.getenv('PIS_USERNAME', ''), os.getenv('PIS_PASSWORD', ''),
+                   os.getenv('PIS_PROD_SEND_ENABLED', '').strip().lower() in
+                   ('1', 'true', 'yes', 'on'))
 
     @property
     def endpoint_configured(self):
@@ -37,4 +40,5 @@ class PISConfig:
     def diagnostics(self):
         # Only these booleans may enter template context; never the config object.
         return dict(endpoint_configured=self.endpoint_configured,
-                    authentication_configured=self.authentication_configured)
+                          authentication_configured=self.authentication_configured,
+                          production_send_enabled=self.production_send_enabled)

@@ -26,6 +26,17 @@ def read_prod_records(cursor, production_date):
 
 
 PLAN_FIELDS = ('Plant', 'Machine', 'PlanWeek', 'VersionNo', 'OperationCode')
+REQUIRED_LOT_FIELDS = (
+    ('Production Date', 'ProdDate'),
+    ('Shift', 'Shift'),
+    ('Plant', 'Plant'),
+    ('Machine', 'Machine'),
+    ('Material Code', 'MaterialCode'),
+    ('Lot No.', 'LotNo'),
+    ('Start', 'ProductionStartTime'),
+    ('End', 'ProductionEndTime'),
+    ('Curing Qty', 'CuringQty'),
+)
 
 
 def clean_string(value):
@@ -80,6 +91,12 @@ def follow_plan_missing(record):
     return [source for key, source in [('CuringQty', 'ProductionData.CuringQty'),
                                        ('PlanQty', 'ProductionLot.PlanQty')]
             if record.get(key) is None]
+
+
+def lot_readiness(record):
+    missing = [label for label, key in REQUIRED_LOT_FIELDS
+               if record.get(key) is None or record.get(key) == '']
+    return dict(ready=not missing, missing=missing)
 
 
 def build_pis_production_item(record):

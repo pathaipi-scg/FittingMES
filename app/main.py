@@ -14,8 +14,11 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from app.database import get_connection
 from app.pis_config import PISConfig
+from app.pis_client import PISClient
 from app.usage import read_usage_context, save_usage
-from app.prod_api import read_prod_records, build_pis_date_preview, field_mapping, preview_readiness
+from app.prod_api import read_prod_records, build_pis_date_preview, field_mapping, lot_readiness, preview_readiness
+from app.production_pis_log import latest_states
+from app.production_pis_send import FAILED, SUCCESS, UNKNOWN, send_ready_groups
 from app.depallet import (read_context as read_depallet_context, read_reasons as read_depallet_reasons,
                           read_curing_lots, read_daily_work, save_depallet, save_depallet_batch,
                           reorder_depallet_run)
@@ -528,31 +531,50 @@ async def save_depallet_route(request: Request, production_id: int):
 @app.get("/prod-api", response_class=HTMLResponse)
 def prod_api_page(request: Request, production_date: date | None = None,
                   preview_all: bool = False, preview_one: bool = False,
-                  production_id: int | None = None):
+                  production_id: int | None = None, send_message: str | None = None,
+                  send_error: str | None = None, send_groups: int = 0, send_lots: int = 0,
+                  send_success: int = 0, send_failed: int = 0, send_unknown: int = 0,
+                  skipped_not_ready: int = 0, skipped_sent: int = 0, skipped_unknown: int = 0):
     production_date = production_date or date.today()
     context = dict(page_title="PROD API", active_tab="prod-api", production_date=production_date,
                    records=[], previews=[], selected_id=production_id, error=None, diagnostics=[], group_count=0,
-                   preview_all=preview_all, preview_count=0, pis_config=PISConfig.from_environment().diagnostics())
+                   preview_all=preview_all, preview_count=0, lot_readiness=lot_readiness,
+                   pis_config=PISConfig.from_environment().diagnostics(), send_message=send_message,
+                   send_error=send_error, send_groups=send_groups, send_lots=send_lots,
+                   send_success=send_success, send_failed=send_failed, send_unknown=send_unknown,
+                   skipped_not_ready=skipped_not_ready, skipped_sent=skipped_sent,
+                   skipped_unknown=skipped_unknown)
     status = 200
     try:
         with closing(get_connection()) as conn:
-            context["records"] = read_prod_records(conn.cursor(), production_date)
+            cursor = conn.cursor()
+            context["records"] = read_prod_records(cursor, production_date)
+            states = latest_states(cursor, [row['ProductionID'] for row in context['records']])
+            for record in context['records']:
+                state = states.get(record['ProductionID'])
+                record['DeliveryStatus'] = ({'SUCCESS': 'SENT', 'FAILED': 'FAILED', 'UNKNOWN': 'UNKNOWN'}
+                                            .get(state['Outcome'], 'NOT SENT') if state else 'NOT SENT')
         if preview_all or preview_one:
             if not context["records"]:
                 context["error"] = "No active Production Lots for this date. Nothing to preview."
             else:
-                preview_records = context['records'] if preview_all else [
-                    row for row in context['records'] if row['ProductionID'] == production_id]
-                if not preview_records:
-                    context['error'] = 'Select a Production Lot from this date to preview.'
+                selected_records = [row for row in context['records'] if row['ProductionID'] == production_id]
+                if preview_one and selected_records and not lot_readiness(selected_records[0])['ready']:
+                    missing = ', '.join(lot_readiness(selected_records[0])['missing'])
+                    context['error'] = f"Production Lot is NOT READY. Missing: {missing}."
                     status = 400
+                    selected_records = []
+                preview_records = ([row for row in context['records'] if lot_readiness(row)['ready']]
+                                   if preview_all else selected_records)
+                if not preview_records:
+                    if not context['error']:
+                        context['error'] = 'Select a Production Lot from this date that is READY to preview.'
+                        status = 400
                 for record in preview_records:
                     mapping = field_mapping(record)
                     context['diagnostics'].append(dict(record=record, mapping=mapping,
-                        missing=[item['field'] + (': missing ' + ', '.join(item['missing_sources'])
-                                 if item.get('missing_sources') else '') for item in mapping
-                                 if item['severity'] == 'required']))
-                groups = build_pis_date_preview(preview_records, production_date)
+                        missing=lot_readiness(record)['missing']))
+                groups = build_pis_date_preview(preview_records, production_date) if preview_records else []
                 context['preview_count'] = len(preview_records)
                 context['group_count'] = len(groups)
                 context['missing'] = any(item['missing'] for item in context['diagnostics'])
@@ -564,6 +586,90 @@ def prod_api_page(request: Request, production_date: date | None = None,
         status = 503
     return templates.TemplateResponse(request=request, name="prod_api.html", context=context,
                                       status_code=status, headers={"Cache-Control": "no-store"})
+
+
+def _prod_redirect(production_date, **values):
+    query = {'production_date': str(production_date)}
+    query.update({key: str(value) for key, value in values.items() if value not in (None, '')})
+    return RedirectResponse('/prod-api?' + urlencode(query), status_code=303)
+
+
+def _send_config_or_error():
+    config = PISConfig.from_environment()
+    if not config.production_send_enabled:
+        return None, 'Production sending is disabled by PIS_PROD_SEND_ENABLED.'
+    if not config.endpoint_configured:
+        return None, 'Production sending is unavailable because the PIS endpoint is not configured.'
+    if not config.authentication_configured:
+        return None, 'Production sending is unavailable because PIS authentication is not configured.'
+    return config, None
+
+
+def _prod_records_and_states(conn, production_date):
+    cursor = conn.cursor()
+    records = read_prod_records(cursor, production_date)
+    states = latest_states(cursor, [row['ProductionID'] for row in records])
+    for record in records:
+        state = states.get(record['ProductionID'])
+        record['DeliveryStatus'] = ({SUCCESS: 'SENT', FAILED: 'FAILED', UNKNOWN: 'UNKNOWN'}
+                                    .get(state['Outcome'], 'NOT SENT') if state else 'NOT SENT')
+    return records, states
+
+
+def _send_one(production_date, production_id, unknown_retry=False):
+    config, error = _send_config_or_error()
+    if error:
+        return _prod_redirect(production_date, send_error=error)
+    with closing(get_connection()) as conn:
+        records, states = _prod_records_and_states(conn, production_date)
+        record = next((row for row in records if row['ProductionID'] == production_id), None)
+        if record is None:
+            return _prod_redirect(production_date, send_error='Select an active Production Lot from this date.')
+        readiness = lot_readiness(record)
+        if not readiness['ready']:
+            return _prod_redirect(production_date, send_error='Production Lot is NOT READY. Missing: ' + ', '.join(readiness['missing']) + '.')
+        state = states.get(production_id)
+        if state and state['Outcome'] == SUCCESS:
+            return _prod_redirect(production_date, send_error='This Production Lot is already SENT.')
+        if state and state['Outcome'] == UNKNOWN and not unknown_retry:
+            return _prod_redirect(production_date, send_error='This Production Lot has UNKNOWN delivery status. Use RETRY UNKNOWN explicitly.')
+        results = send_ready_groups(conn, [record], PISClient(config), include_unknown=unknown_retry)
+        if not results:
+            return _prod_redirect(production_date, send_error='This Production Lot is not eligible for sending.')
+        result = results[0]
+        return _prod_redirect(production_date, send_message='Production send completed.', send_groups=1,
+                              send_lots=1, send_success=int(result['outcome'] == SUCCESS),
+                              send_failed=int(result['outcome'] == FAILED), send_unknown=int(result['outcome'] == UNKNOWN))
+
+
+@app.post('/prod-api/send')
+def send_prod(request: Request, production_date: date = Form(...), production_id: int = Form(...)):
+    return _send_one(production_date, production_id)
+
+
+@app.post('/prod-api/retry-unknown')
+def retry_unknown_prod(request: Request, production_date: date = Form(...), production_id: int = Form(...)):
+    return _send_one(production_date, production_id, unknown_retry=True)
+
+
+@app.post('/prod-api/send-all')
+def send_all_prod(request: Request, production_date: date = Form(...)):
+    config, error = _send_config_or_error()
+    if error:
+        return _prod_redirect(production_date, send_error=error)
+    with closing(get_connection()) as conn:
+        records, states = _prod_records_and_states(conn, production_date)
+        skipped_not_ready = sum(not lot_readiness(row)['ready'] for row in records)
+        skipped_sent = sum(state and state['Outcome'] == SUCCESS for state in states.values())
+        skipped_unknown = sum(state and state['Outcome'] == UNKNOWN for state in states.values())
+        results = send_ready_groups(conn, records, PISClient(config))
+    return _prod_redirect(production_date, send_message='Production SEND ALL completed.',
+                          send_groups=len(results), send_lots=sum(len(result['production_ids']) for result in results),
+                          send_success=sum(result['outcome'] == SUCCESS for result in results for _ in result['production_ids']),
+                          send_failed=sum(result['outcome'] == FAILED for result in results for _ in result['production_ids']),
+                          send_unknown=sum(result['outcome'] == UNKNOWN for result in results for _ in result['production_ids']),
+                          skipped_not_ready=skipped_not_ready, skipped_sent=skipped_sent,
+                          skipped_unknown=skipped_unknown)
 
 
 @app.get("/reject-api", response_class=HTMLResponse)

@@ -31,7 +31,8 @@ class PISClientTests(unittest.TestCase):
         self.assertEqual(config.password,self.password)
         self.assertNotIn(self.username,repr(config))
         self.assertNotIn(self.password,repr(config))
-        self.assertEqual(config.diagnostics(),{'endpoint_configured':True,'authentication_configured':True})
+        self.assertEqual(config.diagnostics(),{'endpoint_configured':True,'authentication_configured':True,
+                               'production_send_enabled':False})
         with patch.dict(os.environ,{},clear=True):
             missing=PISConfig.from_environment()
         self.assertFalse(missing.authentication_configured)
