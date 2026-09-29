@@ -1,14 +1,17 @@
 import unittest
 from datetime import datetime
+from unittest.mock import patch
 from uuid import UUID
 
 from app.reject_api import REJECT_SKIP_REASONS, evaluate_reject_send
-from app.reject_pis_send import evaluate_reject_lots
+from app.pis_config import PISConfig
+from app.reject_pis_send import evaluate_reject_lots, send_reject_single
 
 
 class AuditConnection:
     def __init__(self):
         self.rows = []
+        self.attempts = []
         self.commits = 0
 
     def cursor(self):
@@ -17,6 +20,8 @@ class AuditConnection:
     def execute(self, sql, *args):
         if 'PIS_Send_Log' in sql:
             self.rows.append(args)
+        elif 'RejectPISLog' in sql:
+            self.attempts.append(args)
 
     def commit(self):
         self.commits += 1
@@ -153,6 +158,132 @@ class RejectPrePostTests(unittest.TestCase):
         self.assertEqual(equal['FinalR99'], 0)
         self.assertEqual(greater['FinalR99'], 0)
         self.assertNotEqual(greater['Status'], 'READY')
+
+    def test_disabled_single_never_calls_client(self):
+        class Client:
+            def post_change_status(self, payload):
+                raise AssertionError('POST must not be called')
+        result = send_reject_single(AuditConnection(), self.record,
+                                    lambda item: self.summary, lambda item: self.row,
+                                    config=PISConfig('https://pis.example:443', 'u', 'p'), client=Client())
+        self.assertEqual(result['reason'], 'REJECT SEND DISABLED')
+
+    def test_ready_success_posts_exact_evaluator_payload_and_audits(self):
+        class Client:
+            def __init__(self):
+                self.payload = None
+            def post_change_status(self, payload):
+                self.payload = payload
+                return {'status_code': 200, 'body': '{"message":"success"}'}
+        client = Client()
+        connection = AuditConnection()
+        expected = evaluate_reject_send(self.record, self.summary, self.row)['changeStatusPayload']
+        result = send_reject_single(connection, self.record, lambda item: self.summary,
+                                     lambda item: self.row,
+                                     config=PISConfig('https://pis.example:443', 'u', 'p', reject_send_enabled=True),
+                                     client=client, duplicate_checker=lambda *args: False)
+        self.assertEqual(client.payload, expected)
+        self.assertEqual(result['status'], 'SUCCESS')
+        self.assertEqual(connection.attempts[0][8], 'SUCCESS')
+        self.assertEqual(connection.rows[0][5:7], ('SUCCESS', 'SUCCESS'))
+
+    def test_business_failure_is_error_without_credentials_in_audit(self):
+        class Client:
+            def post_change_status(self, payload):
+                return {'status_code': 200, 'body': '{"message":"failed"}'}
+        connection = AuditConnection()
+        result = send_reject_single(connection, self.record, lambda item: self.summary,
+                                     lambda item: self.row,
+                                     config=PISConfig('https://pis.example:443', 'secret-user', 'secret-pass', reject_send_enabled=True),
+                                     client=Client(), duplicate_checker=lambda *args: False)
+        self.assertEqual(result['status'], 'ERROR')
+        self.assertEqual(connection.attempts[0][8], 'FAILED')
+        self.assertEqual(connection.rows[0][5:7], ('ERROR', 'API ERROR'))
+        self.assertNotIn('secret-user', repr(connection.rows))
+        self.assertNotIn('secret-pass', repr(connection.rows))
+
+    def test_non_reference_success_fields_are_not_success(self):
+        from app.reject_pis_send import _business_success
+        for body in ('{"retmsgDB":"SUCCESS"}', '{"success":true}',
+                     '{"status":"SUCCESS"}', '{"message":"OK"}'):
+            with self.subTest(body=body):
+                self.assertFalse(_business_success({'body': body}))
+
+    def test_api_failures_and_malformed_responses_are_errors(self):
+        class Client:
+            def __init__(self, failure): self.failure = failure
+            def post_change_status(self, payload):
+                if isinstance(self.failure, BaseException): raise self.failure
+                return self.failure
+        for failure in (TimeoutError('timeout'), ConnectionError('connection'),
+                        RuntimeError('http failure'), {'status_code': 200, 'body': 'not json'}):
+            with self.subTest(failure=type(failure).__name__):
+                result = send_reject_single(AuditConnection(), self.record,
+                    lambda item: self.summary, lambda item: self.row,
+                    config=PISConfig('https://pis.example:443', 'u', 'p', reject_send_enabled=True),
+                    client=Client(failure), duplicate_checker=lambda *args: False)
+                self.assertEqual(result['status'], 'ERROR')
+
+    def test_skip_duplicate_and_stale_ready_never_post(self):
+        class Client:
+            calls = 0
+            def post_change_status(self, payload): self.calls += 1
+        for record, summary, row, duplicate in (
+                (dict(self.record, RejectReadiness={'ready': False, 'missing': ['Machine']}), self.summary, self.row, False),
+                (self.record, self.summary, self.row, True),
+                (self.record, dict(self.summary, curingRemaining=4), self.row, False)):
+            client = Client()
+            result = send_reject_single(AuditConnection(), record, lambda item: summary,
+                lambda item: row, config=PISConfig('https://pis.example:443', 'u', 'p', reject_send_enabled=True),
+                client=client, duplicate_checker=lambda *args, value=duplicate: value)
+            self.assertIn(result['result'], ('SKIP', 'ERROR'))
+            self.assertEqual(client.calls, 0)
+
+    def test_persistence_failure_after_success_does_not_repost(self):
+        class Connection(AuditConnection):
+            def commit(self): raise RuntimeError('database unavailable')
+        class Client:
+            calls = 0
+            def post_change_status(self, payload):
+                self.calls += 1
+                return {'status_code': 200, 'body': '{"message":"success"}'}
+        client = Client()
+        result = send_reject_single(Connection(), self.record, lambda item: self.summary,
+            lambda item: self.row, config=PISConfig('https://pis.example:443', 'u', 'p', reject_send_enabled=True),
+            client=client, duplicate_checker=lambda *args: False)
+        self.assertEqual(client.calls, 1)
+        self.assertTrue(result['pis_may_have_succeeded'])
+        self.assertEqual(result['status'], 'ERROR')
+
+    def test_serialized_duplicate_attempts_allow_at_most_one_post(self):
+        state = {'sent': False}
+        class Client:
+            calls = 0
+            def post_change_status(self, payload):
+                self.calls += 1
+                state['sent'] = True
+                return {'status_code': 200, 'body': '{"message":"success"}'}
+        client = Client()
+        checker = lambda *args: state['sent']
+        config = PISConfig('https://pis.example:443', 'u', 'p', reject_send_enabled=True)
+        first = send_reject_single(AuditConnection(), self.record, lambda item: self.summary,
+            lambda item: self.row, config=config, client=client, duplicate_checker=checker)
+        second = send_reject_single(AuditConnection(), self.record, lambda item: self.summary,
+            lambda item: self.row, config=config, client=client, duplicate_checker=checker)
+        self.assertEqual(client.calls, 1)
+        self.assertEqual(first['status'], 'SUCCESS')
+        self.assertEqual(second['result'], 'SKIP')
+
+    def test_feature_switch_only_explicit_true_enables(self):
+        for value in (None, '', 'invalid'):
+            environment = {} if value is None else {'PIS_REJECT_SEND_ENABLED': value}
+            with patch.dict('os.environ', environment, clear=True):
+                from app.pis_config import PISConfig
+                self.assertFalse(PISConfig.from_environment().reject_send_enabled)
+        for value in ('true', '1', 'yes', 'on'):
+            with patch.dict('os.environ', {'PIS_REJECT_SEND_ENABLED': value}, clear=True):
+                from app.pis_config import PISConfig
+                self.assertTrue(PISConfig.from_environment().reject_send_enabled)
 
 
 if __name__ == '__main__':

@@ -14,13 +14,14 @@ class PISConfig:
     username: str = field(repr=False)
     password: str = field(repr=False)
     production_send_enabled: bool = False
+    reject_send_enabled: bool = False
 
     @classmethod
     def from_environment(cls):
+        enabled = lambda name: os.getenv(name, '').strip().lower() in ('1', 'true', 'yes', 'on')
         return cls(os.getenv('PIS_BASE_URL', '').strip().rstrip('/'),
-                   os.getenv('PIS_USERNAME', ''), os.getenv('PIS_PASSWORD', ''),
-                   os.getenv('PIS_PROD_SEND_ENABLED', '').strip().lower() in
-                   ('1', 'true', 'yes', 'on'))
+               os.getenv('PIS_USERNAME', ''), os.getenv('PIS_PASSWORD', ''),
+               enabled('PIS_PROD_SEND_ENABLED'), enabled('PIS_REJECT_SEND_ENABLED'))
 
     @property
     def endpoint_configured(self):

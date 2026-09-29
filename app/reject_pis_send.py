@@ -1,10 +1,116 @@
-"""REJECT pre-POST orchestration; ChangeStatus is intentionally disabled."""
+"""REJECT preflight and controlled SINGLE ChangeStatus orchestration."""
 
+import json
+import threading
+from datetime import datetime
 from uuid import uuid4
 
+from app.pis_client import PISClient, PISClientError
 from app.pis_send_log import RESULT_ERROR, RESULT_SKIP, audit_row, insert_audit_rows
 from app.reject_api import evaluate_reject_send, reject_batch_summary
-from app.reject_pis_log import has_success
+from app.reject_pis_log import has_success, insert_attempts
+
+
+_SEND_LOCKS = {}
+_SEND_LOCKS_GUARD = threading.Lock()
+
+
+def _lot_lock(production_id):
+    with _SEND_LOCKS_GUARD:
+        return _SEND_LOCKS.setdefault(production_id, threading.Lock())
+
+
+def _business_success(response):
+    if not isinstance(response, dict) or not isinstance(response.get('body'), str):
+        raise ValueError('PIS response is malformed.')
+    try:
+        body = json.loads(response['body'])
+    except (TypeError, json.JSONDecodeError):
+        raise ValueError('PIS response is not valid JSON.') from None
+    return (isinstance(body, dict) and isinstance(body.get('message'), str)
+            and body['message'].strip().lower() == 'success')
+
+
+def _snapshot(preview):
+    return dict(OutputDetailId=preview.get('PISOutputDetailId'), LocalCuring=preview.get('LocalCuring'),
+                LocalGood=preview.get('LocalGood'), LocalReject=preview.get('LocalRejectTotal'),
+                OriginalQty=preview.get('OriginalQty'), PISGood=preview.get('PISGood'),
+                PISReject=preview.get('PISReject'), PISTransferred=preview.get('PISTransferred'),
+                PISAvailable=preview.get('PISAvailable'), SendGood=preview.get('SendGood'),
+                SendReject=preview.get('SendReject'), SendTotal=preview.get('SendTotal'))
+
+
+def send_reject_single(conn, record, output_details_loader, cumulative_loader, *, config=None,
+                       client=None, duplicate_checker=None):
+    """Reload, preflight, serialize, POST, and persist one REJECT lot."""
+    batch_run_id = uuid4()
+    if config is None:
+        from app.pis_config import PISConfig
+        config = PISConfig.from_environment()
+    if not config.reject_send_enabled:
+        return dict(lot_no=record.get('LotNo'), status='ERROR', result=RESULT_ERROR,
+                    reason='REJECT SEND DISABLED', preview=None, batch_run_id=batch_run_id)
+    lock = _lot_lock(record.get('ProductionID'))
+    with lock:
+        try:
+            readiness = record.get('RejectReadiness') or {}
+            if not readiness.get('ready'):
+                return dict(lot_no=record.get('LotNo'), status='NOT_READY', result=RESULT_SKIP,
+                            reason='NOT_READY: ' + '; '.join(readiness.get('missing', [])),
+                            preview=None, batch_run_id=batch_run_id)
+            summary = output_details_loader(record)
+            cumulative = cumulative_loader(record)
+            if duplicate_checker is None:
+                duplicate_checker = lambda item, _summary, _row: has_success(conn.cursor(), item['ProductionID'])
+            preview = evaluate_reject_send(record, summary, cumulative,
+                                           duplicate=duplicate_checker(record, summary, cumulative))
+            if preview['Status'] != 'READY':
+                return dict(lot_no=record.get('LotNo'), status=preview['Status'], result=RESULT_SKIP,
+                            reason=preview['Status'], preview=preview, batch_run_id=batch_run_id)
+            payload = preview['changeStatusPayload']
+            request_json = json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+            response = (client or PISClient(config)).post_change_status(payload)
+            success = _business_success(response)
+            status_code = response.get('status_code') if isinstance(response, dict) else None
+            response_text = response.get('body') if isinstance(response, dict) else None
+            outcome = 'SUCCESS' if success else 'FAILED'
+            reason = 'SUCCESS' if success else 'API ERROR'
+            result = RESULT_ERROR if not success else 'SUCCESS'
+        except (PISClientError, TimeoutError, ConnectionError) as exc:
+            outcome, reason, result, status_code, response_text = 'FAILED', type(exc).__name__, RESULT_ERROR, None, None
+            response = None
+        except Exception as exc:
+            outcome, reason, result, status_code, response_text = 'FAILED', f'{type(exc).__name__}: {exc}', RESULT_ERROR, None, None
+            response = None
+        preview = locals().get('preview')
+        payload = locals().get('payload')
+        snapshot = _snapshot(preview or {})
+        attempt = dict(ProductionID=record.get('ProductionID'), LotNo=record.get('LotNo'),
+                       ProductionDate=record.get('ProdDate'), RequestGroupID=batch_run_id,
+                       FromOutputDetailID=snapshot['OutputDetailId'], RequestJSON=locals().get('request_json'),
+                       HTTPStatus=locals().get('status_code'), ResponseText=locals().get('response_text'),
+                       Outcome=locals().get('outcome', 'FAILED'), ErrorMessage=None if result == 'SUCCESS' else reason,
+                       AttemptedAt=datetime.utcnow())
+        audit = audit_row(batch_run_id, 'REJECT', 'SINGLE', record.get('LotNo'), result,
+                          reason, send_date=record.get('ProdDate'), PlantCode=record.get('Plant'),
+                          MachineCode=record.get('Machine'), ShiftID=record.get('Shift'),
+                          ServerMessage=reason, RequestJson=locals().get('request_json'),
+                          ResponseJson=locals().get('response_text'), **snapshot)
+        try:
+            insert_attempts(conn, [attempt])
+            insert_audit_rows(conn, [audit])
+            conn.commit()
+        except Exception as exc:
+            if result == 'SUCCESS':
+                return dict(lot_no=record.get('LotNo'), status='ERROR', result=RESULT_ERROR,
+                            reason=f'AUDIT PERSISTENCE FAILED: {exc}', preview=preview,
+                            batch_run_id=batch_run_id, pis_may_have_succeeded=True)
+            return dict(lot_no=record.get('LotNo'), status='ERROR', result=RESULT_ERROR,
+                        reason=f'AUDIT PERSISTENCE FAILED: {exc}', preview=preview,
+                        batch_run_id=batch_run_id)
+        return dict(lot_no=record.get('LotNo'), status=('SUCCESS' if result == 'SUCCESS' else 'ERROR'),
+                    result=result, reason=reason, preview=preview, batch_run_id=batch_run_id,
+                    response=response)
 
 
 def _error_result(record, reason):

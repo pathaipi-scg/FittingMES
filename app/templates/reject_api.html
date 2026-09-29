@@ -1,7 +1,8 @@
 {% extends 'api_base.html' %}
 {% block content %}
 <section class="panel"><h1>REJECT API</h1>
-<p class="muted">CB contract review and GET OutputDetails preview only. ChangeStatus POST is disabled.</p></section>
+<p class="muted">SINGLE ChangeStatus sending is server-controlled. SEND ALL REJECT remains disabled.</p>
+{% if request.query_params.get('send_message') %}<div class="status">{{ request.query_params.get('send_message') }}</div>{% endif %}</section>
 {% if error %}<div class="error" role="alert">{{ error }}</div>{% endif %}
 <section class="panel" aria-label="Reject records">
 <form method="get" action="/reject-api">
@@ -20,6 +21,9 @@
 <button class="primary" type="submit" name="lookup_one" value="true" {% if not records %}disabled{% endif %}>LOOKUP OUTPUTDETAILS</button>
 <button class="primary" type="submit" name="lookup_all" value="true" {% if not records %}disabled{% endif %}>LOOKUP ALL OUTPUTDETAILS</button>
 </form></section>
+<section class="panel"><h2>SINGLE SEND</h2><p class="muted">The lot is reloaded and preflighted on the server immediately before any request.</p>
+{% for row in records %}<form method="post" action="/reject-api/{{ row.ProductionID }}/send?production_date={{ production_date }}" style="display:inline"><button class="primary" type="submit" {% if not row.RejectReadiness.ready or row.RejectPISStatus == 'SUCCESS' %}disabled{% endif %}>SEND {{ row.LotNo }}</button></form>{% endfor %}
+</section>
 {% if lookup_errors %}<section class="panel"><div class="error" role="alert">{% for message in lookup_errors %}<div>{{ message }}</div>{% endfor %}</div></section>{% endif %}
 {% if lookup_results %}<section class="panel" aria-label="OutputDetails preview"><h2>OUTPUTDETAILS / CHANGESTATUS PREVIEW</h2>
 <p class="muted">GET completed. No ChangeStatus POST was made.</p>

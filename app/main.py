@@ -4,7 +4,7 @@ from contextlib import closing
 from uuid import uuid4
 from pathlib import Path
 from datetime import date, datetime, time
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from fastapi.responses import RedirectResponse, JSONResponse, FileResponse, PlainTextResponse
 from starlette.background import BackgroundTask
 from fastapi.encoders import jsonable_encoder
@@ -26,6 +26,7 @@ from app.reject_api import (read_reject_records, reject_readiness, build_reject_
                             build_output_details_query, parse_output_details_response,
                             summarize_output_details, build_change_status_preview)
 from app.reject_pis_log import latest_states as latest_reject_states
+from app.reject_pis_send import send_reject_single
 from app.depallet import (read_context as read_depallet_context, read_reasons as read_depallet_reasons,
                           read_curing_lots, read_daily_work, save_depallet, save_depallet_batch,
                           reorder_depallet_run)
@@ -788,6 +789,40 @@ def reject_api_page(request: Request, production_date: date | None = None,
         status = 503
     return templates.TemplateResponse(request=request, name='reject_api.html', context=context,
                                       status_code=status, headers={'Cache-Control': 'no-store'})
+
+
+@app.post('/reject-api/{production_id}/send', response_class=HTMLResponse)
+def reject_api_send(request: Request, production_id: int, production_date: date | None = None):
+    production_date = production_date or date.today()
+    try:
+        from app.reject_api import parse_output_details_response, summarize_output_details
+        from app.pis_config import PISConfig
+        with closing(get_connection()) as conn:
+            records = read_reject_records(conn.cursor(), production_date)
+            record = next((row for row in records if row['ProductionID'] == production_id), None)
+            if record is None:
+                raise ValueError('Production lot was not found for the selected date.')
+            config = PISConfig.from_environment()
+            client = PISClient(config)
+            def output_loader(item):
+                return summarize_output_details(parse_output_details_response(
+                    client.get_output_details(build_output_details_query(item))))
+            def cumulative_loader(item):
+                return dict(CuringCnt=item.get('CuringQty'), ToPackCnt=item.get('CounterQty'),
+                            ShiftID=item.get('Shift'), DateDepallet=item.get('ProdDate'),
+                            dt=max((row.get('RejectDateTime') for row in item.get('RejectRows', [])
+                                    if row.get('RejectDateTime')), default=None),
+                            **{f'Rej_{code}': sum(int(row.get('Qty') or 0) for row in item.get('RejectRows', [])
+                                                  if row.get('ReasonCode') == code)
+                               for code in ('R01', 'R02', 'R03', 'R04', 'R05', 'R06', 'R08', 'R12', 'R13')})
+            result = send_reject_single(conn, record, output_loader, cumulative_loader, config=config,
+                                        client=client)
+        message = f"{record['LotNo']}: {result['status']} - {result['reason']}"
+        return RedirectResponse('/reject-api?production_date=' + str(production_date) +
+                                '&send_message=' + quote(message), status_code=303)
+    except ValueError as exc:
+        return RedirectResponse('/reject-api?production_date=' + str(production_date) +
+                                '&send_message=' + quote(str(exc)), status_code=303)
 
 
 @app.get("/press-mc", response_class=HTMLResponse)

@@ -19,11 +19,17 @@ def insert_audit_rows(conn, rows):
         cursor.execute("""
             INSERT INTO dbo.PIS_Send_Log
                 (BatchRunId, SendType, SendMode, SendDate, LotNo, Result, Reason,
-                 PlantCode, MachineCode, ShiftID, ServerMessage, RequestJson, ResponseJson)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 PlantCode, MachineCode, ShiftID, OutputDetailId, LocalCuring, LocalGood,
+                 LocalReject, OriginalQty, PISGood, PISReject, PISTransferred, PISAvailable,
+                 SendGood, SendReject, SendTotal, ServerMessage, RequestJson, ResponseJson)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, row['BatchRunId'], row['SendType'], row['SendMode'], row.get('SendDate'),
         row['LotNo'], row['Result'], row.get('Reason'), row.get('PlantCode'),
-        row.get('MachineCode'), row.get('ShiftID'), row.get('ServerMessage'),
+        row.get('MachineCode'), row.get('ShiftID'), row.get('OutputDetailId'),
+        row.get('LocalCuring'), row.get('LocalGood'), row.get('LocalReject'),
+        row.get('OriginalQty'), row.get('PISGood'), row.get('PISReject'),
+        row.get('PISTransferred'), row.get('PISAvailable'), row.get('SendGood'),
+        row.get('SendReject'), row.get('SendTotal'), row.get('ServerMessage'),
         row.get('RequestJson'), row.get('ResponseJson'))
 
 
