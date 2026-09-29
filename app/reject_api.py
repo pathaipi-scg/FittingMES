@@ -3,7 +3,7 @@ import json
 from datetime import datetime
 
 from app.lots import rows, day
-from app.prod_api import resolve_plan
+from app.prod_api import read_historical_plans, resolve_plan
 from app.production_data import calculate
 
 CB_REJECT_REASON_FIELDS = {
@@ -108,12 +108,7 @@ def read_reject_records(cursor, production_date):
     records = rows(cursor)
     if not records:
         return []
-    cursor.execute("""SELECT Company,Plant,Machine,PlanWeek,VersionNo,PlanName,
-        Shift,StartTime,MaterialCode,PlanCount,OperationCode
-        FROM dbo.P_ActivePlan
-        WHERE Company=? AND Plant=? AND Machine=? AND StartTime=?""",
-        'CRTC', '30A1', 'SB2-3', production_date)
-    plans = rows(cursor)
+    plans = read_historical_plans(cursor, production_date)
     ids = [record['ProductionID'] for record in records]
     placeholders = ','.join('?' for _ in ids)
     cursor.execute(f"""SELECT ProductionID,ReasonCode,Qty,RejectDateTime

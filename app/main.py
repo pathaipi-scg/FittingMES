@@ -18,7 +18,8 @@ from app.database import get_connection
 from app.pis_config import PISConfig
 from app.pis_client import PISClient, PISClientError
 from app.usage import read_usage_context, save_usage
-from app.prod_api import read_prod_records, build_pis_date_preview, field_mapping, lot_readiness, preview_readiness
+from app.prod_api import (read_prod_records, read_historical_plans, build_pis_date_preview,
+                          field_mapping, lot_readiness, preview_readiness)
 from app.production_pis_log import latest_states
 from app.production_pis_send import FAILED, SUCCESS, UNKNOWN, send_ready_groups
 from app.pis_send_log import audit_row, insert_audit_rows
@@ -48,20 +49,7 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 
 def read_plans(cursor, production_date):
-    cursor.execute("""WITH RankedPlans AS (
-        SELECT StartTime, Shift, PlanName, MaterialCode, MaterialName, PlanCount, VersionNo,
-            ROW_NUMBER() OVER (
-                PARTITION BY StartTime, PlanName
-                ORDER BY CAST(VersionNo AS int) DESC
-            ) AS VersionRank
-        FROM dbo.P_ActivePlan
-        WHERE Company = ? AND Plant = ? AND Machine = ? AND StartTime = ?
-        )
-        SELECT StartTime, Shift, PlanName, MaterialCode, MaterialName, PlanCount, VersionNo
-        FROM RankedPlans WHERE VersionRank = 1
-        ORDER BY StartTime, Shift, PlanName, MaterialCode""", "CRTC", "30A1", "SB2-3", production_date)
-    columns = [c[0] for c in cursor.description]
-    plans = [dict(zip(columns, row)) for row in cursor.fetchall()]
+    plans = read_historical_plans(cursor, production_date)
     for plan in plans:
         plan["selection_id"] = hashlib.sha256(
             json.dumps(plan, default=str, sort_keys=True).encode()).hexdigest()
@@ -774,6 +762,9 @@ def reject_api_page(request: Request, production_date: date | None = None,
                             query = build_output_details_query(record)
                             response = client.get_output_details(query)
                             output_details = parse_output_details_response(response)
+                            if not output_details:
+                                context['lookup_errors'].append(f"{record['LotNo']}: NO_OUTPUT_DETAILS")
+                                continue
                             summary = summarize_output_details(output_details)
                             payload = build_change_status_preview(record, summary)
                             context['lookup_results'].append(dict(record=record, query=query,
@@ -805,8 +796,9 @@ def reject_api_send(request: Request, production_id: int, production_date: date 
             config = PISConfig.from_environment()
             client = PISClient(config)
             def output_loader(item):
-                return summarize_output_details(parse_output_details_response(
-                    client.get_output_details(build_output_details_query(item))))
+                output_details = parse_output_details_response(
+                    client.get_output_details(build_output_details_query(item)))
+                return summarize_output_details(output_details) if output_details else {'noOutputDetails': True}
             def cumulative_loader(item):
                 return dict(CuringCnt=item.get('CuringQty'), ToPackCnt=item.get('CounterQty'),
                             ShiftID=item.get('Shift'), DateDepallet=item.get('ProdDate'),

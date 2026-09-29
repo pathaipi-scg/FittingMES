@@ -89,9 +89,15 @@ class RejectPrePostTests(unittest.TestCase):
         self.assertEqual(result['error'], 1)
         self.assertEqual(connection.rows[0][5:7], ('ERROR', 'TimeoutError: PIS unavailable'))
 
-    def test_malformed_outputdetails_is_error(self):
+    def test_empty_outputdetails_is_no_output_details_skip(self):
         result = evaluate_reject_lots(AuditConnection(), [self.record],
                                        lambda record: [], lambda record: self.row)
+        self.assertEqual(result['results'][0]['result'], 'SKIP')
+        self.assertEqual(result['results'][0]['reason'], 'NO_OUTPUT_DETAILS')
+
+    def test_malformed_outputdetails_is_error(self):
+        result = evaluate_reject_lots(AuditConnection(), [self.record],
+                                      lambda record: {'unexpected': True}, lambda record: self.row)
         self.assertEqual(result['results'][0]['result'], 'ERROR')
 
     def test_database_query_failure_continues_batch(self):

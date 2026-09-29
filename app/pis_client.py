@@ -6,7 +6,7 @@ Calling this client is an explicit network operation, never part of preview.
 import base64
 import http.client
 import json
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 from fastapi.encoders import jsonable_encoder
 from app.pis_config import PISConfig
 
@@ -72,7 +72,7 @@ class PISClient:
         """GET the CB OutputDetails state for one lot; never retries."""
         if not isinstance(query, dict):
             raise PISClientError('An OutputDetails query is required.')
-        return self._request('GET', OUTPUT_DETAILS_PATH, body=query)
+        return self._request('GET', OUTPUT_DETAILS_PATH, query=query)
 
     def post_change_status(self, payload):
         """POST one already-built CB ChangeStatus body; never retries."""
@@ -91,6 +91,8 @@ class PISClient:
         except (TypeError, ValueError):
             raise PISClientError('PIS payload could not be serialized.') from None
         url = urlsplit(self._config.base_url)
+        if query:
+            path = path + '?' + urlencode(query)
         credentials = (self._config.username + ':' + self._config.password).encode('utf-8')
         headers = {'Accept': 'application/json',
                    'Authorization': 'Basic ' + base64.b64encode(credentials).decode('ascii')}

@@ -4,6 +4,43 @@ from app.lots import rows, day
 from app.production_data import calculate
 
 
+def read_historical_plans(cursor, production_date):
+    query = """WITH RankedPlans AS (
+        SELECT Company, Plant, Machine, PlanWeek, OperationCode,
+            StartTime, Shift, PlanName, MaterialCode, MaterialName, PlanCount, VersionNo,
+            ROW_NUMBER() OVER (
+                PARTITION BY StartTime, PlanName
+                ORDER BY CAST(VersionNo AS int) DESC
+            ) AS VersionRank
+        FROM dbo.P_ActivePlan
+        WHERE Company = ? AND Plant = ? AND Machine = ? AND StartTime = ?
+        )
+        SELECT Company, Plant, Machine, PlanWeek, OperationCode,
+            StartTime, Shift, PlanName, MaterialCode, MaterialName, PlanCount, VersionNo
+        FROM RankedPlans WHERE VersionRank = 1
+        ORDER BY StartTime, Shift, PlanName, MaterialCode"""
+    try:
+        cursor.execute(query, "CRTC", "30A1", "SB2-3", production_date)
+    except Exception as error:
+        if 'PlanWeek' not in str(error):
+            raise
+        cursor.execute("""SELECT Company, Plant, Machine, StartTime, Shift,
+            PlanName, MaterialCode, MaterialName, PlanCount, VersionNo
+            FROM dbo.P_ActivePlan
+            WHERE Company=? AND Plant=? AND Machine=? AND StartTime=?
+            ORDER BY StartTime, Shift, PlanName, MaterialCode""",
+            "CRTC", "30A1", "SB2-3", production_date)
+    columns = [column[0] for column in cursor.description]
+    plans = [dict(zip(columns, row)) for row in cursor.fetchall()]
+    latest = {}
+    for plan in plans:
+        key = (plan.get('StartTime'), plan.get('PlanName'))
+        version = int(plan.get('VersionNo') or 0)
+        if key not in latest or version > int(latest[key].get('VersionNo') or 0):
+            latest[key] = plan
+    return list(latest.values())
+
+
 def read_prod_records(cursor, production_date):
     cursor.execute("""SELECT p.ProductionID,p.ProdDate,p.Shift,p.MaterialCode,
         p.MaterialName,p.LotNo,p.ProductFamily,p.ProductCode,p.PlanName,p.PlanQty,

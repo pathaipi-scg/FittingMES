@@ -114,8 +114,8 @@ class RejectApiReadinessTests(unittest.TestCase):
                                             'LotNumbers': 'I02690904'})
         self.assertEqual(result['status_code'], 200)
         args, kwargs = connection.request.call_args
-        self.assertEqual(args, ('GET', '/api/v2/OutputDetails'))
-        self.assertEqual(__import__('json').loads(kwargs['body'])['LotNumbers'], 'I02690904')
+        self.assertEqual(args, ('GET', '/api/v2/OutputDetails?PlantCode=30A1&MachineCode=SB2-3&DateFrom=2026-09-26&DateTo=2026-09-26&LotNumbers=I02690904'))
+        self.assertIsNone(kwargs['body'])
         connection.request.assert_called_once()
         self.assertEqual(connection.request.call_args.args[0], 'GET')
         connection.close.assert_called_once()

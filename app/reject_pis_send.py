@@ -15,6 +15,10 @@ _SEND_LOCKS = {}
 _SEND_LOCKS_GUARD = threading.Lock()
 
 
+class NoOutputDetails(Exception):
+    pass
+
+
 def _lot_lock(production_id):
     with _SEND_LOCKS_GUARD:
         return _SEND_LOCKS.setdefault(production_id, threading.Lock())
@@ -59,6 +63,9 @@ def send_reject_single(conn, record, output_details_loader, cumulative_loader, *
                             reason='NOT_READY: ' + '; '.join(readiness.get('missing', [])),
                             preview=None, batch_run_id=batch_run_id)
             summary = output_details_loader(record)
+            if summary == [] or (isinstance(summary, dict) and summary.get('noOutputDetails')):
+                return dict(lot_no=record.get('LotNo'), status='NO_OUTPUT_DETAILS', result=RESULT_SKIP,
+                            reason='NO_OUTPUT_DETAILS', preview=None, batch_run_id=batch_run_id)
             cumulative = cumulative_loader(record)
             if duplicate_checker is None:
                 duplicate_checker = lambda item, _summary, _row: has_success(conn.cursor(), item['ProductionID'])
@@ -139,6 +146,8 @@ def evaluate_reject_lots(conn, records, output_details_loader, cumulative_loader
                 result = dict(lot_no=lot_no, status=reason, result=RESULT_SKIP, reason=reason, preview=None)
             else:
                 output_details = output_details_loader(record)
+                if output_details == [] or (isinstance(output_details, dict) and output_details.get('noOutputDetails')):
+                    raise NoOutputDetails()
                 if not isinstance(output_details, dict) or 'curingRemaining' not in output_details:
                     raise ValueError('OutputDetails response is malformed.')
                 summary = output_details
@@ -148,6 +157,9 @@ def evaluate_reject_lots(conn, records, output_details_loader, cumulative_loader
                 result = dict(lot_no=lot_no, status=preview['Status'],
                               result=(RESULT_SKIP if preview['Status'] != 'READY' else 'READY'),
                               reason=preview['Status'], preview=preview)
+        except NoOutputDetails:
+            result = dict(lot_no=lot_no, status='NO_OUTPUT_DETAILS', result=RESULT_SKIP,
+                          reason='NO_OUTPUT_DETAILS', preview=None)
         except Exception as exc:
             result = _error_result(record, f'{type(exc).__name__}: {exc}')
         results.append(result)
