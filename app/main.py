@@ -38,6 +38,7 @@ from app.press_mc import (page_context as press_mc_context, add_press, update_pr
 from app.mould import (page_context as mould_context, register_mould, update_mould_info,
                        send_to_recondition, return_from_recondition, set_mould_status)
 from app.press_production import (build_press_production_context,
+                                  release_press_production,
                                   save_press_production as save_press_production_row)
 from app.wet_reject import build_wet_reject_context, save_wet_reject, save_wet_reject_batch
 from app.print_prod import read_print_prod_context
@@ -309,6 +310,11 @@ def save_press_production_change(production_id, data, press_production_id=None):
         return save_press_production_row(conn, production_id, data, press_production_id)
 
 
+def release_press_production_change(production_id, press_production_id):
+    with closing(get_connection()) as conn:
+        return release_press_production(conn, production_id, press_production_id)
+
+
 def press_production_redirect(production_id, message, message_type='success'):
     params = {'production_id': production_id, 'press_message': message,
               'press_message_type': message_type}
@@ -338,6 +344,21 @@ async def save_press_production_route_action(request, production_id, press_produ
 @app.post('/lots/{production_id}/press-production')
 async def add_press_production_route(request: Request, production_id: int):
     return await save_press_production_route_action(request, production_id)
+
+
+@app.post('/lots/{production_id}/press-production/{press_production_id}/release')
+async def release_press_production_route(request: Request, production_id: int,
+                                         press_production_id: int):
+    try:
+        result = await run_in_threadpool(
+            release_press_production_change, production_id, press_production_id)
+        message = ('Press Production already released.' if result == 'ALREADY_RELEASED'
+                   else 'Mould released.')
+        return press_production_redirect(production_id, message)
+    except ValueError as exc:
+        return press_production_redirect(production_id, str(exc), 'error')
+    except Exception:
+        return press_production_redirect(production_id, 'Unable to release Mould. Please retry.', 'error')
 
 
 @app.post('/lots/{production_id}/press-production/{press_production_id}')

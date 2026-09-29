@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from app.press_production import (read_eligible_moulds, read_eligible_presses,
                                   read_press_production, save_press_production,
-                                  validate_press_input, calculate_smdt)
+                                  release_press_production, validate_press_input, calculate_smdt)
 from app.main import production_page
 from test_production import DAY, LOT, PLAN, request
 
@@ -44,6 +44,9 @@ class PressProductionCursor:
         elif 'FROM dbo.PressProduction WITH' in sql and 'MachineCode=?' in sql:
             found = any(row['ProductionID'] == args[0] and row['MachineCode'] == args[1] for row in self.conn.press_rows.values())
             self.result = [(1,)] if found else []
+        elif 'SELECT PressProductionID, ReleasedAt' in sql:
+            row = self.conn.press_rows.get(args[0])
+            self.result = [(row['PressProductionID'], row.get('ReleasedAt'))] if row and row['ProductionID'] == args[1] else []
         elif 'FROM dbo.PressProduction WITH' in sql:
             row = self.conn.press_rows.get(args[0])
             self.result = [(row['PressProductionID'], row['MachineCode'], row['MouldID'], row['CounterQty'])] if row and row['ProductionID'] == args[1] else []
@@ -67,9 +70,14 @@ class PressProductionCursor:
             self.conn.press_rows[pp_id] = row
             self.result = [(pp_id,)]
         elif 'UPDATE dbo.PressProduction' in sql:
-            row = self.conn.press_rows[args[-2]]
-            row.update(MachineCode=args[0], DispatchQty=args[1], CounterQty=args[2],
-                       CuringQty=args[3], MouldID=args[4])
+            if 'ReleasedAt=' in sql:
+                row = self.conn.press_rows[args[1]]
+                row['ReleasedAt'] = datetime(2026, 9, 26, 14, 25)
+                row['ReleasedBy'] = args[0]
+            else:
+                row = self.conn.press_rows[args[-2]]
+                row.update(MachineCode=args[0], DispatchQty=args[1], CounterQty=args[2],
+                           CuringQty=args[3], MouldID=args[4])
             self.result = []
         elif 'INSERT INTO dbo.MouldUsage' in sql:
             mould_id, pp_id, recondition_no, cycles = args
@@ -166,6 +174,25 @@ class ReadCursor:
 
 
 class PressProductionTests(unittest.TestCase):
+    def test_release_preserves_history_and_double_release_is_noop(self):
+        conn = PressProductionConnection()
+        conn.press_rows[30] = dict(PressProductionID=30, ProductionID=7, MachineCode='F2',
+            MouldID=4, DispatchQty=100, CounterQty=500, CuringQty=480,
+            ProductionDate=conn.production_date, Remark='history')
+        conn.usage_rows[30] = dict(MouldUsageID=130, MouldID=4, PressProductionID=30,
+            ReconditionNo=2, UsageCycles=500)
+        conn.time_events[100] = dict(TimeEventID=100, ProductionID=7, EquipmentCode='F2',
+            TimeType='BREAKDOWN', DurationMin=15, SourceType='MANUAL')
+        before = dict(conn.press_rows[30])
+        self.assertEqual(release_press_production(conn, 7, 30, 'operator'), 'RELEASED')
+        self.assertEqual({key: conn.press_rows[30][key] for key in before}, before)
+        self.assertEqual(conn.press_rows[30]['ReleasedBy'], 'operator')
+        usage = dict(conn.usage_rows[30])
+        event = dict(conn.time_events[100])
+        self.assertEqual(release_press_production(conn, 7, 30, 'other'), 'ALREADY_RELEASED')
+        self.assertEqual(conn.usage_rows[30], usage)
+        self.assertEqual(conn.time_events[100], event)
+
     def test_smdt_same_day_and_downtime_changes(self):
         start = datetime(2026, 9, 26, 8)
         end = datetime(2026, 9, 26, 16)

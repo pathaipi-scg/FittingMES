@@ -29,9 +29,10 @@ def read_eligible_moulds(cursor, product_family, product_code, production_date=N
                 SELECT 1
                 FROM dbo.PressProduction AS assigned_press
                 JOIN dbo.ProductionLot AS assigned_lot
-                  ON assigned_lot.ProductionID=assigned_press.ProductionID
-                WHERE assigned_lot.ProdDate=? AND assigned_lot.IsActive=1
-                  AND assigned_press.MouldID=moulds.MouldID
+                                    ON assigned_lot.ProductionID=assigned_press.ProductionID
+                                WHERE assigned_lot.ProdDate=? AND assigned_lot.IsActive=1
+                                        AND assigned_press.MouldID=moulds.MouldID
+                                        AND assigned_press.ReleasedAt IS NULL
             ) THEN 1 ELSE 0 END AS bit) AS AssignedOnProductionDate
         FROM dbo.vw_MouldList
         AS moulds
@@ -45,6 +46,7 @@ def read_press_production(cursor, production_id):
             equipment.EquipmentName AS MachineName, pp.DispatchQty, pp.CounterQty,
             pp.CuringQty, pp.MouldID, mould.MouldNo, mould.MouldName,
             pp.ProductionStartTime, pp.ProductionEndTime, pp.Remark, pp.CreatedAt, pp.UpdatedAt,
+            pp.ReleasedAt, pp.ReleasedBy,
             usage.MouldUsageID, usage.ReconditionNo AS UsageReconditionNo,
             usage.UsageCycles, usage.UsageDateTime,
             COALESCE(SUM(CASE WHEN time_event.TimeType='SETUP' THEN time_event.DurationMin ELSE 0 END), 0) AS SetupMinutes,
@@ -65,6 +67,7 @@ def read_press_production(cursor, production_id):
                 GROUP BY pp.PressProductionID, pp.ProductionID, pp.MachineCode, equipment.EquipmentName,
                         pp.DispatchQty, pp.CounterQty, pp.CuringQty, pp.MouldID, mould.MouldNo, mould.MouldName,
                         pp.ProductionStartTime, pp.ProductionEndTime, pp.Remark, pp.CreatedAt, pp.UpdatedAt,
+                        pp.ReleasedAt, pp.ReleasedBy,
                         usage.MouldUsageID, usage.ReconditionNo, usage.UsageCycles, usage.UsageDateTime,
                         equipment.DisplayOrder
                 ORDER BY equipment.DisplayOrder, pp.MachineCode''', production_id)
@@ -224,7 +227,7 @@ def _ensure_mould_available_on_date(cursor, production_date, mould_id):
                 JOIN dbo.ProductionLot AS assigned_lot WITH (UPDLOCK,HOLDLOCK)
                     ON assigned_lot.ProductionID=assigned_press.ProductionID
                 WHERE assigned_lot.ProdDate=? AND assigned_lot.IsActive=1
-                    AND assigned_press.MouldID=?''', production_date, mould_id)
+                    AND assigned_press.MouldID=? AND assigned_press.ReleasedAt IS NULL''', production_date, mould_id)
         if cursor.fetchone():
                 raise ValueError('This Mould is already assigned on the selected Production Date.')
 
@@ -315,6 +318,30 @@ def save_press_production(conn, production_id, data, press_production_id=None):
 
         conn.commit()
         return press_production_id
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def release_press_production(conn, production_id, press_production_id, released_by='FittingMES'):
+    try:
+        cursor = conn.cursor()
+        lock_lots(cursor)
+        cursor.execute('''SELECT PressProductionID, ReleasedAt
+            FROM dbo.PressProduction WITH (UPDLOCK,HOLDLOCK)
+            WHERE PressProductionID=? AND ProductionID=?''', press_production_id, production_id)
+        existing = cursor.fetchone()
+        if not existing:
+            raise ValueError('Press Production row not found for this Lot.')
+        if existing[1] is not None:
+            conn.commit()
+            return 'ALREADY_RELEASED'
+        cursor.execute('''UPDATE dbo.PressProduction
+            SET ReleasedAt=SYSDATETIME(), ReleasedBy=?, UpdatedAt=SYSDATETIME()
+            WHERE PressProductionID=? AND ProductionID=? AND ReleasedAt IS NULL''',
+            released_by or 'FittingMES', press_production_id, production_id)
+        conn.commit()
+        return 'RELEASED'
     except Exception:
         conn.rollback()
         raise
