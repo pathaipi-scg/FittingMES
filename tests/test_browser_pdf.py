@@ -29,7 +29,7 @@ class BrowserPdfTests(unittest.TestCase):
              patch('app.browser_pdf.terminate_process_tree') as terminate:
             actual_root, actual_output, actual_process = generate_print_prod_pdf(
                 date(2026, 9, 26), chrome_executable=Path(__file__),
-                base_url='http://127.0.0.1:1860', timeout=1, poll_interval=0)
+                base_url='http://127.0.0.1:1868', timeout=1, poll_interval=0)
         self.assertEqual(actual_root, root)
         self.assertEqual(actual_output, output)
         self.assertIs(actual_process, process)

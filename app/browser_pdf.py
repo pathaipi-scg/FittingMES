@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 CHROME_EXECUTABLE = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
-REPORT_BASE_URL = "http://127.0.0.1:1860"
+REPORT_BASE_URL = "http://127.0.0.1:1868"
 PDF_TIMEOUT_SECONDS = 12.0
 PDF_POLL_SECONDS = 0.2
 PDF_STABLE_CHECKS = 3
