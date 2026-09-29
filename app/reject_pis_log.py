@@ -2,6 +2,11 @@
 from app.lots import rows
 
 
+def has_success(cursor, production_id):
+    cursor.execute("SELECT 1 FROM dbo.RejectPISLog WHERE ProductionID=? AND Outcome='SUCCESS'", production_id)
+    return cursor.fetchone() is not None
+
+
 def latest_state(cursor, production_id):
     cursor.execute("""SELECT TOP (1) RejectPISLogID,ProductionID,LotNo,ProductionDate,
         RequestGroupID,FromOutputDetailID,HTTPStatus,Outcome,ErrorMessage,AttemptedAt,CreatedAt

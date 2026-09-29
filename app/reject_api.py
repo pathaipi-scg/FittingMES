@@ -12,6 +12,14 @@ CB_REJECT_REASON_FIELDS = {
     'R08': 'Rej_R08', 'R12': 'Rej_R12', 'R13': 'Rej_R13',
 }
 CB_SUPPORTED_REASONS = frozenset((*CB_REJECT_REASON_FIELDS, 'R99'))
+REJECT_SKIP_REASONS = frozenset({
+    'ALREADY SENT', 'NO PIS CURING BALANCE', 'NO CURING ID', 'NO LOCAL DEPALLET',
+    'GOOD > LOCAL CURING', 'LOCAL CURING > ORIGINAL', 'REJECT REASON > TOTAL REJECT',
+    'REJECT BALANCE ERROR', 'PIS REMAIN < LOCAL REJECT', 'NO DELTA',
+    'SEND QTY > PIS REMAIN', 'SEND QTY > LOCAL CURING', 'SEND BALANCE ERROR',
+    'MACHINE MISSING', 'PLANT MISSING', 'SHIFT MISSING', 'UPDATE DATE MISSING',
+    'DUPLICATE BLOCKED',
+})
 
 
 def build_output_details_query(record):
@@ -173,3 +181,117 @@ def build_reject_preview(record):
 
 def preview_json(record):
     return json.dumps(build_reject_preview(record), ensure_ascii=False, indent=2)
+
+
+def _positive(value):
+    try:
+        return max(0, float(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _iso_minute(date_depallet, timestamp):
+    if not date_depallet or not timestamp:
+        return ''
+    try:
+        date_text = str(date_depallet)[:10]
+        parsed = timestamp if isinstance(timestamp, datetime) else datetime.fromisoformat(str(timestamp).replace('Z', '+00:00'))
+        return f'{date_text}T{parsed.hour:02d}:{parsed.minute:02d}'
+    except (TypeError, ValueError):
+        return ''
+
+
+def evaluate_reject_send(record, output_summary, cumulative_row, *, duplicate=False):
+    """Reproduce CB's pre-ChangeStatus decision without making a POST."""
+    summary = output_summary or {}
+    row = cumulative_row or {}
+    original = _positive(summary.get('originalQty'))
+    pis_good = _positive(summary.get('stockyard'))
+    pis_reject = _positive(summary.get('totalReject'))
+    pis_transferred = _positive(summary.get('totalTransferred'))
+    pis_available = _positive(summary.get('curingRemaining'))
+    curing_id = summary.get('curingOutputDetailId')
+    local_curing = _positive(row.get('CuringCnt'))
+    local_good = _positive(row.get('ToPackCnt'))
+    local_reject = max(0, local_curing - local_good)
+    reason_totals = {code: _positive(row.get(field)) for code, field in CB_REJECT_REASON_FIELDS.items()}
+    normal_reject = sum(reason_totals.values())
+    final_r99 = local_reject - normal_reject
+    reason_valid = final_r99 >= 0
+    final_r99 = final_r99 if reason_valid else 0
+    final_by_reason = normal_reject + final_r99
+    machine = str((record or {}).get('Machine') or '').strip()
+    plant = str((record or {}).get('Plant') or '').strip()
+    shift = str(row.get('ShiftID') or (record or {}).get('Shift') or '').strip()
+    update_date = _iso_minute(row.get('DateDepallet'), row.get('dt'))
+    live = bool(curing_id) and pis_available > 0
+    target = min(local_curing, pis_available) if live else 0
+    change_to = []
+    send_reject = 0
+    for reason, quantity in reason_totals.items():
+        if quantity > 0 and pis_available >= local_reject:
+            change_to.append(dict(machine=machine, quantity=quantity, reasonCode=reason,
+                                  remark='', Shift=shift, status='Reject', updateDate=update_date))
+            send_reject += quantity
+    if final_r99 > 0 and pis_available >= local_reject:
+        change_to.append(dict(machine=machine, quantity=final_r99, reasonCode='R99',
+                              remark='', Shift=shift, status='Reject', updateDate=update_date))
+        send_reject += final_r99
+    send_good = min(local_good, max(0, target - send_reject)) if live and local_curing > 0 and reason_valid and pis_available >= local_reject else 0
+    if send_good > 0:
+        change_to.append(dict(machine=machine, quantity=send_good, reasonCode='', remark='',
+                              Shift=shift, status='Stockyard (แกะดี)', updateDate=update_date))
+    send_total = send_good + send_reject
+    if pis_available <= 0:
+        status = 'ALREADY SENT' if pis_transferred >= original else 'NO PIS CURING BALANCE'
+    elif not curing_id:
+        status = 'NO CURING ID'
+    elif local_curing <= 0:
+        status = 'NO LOCAL DEPALLET'
+    elif local_good > local_curing:
+        status = 'GOOD > LOCAL CURING'
+    elif local_curing > original:
+        status = 'LOCAL CURING > ORIGINAL'
+    elif not reason_valid:
+        status = 'REJECT REASON > TOTAL REJECT'
+    elif final_by_reason != local_reject:
+        status = 'REJECT BALANCE ERROR'
+    elif pis_available < local_reject:
+        status = 'PIS REMAIN < LOCAL REJECT'
+    elif send_total <= 0:
+        status = 'NO DELTA'
+    elif send_total > pis_available:
+        status = 'SEND QTY > PIS REMAIN'
+    elif send_total > local_curing:
+        status = 'SEND QTY > LOCAL CURING'
+    elif send_good + send_reject != send_total:
+        status = 'SEND BALANCE ERROR'
+    elif not machine:
+        status = 'MACHINE MISSING'
+    elif not plant:
+        status = 'PLANT MISSING'
+    elif not shift:
+        status = 'SHIFT MISSING'
+    elif not update_date:
+        status = 'UPDATE DATE MISSING'
+    elif duplicate:
+        status = 'DUPLICATE BLOCKED'
+    else:
+        status = 'READY'
+    preview = dict(LotDepID=str((record or {}).get('LotNo') or '').strip(), LocalCuring=local_curing,
+                   LocalGood=local_good, LocalRejectTotal=local_reject, OriginalQty=original,
+                   PISGood=pis_good, PISReject=pis_reject, PISTransferred=pis_transferred,
+                   PISAvailable=pis_available, PISRemain=pis_available, SendGood=send_good,
+                   SendReject=send_reject, SendTotal=send_total, FinalR99=final_r99,
+                   R99Balance=local_reject - normal_reject, Status=status,
+                   PISOutputDetailId=str(curing_id or ''), UpdateDate=update_date,
+                   changeTo=change_to)
+    if status == 'READY':
+        preview['changeStatusPayload'] = dict(plant=plant, fromOutputDetailId=str(curing_id).strip(), changeTo=change_to)
+    return preview
+
+
+def reject_batch_summary(results):
+    return dict(total=len(results), ready=sum(item['status'] == 'READY' for item in results),
+                success=0, skip=sum(item['status'] != 'READY' and item['result'] == 'SKIP' for item in results),
+                error=sum(item['result'] == 'ERROR' for item in results), results=results)
