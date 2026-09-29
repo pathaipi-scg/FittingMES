@@ -47,6 +47,17 @@ def read_press_production(cursor, production_id):
             pp.CuringQty, pp.MouldID, mould.MouldNo, mould.MouldName,
             pp.ProductionStartTime, pp.ProductionEndTime, pp.Remark, pp.CreatedAt, pp.UpdatedAt,
             pp.ReleasedAt, pp.ReleasedBy,
+                        (SELECT TOP (1) later_press.MachineCode
+                                FROM dbo.PressProduction AS later_press
+                                JOIN dbo.ProductionLot AS later_lot
+                                    ON later_lot.ProductionID=later_press.ProductionID
+                                JOIN dbo.ProductionLot AS target_lot
+                                    ON target_lot.ProductionID=pp.ProductionID
+                                WHERE later_lot.ProdDate=target_lot.ProdDate
+                                    AND later_lot.IsActive=1 AND later_press.MouldID=pp.MouldID
+                                    AND later_press.PressProductionID<>pp.PressProductionID
+                                    AND later_press.CreatedAt>pp.ReleasedAt
+                                ORDER BY later_press.CreatedAt, later_press.PressProductionID) AS LaterMouldAssignmentPress,
             usage.MouldUsageID, usage.ReconditionNo AS UsageReconditionNo,
             usage.UsageCycles, usage.UsageDateTime,
             COALESCE(SUM(CASE WHEN time_event.TimeType='SETUP' THEN time_event.DurationMin ELSE 0 END), 0) AS SetupMinutes,
@@ -68,6 +79,7 @@ def read_press_production(cursor, production_id):
                         pp.DispatchQty, pp.CounterQty, pp.CuringQty, pp.MouldID, mould.MouldNo, mould.MouldName,
                         pp.ProductionStartTime, pp.ProductionEndTime, pp.Remark, pp.CreatedAt, pp.UpdatedAt,
                         pp.ReleasedAt, pp.ReleasedBy,
+
                         usage.MouldUsageID, usage.ReconditionNo, usage.UsageCycles, usage.UsageDateTime,
                         equipment.DisplayOrder
                 ORDER BY equipment.DisplayOrder, pp.MachineCode''', production_id)
@@ -342,6 +354,44 @@ def release_press_production(conn, production_id, press_production_id, released_
             released_by or 'FittingMES', press_production_id, production_id)
         conn.commit()
         return 'RELEASED'
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def undo_release_press_production(conn, production_id, press_production_id):
+    try:
+        cursor = conn.cursor()
+        lock_lots(cursor)
+        cursor.execute('''SELECT pp.PressProductionID, pp.MouldID, pp.ReleasedAt, lot.ProdDate
+            FROM dbo.PressProduction AS pp WITH (UPDLOCK,HOLDLOCK)
+            JOIN dbo.ProductionLot AS lot WITH (UPDLOCK,HOLDLOCK)
+              ON lot.ProductionID=pp.ProductionID
+            WHERE pp.PressProductionID=? AND pp.ProductionID=?''',
+            press_production_id, production_id)
+        existing = cursor.fetchone()
+        if not existing:
+            raise ValueError('Press Production row not found for this Lot.')
+        if existing[2] is None:
+            conn.commit()
+            return 'ALREADY_ACTIVE'
+        cursor.execute('''SELECT later_press.PressProductionID
+                        FROM dbo.PressProduction AS later_press WITH (UPDLOCK,HOLDLOCK)
+                        JOIN dbo.ProductionLot AS later_lot WITH (UPDLOCK,HOLDLOCK)
+                            ON later_lot.ProductionID=later_press.ProductionID
+                        WHERE later_lot.ProdDate=? AND later_lot.IsActive=1
+                            AND later_press.MouldID=? AND later_press.PressProductionID<>?
+                            AND later_press.CreatedAt>?''',
+                        existing[3], existing[1], press_production_id, existing[2])
+        if cursor.fetchone():
+            conn.commit()
+            return 'MOULD_ALREADY_REASSIGNED'
+        cursor.execute('''UPDATE dbo.PressProduction
+            SET ReleasedAt=NULL, ReleasedBy=NULL, UpdatedAt=SYSDATETIME()
+            WHERE PressProductionID=? AND ProductionID=? AND ReleasedAt IS NOT NULL''',
+            press_production_id, production_id)
+        conn.commit()
+        return 'RESTORED'
     except Exception:
         conn.rollback()
         raise

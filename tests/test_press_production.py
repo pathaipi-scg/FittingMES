@@ -5,7 +5,8 @@ from unittest.mock import MagicMock, patch
 
 from app.press_production import (read_eligible_moulds, read_eligible_presses,
                                   read_press_production, save_press_production,
-                                  release_press_production, validate_press_input, calculate_smdt)
+                                  release_press_production, undo_release_press_production,
+                                  validate_press_input, calculate_smdt)
 from app.main import production_page
 from test_production import DAY, LOT, PLAN, request
 
@@ -47,6 +48,15 @@ class PressProductionCursor:
         elif 'SELECT PressProductionID, ReleasedAt' in sql:
             row = self.conn.press_rows.get(args[0])
             self.result = [(row['PressProductionID'], row.get('ReleasedAt'))] if row and row['ProductionID'] == args[1] else []
+        elif 'SELECT pp.PressProductionID, pp.MouldID, pp.ReleasedAt, lot.ProdDate' in sql:
+            row = self.conn.press_rows.get(args[0])
+            self.result = [(row['PressProductionID'], row['MouldID'], row.get('ReleasedAt'), row['ProductionDate'])] if row and row['ProductionID'] == args[1] else []
+        elif 'later_press.PressProductionID' in sql:
+            production_date, mould_id, excluded_id, released_at = args
+            self.result = [(row['PressProductionID'],) for row in self.conn.press_rows.values()
+                           if row.get('ProductionDate') == production_date and row.get('MouldID') == mould_id
+                           and row['PressProductionID'] != excluded_id
+                           and row.get('CreatedAt', datetime.min) > released_at]
         elif 'FROM dbo.PressProduction WITH' in sql:
             row = self.conn.press_rows.get(args[0])
             self.result = [(row['PressProductionID'], row['MachineCode'], row['MouldID'], row['CounterQty'])] if row and row['ProductionID'] == args[1] else []
@@ -70,7 +80,11 @@ class PressProductionCursor:
             self.conn.press_rows[pp_id] = row
             self.result = [(pp_id,)]
         elif 'UPDATE dbo.PressProduction' in sql:
-            if 'ReleasedAt=' in sql:
+            if 'ReleasedAt=NULL' in sql:
+                row = self.conn.press_rows[args[0]]
+                row['ReleasedAt'] = None
+                row['ReleasedBy'] = None
+            elif 'ReleasedAt=' in sql:
                 row = self.conn.press_rows[args[1]]
                 row['ReleasedAt'] = datetime(2026, 9, 26, 14, 25)
                 row['ReleasedBy'] = args[0]
@@ -174,6 +188,79 @@ class ReadCursor:
 
 
 class PressProductionTests(unittest.TestCase):
+    def test_undo_release_restores_same_row_without_changing_history(self):
+        conn = PressProductionConnection()
+        conn.press_rows[30] = dict(PressProductionID=30, ProductionID=7, MachineCode='F2',
+            MouldID=4, DispatchQty=100, CounterQty=500, CuringQty=480,
+            ProductionDate=conn.production_date, Remark='history',
+            ReleasedAt=datetime(2026, 9, 26, 14, 25), ReleasedBy='operator')
+        conn.usage_rows[30] = dict(MouldUsageID=130, MouldID=4, PressProductionID=30,
+            ReconditionNo=2, UsageCycles=500)
+        conn.time_events[100] = dict(TimeEventID=100, ProductionID=7, EquipmentCode='F2',
+            TimeType='BREAKDOWN', DurationMin=15, SourceType='MANUAL')
+        before = dict(conn.press_rows[30])
+        usage = dict(conn.usage_rows[30])
+        events = dict(conn.time_events[100])
+        self.assertEqual(undo_release_press_production(conn, 7, 30), 'RESTORED')
+        self.assertEqual(conn.press_rows[30]['PressProductionID'], before['PressProductionID'])
+        for key in ('ProductionID', 'MachineCode', 'MouldID', 'DispatchQty', 'CounterQty', 'CuringQty', 'ProductionDate', 'Remark'):
+            self.assertEqual(conn.press_rows[30][key], before[key])
+        self.assertIsNone(conn.press_rows[30]['ReleasedAt'])
+        self.assertIsNone(conn.press_rows[30]['ReleasedBy'])
+        self.assertEqual(conn.usage_rows[30], usage)
+        self.assertEqual(conn.time_events[100], events)
+
+    def test_undo_release_rejects_reassigned_mould_and_is_idempotent(self):
+        conn = PressProductionConnection()
+        conn.press_rows[30] = dict(PressProductionID=30, ProductionID=7, MachineCode='F2',
+            MouldID=4, CounterQty=500, ProductionDate=conn.production_date,
+            ReleasedAt=datetime(2026, 9, 26, 14, 25), ReleasedBy='operator')
+        conn.press_rows[31] = dict(PressProductionID=31, ProductionID=8, MachineCode='F3',
+            MouldID=4, CounterQty=0, ProductionDate=conn.production_date,
+            CreatedAt=datetime(2026, 9, 26, 15),
+            ReleasedAt=None, ReleasedBy=None)
+        self.assertEqual(undo_release_press_production(conn, 7, 30), 'MOULD_ALREADY_REASSIGNED')
+        self.assertIsNotNone(conn.press_rows[30]['ReleasedAt'])
+        conn.press_rows.pop(31)
+        self.assertEqual(undo_release_press_production(conn, 7, 30), 'RESTORED')
+        self.assertEqual(undo_release_press_production(conn, 7, 30), 'ALREADY_ACTIVE')
+
+    def test_undo_history_blocks_old_row_after_later_row_is_released(self):
+        conn = PressProductionConnection()
+        first_release = datetime(2026, 9, 26, 14, 25)
+        conn.press_rows[30] = dict(PressProductionID=30, ProductionID=7, MachineCode='F7',
+            MouldID=4, CounterQty=70, ProductionDate=conn.production_date,
+            CreatedAt=datetime(2026, 9, 26, 14), ReleasedAt=first_release, ReleasedBy='operator')
+        conn.press_rows[31] = dict(PressProductionID=31, ProductionID=8, MachineCode='F2',
+            MouldID=4, CounterQty=0, ProductionDate=conn.production_date,
+            CreatedAt=datetime(2026, 9, 26, 15), ReleasedAt=None, ReleasedBy=None)
+        self.assertEqual(undo_release_press_production(conn, 7, 30), 'MOULD_ALREADY_REASSIGNED')
+        conn.press_rows[31]['ReleasedAt'] = datetime(2026, 9, 26, 16)
+        conn.press_rows[31]['ReleasedBy'] = 'operator'
+        self.assertEqual(undo_release_press_production(conn, 7, 30), 'MOULD_ALREADY_REASSIGNED')
+        self.assertEqual(undo_release_press_production(conn, 8, 31), 'RESTORED')
+
+    def test_undo_history_blocks_both_rows_after_third_assignment(self):
+        conn = PressProductionConnection()
+        conn.press_rows[30] = dict(PressProductionID=30, ProductionID=7, MachineCode='F7',
+            MouldID=4, ProductionDate=conn.production_date,
+            CreatedAt=datetime(2026, 9, 26, 14), ReleasedAt=datetime(2026, 9, 26, 15), ReleasedBy='operator')
+        conn.press_rows[31] = dict(PressProductionID=31, ProductionID=8, MachineCode='F2',
+            MouldID=4, ProductionDate=conn.production_date,
+            CreatedAt=datetime(2026, 9, 26, 16), ReleasedAt=datetime(2026, 9, 26, 17), ReleasedBy='operator')
+        conn.press_rows[32] = dict(PressProductionID=32, ProductionID=9, MachineCode='F3',
+            MouldID=4, ProductionDate=conn.production_date,
+            CreatedAt=datetime(2026, 9, 26, 18), ReleasedAt=None, ReleasedBy=None)
+        self.assertEqual(undo_release_press_production(conn, 7, 30), 'MOULD_ALREADY_REASSIGNED')
+        self.assertEqual(undo_release_press_production(conn, 8, 31), 'MOULD_ALREADY_REASSIGNED')
+
+    def test_undo_history_allows_release_without_later_assignment(self):
+        conn = PressProductionConnection()
+        conn.press_rows[30] = dict(PressProductionID=30, ProductionID=7, MachineCode='F7',
+            MouldID=4, ProductionDate=conn.production_date,
+            CreatedAt=datetime(2026, 9, 26, 14), ReleasedAt=datetime(2026, 9, 26, 15), ReleasedBy='operator')
+        self.assertEqual(undo_release_press_production(conn, 7, 30), 'RESTORED')
+
     def test_release_preserves_history_and_double_release_is_noop(self):
         conn = PressProductionConnection()
         conn.press_rows[30] = dict(PressProductionID=30, ProductionID=7, MachineCode='F2',

@@ -38,6 +38,7 @@ from app.press_mc import (page_context as press_mc_context, add_press, update_pr
 from app.mould import (page_context as mould_context, register_mould, update_mould_info,
                        send_to_recondition, return_from_recondition, set_mould_status)
 from app.press_production import (build_press_production_context,
+                                  undo_release_press_production,
                                   release_press_production,
                                   save_press_production as save_press_production_row)
 from app.wet_reject import build_wet_reject_context, save_wet_reject, save_wet_reject_batch
@@ -315,6 +316,11 @@ def release_press_production_change(production_id, press_production_id):
         return release_press_production(conn, production_id, press_production_id)
 
 
+def undo_release_press_production_change(production_id, press_production_id):
+    with closing(get_connection()) as conn:
+        return undo_release_press_production(conn, production_id, press_production_id)
+
+
 def press_production_redirect(production_id, message, message_type='success'):
     params = {'production_id': production_id, 'press_message': message,
               'press_message_type': message_type}
@@ -359,6 +365,23 @@ async def release_press_production_route(request: Request, production_id: int,
         return press_production_redirect(production_id, str(exc), 'error')
     except Exception:
         return press_production_redirect(production_id, 'Unable to release Mould. Please retry.', 'error')
+
+
+@app.post('/lots/{production_id}/press-production/{press_production_id}/undo-release')
+async def undo_release_press_production_route(request: Request, production_id: int,
+                                              press_production_id: int):
+    try:
+        result = await run_in_threadpool(
+            undo_release_press_production_change, production_id, press_production_id)
+        messages = {'RESTORED': 'Mould assignment restored.',
+                    'ALREADY_ACTIVE': 'Press Production is already active.',
+                    'MOULD_ALREADY_REASSIGNED': 'MOULD_ALREADY_REASSIGNED: this Mould is already assigned to another Press.'}
+        return press_production_redirect(
+            production_id, messages.get(result, 'Mould assignment restored.'))
+    except ValueError as exc:
+        return press_production_redirect(production_id, str(exc), 'error')
+    except Exception:
+        return press_production_redirect(production_id, 'Unable to undo Mould release. Please retry.', 'error')
 
 
 @app.post('/lots/{production_id}/press-production/{press_production_id}')
