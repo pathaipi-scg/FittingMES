@@ -4,7 +4,8 @@ from contextlib import closing
 from pathlib import Path
 from datetime import date, datetime, time
 from urllib.parse import urlencode
-from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.responses import RedirectResponse, JSONResponse, FileResponse, PlainTextResponse
+from starlette.background import BackgroundTask
 from fastapi.encoders import jsonable_encoder
 from starlette.concurrency import run_in_threadpool
 from app.lots import rows, day, read_lots, update_lot, insert_lot, next_running_no, reorder_lot
@@ -35,6 +36,9 @@ from app.mould import (page_context as mould_context, register_mould, update_mou
 from app.press_production import (build_press_production_context,
                                   save_press_production as save_press_production_row)
 from app.wet_reject import build_wet_reject_context, save_wet_reject, save_wet_reject_batch
+from app.print_prod import read_print_prod_context
+from app.browser_pdf import (PdfGenerationError, generate_print_prod_pdf,
+                             finish_pdf_process)
 
 app = FastAPI(title="FittingMES", version="0.1.0")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -1010,6 +1014,44 @@ def usage_page(request: Request, production_date: date | None = None, saved: boo
         status = 503
     return templates.TemplateResponse(request=request, name='usage.html', context=context,
                                       status_code=status, headers={'Cache-Control':'no-store'})
+
+
+@app.get('/print-prod', response_class=HTMLResponse)
+def print_prod_page(request: Request, production_date: date | None = None):
+    production_date = production_date or date.today()
+    context = dict(page_title='PRINT PROD', active_tab='print-prod', production_date=production_date,
+                   records=[], shifts=[], daily_materials=[], error=None)
+    status = 200
+    try:
+        with closing(get_connection()) as conn:
+            context.update(read_print_prod_context(conn.cursor(), production_date))
+    except ValueError as exc:
+        context['error'] = str(exc)
+        status = 400
+    except Exception:
+        context['error'] = 'Unable to load the production report. Please retry.'
+        status = 503
+    return templates.TemplateResponse(request=request, name='print_prod.html', context=context,
+                                      status_code=status, headers={'Cache-Control':'no-store'})
+
+
+@app.get('/print-prod/pdf')
+def print_prod_pdf_page(production_date: date | None = None):
+    production_date = production_date or date.today()
+    try:
+        root, output, process = generate_print_prod_pdf(production_date)
+    except (PdfGenerationError, ValueError) as exc:
+        return PlainTextResponse(f'Unable to generate PDF: {exc}', status_code=503)
+    filename = f'DailyProductionReport_{production_date.isoformat()}.pdf'
+    return FileResponse(output, media_type='application/pdf', filename=filename,
+                        background=BackgroundTask(finish_pdf_process, root, output, process))
+
+
+@app.get('/print-oee', response_class=HTMLResponse)
+def print_oee_page(request: Request, production_date: date | None = None):
+    return templates.TemplateResponse(request=request, name='print_oee.html',
+                                      context=dict(page_title='PRINT OEE', active_tab='print-oee',
+                                                    production_date=production_date or date.today()))
 
 
 @app.post('/usage/{shift}', response_class=HTMLResponse)

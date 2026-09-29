@@ -35,7 +35,7 @@ class NavigationTests(unittest.TestCase):
 
     def test_date_survives_complete_tab_cycle(self):
         body=self.page('/','production_date=2026-09-14')
-        for path in ('/usage','/depallet','/prod-api','/reject-api','/press-mc','/mould','/'):
+        for path in ('/usage','/depallet','/prod-api','/reject-api','/press-mc','/mould','/print-prod','/print-oee','/'):
             nav=re.search(r'<nav class="page-tabs".*?</nav>',body,re.S)[0]
             target=next(html.unescape(url) for url in re.findall(r'href="([^"]+)"',nav)
                         if urlsplit(html.unescape(url)).path==path)
@@ -45,7 +45,7 @@ class NavigationTests(unittest.TestCase):
             self.assertIn('value="2026-09-14"',self.shared_form(body))
 
     def test_refresh_uses_current_tab_and_one_shared_date_input(self):
-        for path in ('/','/usage','/depallet','/prod-api','/reject-api','/press-mc','/mould'):
+        for path in ('/','/usage','/depallet','/prod-api','/reject-api','/press-mc','/mould','/print-prod','/print-oee'):
             with self.subTest(path=path):
                 body=self.page(path,'production_date=2026-09-14')
                 form=self.shared_form(body)
@@ -60,7 +60,7 @@ class NavigationTests(unittest.TestCase):
                 self.assertNotIn('production_date=2026-09-14',refreshed)
 
     def test_deep_links_and_default_date(self):
-        for path in ('/','/usage','/depallet','/prod-api','/reject-api','/press-mc','/mould'):
+        for path in ('/','/usage','/depallet','/prod-api','/reject-api','/press-mc','/mould','/print-prod','/print-oee'):
             body=self.page(path,'production_date=2020-01-02')
             self.assertIn('value="2020-01-02"',self.shared_form(body))
             body=self.page(path)
@@ -91,7 +91,7 @@ class NavigationTests(unittest.TestCase):
         self.assertNotIn('type="date"',form)
 
     def test_shared_header_groups_date_refresh_and_tabs_in_one_wrapping_row(self):
-        for path in ('/','/usage','/depallet','/prod-api','/reject-api','/press-mc','/mould'):
+        for path in ('/','/usage','/depallet','/prod-api','/reject-api','/press-mc','/mould','/print-prod','/print-oee'):
             body=self.page(path,'production_date=2026-09-14')
             row=re.search(r'<div class="shared-header-row">(.*?)</nav>\s*</div>',body,re.S)
             self.assertIsNotNone(row)
