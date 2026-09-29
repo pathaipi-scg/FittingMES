@@ -42,7 +42,7 @@ def require_product(cursor, family, code):
         raise ValueError('The selected family/product is not available in the product master.')
 
 
-def confirm_mapping(conn, material_prefix, family, code):
+def confirm_mapping(conn, material_prefix, family, code, edit=False):
     from app.lots import lock_lots
     try:
         cursor = conn.cursor()
@@ -52,8 +52,14 @@ def confirm_mapping(conn, material_prefix, family, code):
             WITH (UPDLOCK,HOLDLOCK) WHERE MaterialPrefix=?""", material_prefix)
         existing = cursor.fetchone()
         if existing and existing[0]:
-            if (existing[0], existing[1]) != (family, code):
+            if (existing[0], existing[1]) != (family, code) and not edit:
                 raise ValueError('This material was confirmed in another session. Refresh to use its mapping.')
+            if (existing[0], existing[1]) != (family, code):
+                cursor.execute("""INSERT INTO dbo.MaterialProductMapHistory
+                    (MaterialPrefix,OldProductFamily,OldProductCode,NewProductFamily,NewProductCode)
+                    VALUES (?,?,?,?,?)""", material_prefix, existing[0], existing[1], family, code)
+                cursor.execute("""UPDATE dbo.MaterialProductMap SET ProductFamily=?,ProductCode=?,
+                    UpdatedAt=SYSDATETIME() WHERE MaterialPrefix=?""", family, code, material_prefix)
         elif existing:
             # Only an explicit operator confirmation may resolve this legacy row.
             cursor.execute("""UPDATE dbo.MaterialProductMap SET ProductFamily=?,ProductCode=?,

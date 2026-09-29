@@ -78,6 +78,52 @@ class FamilyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'another session'): confirm_mapping(conn,'PREFIX',SPECIAL,'06')
         conn.rollback.assert_called_once(); conn.commit.assert_not_called()
 
+    def test_edit_confirmation_updates_existing_mapping(self):
+        conn=MagicMock(); cursor=conn.cursor.return_value
+        cursor.fetchone.side_effect=[(0,),('16',),(NEU,'06')]
+        self.assertEqual(confirm_mapping(conn,'PREFIX',SPECIAL,'06',edit=True),(SPECIAL,'06'))
+        args=next(c.args for c in cursor.execute.call_args_list if 'UPDATE dbo.MaterialProductMap' in c.args[0])
+        self.assertEqual(args[1:],(SPECIAL,'06','PREFIX'))
+        history_args=next(c.args for c in cursor.execute.call_args_list if 'INSERT INTO dbo.MaterialProductMapHistory' in c.args[0])
+        self.assertEqual(history_args[1:],('PREFIX',NEU,'06',SPECIAL,'06'))
+        self.assertFalse(any('INSERT INTO dbo.MaterialProductMap\n' in c.args[0] for c in cursor.execute.call_args_list))
+
+    def test_same_value_edit_does_not_insert_history(self):
+        conn=MagicMock(); cursor=conn.cursor.return_value
+        cursor.fetchone.side_effect=[(0,),('06',),(NEU,'06')]
+        confirm_mapping(conn,'PREFIX',NEU,'06',edit=True)
+        self.assertFalse(any('MaterialProductMapHistory' in c.args[0] for c in cursor.execute.call_args_list))
+
+    def test_mapping_update_failure_rolls_back_history(self):
+        conn=MagicMock(); cursor=conn.cursor.return_value
+        cursor.fetchone.side_effect=[(0,),('06',),(NEU,'06')]
+        def execute(sql,*args):
+            if 'UPDATE dbo.MaterialProductMap SET' in sql:
+                raise RuntimeError('mapping update failed')
+        cursor.execute.side_effect=execute
+        with self.assertRaisesRegex(RuntimeError,'mapping update failed'):
+            confirm_mapping(conn,'PREFIX',SPECIAL,'06',edit=True)
+        conn.rollback.assert_called_once()
+        self.assertTrue(any('MaterialProductMapHistory' in c.args[0] for c in cursor.execute.call_args_list))
+
+    def test_edit_mode_renders_saved_selection_and_cancel(self):
+        conn=MagicMock(); conn.cursor.return_value.fetchone.return_value=(4,)
+        with patch('app.main.get_connection',return_value=conn),patch('app.main.read_lots',return_value=[]),patch('app.main.read_plans',return_value=[PLAN]),patch('app.main.read_mapping',return_value=(SPECIAL,'06')),patch('app.main.read_products',return_value=PRODUCTS):
+            response=production_page(request(),'p1',production_date=DAY,mapping_edit=True)
+        body=response.body.decode()
+        self.assertIn('name="mapping_edit" value="true"',body)
+        self.assertIn('value="06" selected',body)
+        self.assertIn('>CANCEL</a>',body)
+
+    def test_edit_confirm_returns_to_remembered_state(self):
+        conn=MagicMock(); conn.cursor.return_value.fetchone.return_value=(4,)
+        with patch('app.main.get_connection',return_value=conn),patch('app.main.read_lots',return_value=[]),patch('app.main.read_plans',return_value=[PLAN]),patch('app.main.read_mapping',return_value=(SPECIAL,'06')),patch('app.main.confirm_mapping',return_value=(SPECIAL,'06')),patch('app.main.read_products',return_value=PRODUCTS):
+            response=confirm_product(request(),'p1',DAY,'','','06','',True)
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.context['product_family'],SPECIAL)
+        self.assertEqual(response.context['product_code'],'06')
+        self.assertNotIn('name="mapping_edit" value="true"',response.body.decode())
+
     def test_product_validation_checks_family_not_code_alone(self):
         cursor=MagicMock(); cursor.fetchone.return_value=None
         with self.assertRaises(ValueError): require_product(cursor,SPECIAL,'06')

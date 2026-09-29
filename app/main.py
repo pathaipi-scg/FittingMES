@@ -79,7 +79,7 @@ def product_selection_context(cursor, selected):
     return dict(products=products, product_previews=previews)
 
 
-def production_page(request, plan_id=None, product_code=None, confirm=False,
+def production_page(request, plan_id=None, product_code=None, confirm=False, mapping_edit=False,
                     create=False, running_no=None, production_date=None, production_id=None, edit=False, save=False, void=False, production_input=None, data_saved=False, product_family=None, product_choices=None, press_message=None, press_message_type=None, wet_reject_message=None, wet_reject_message_type=None):
     requested_date = production_date
     production_date = production_date or date.today()
@@ -178,20 +178,27 @@ def production_page(request, plan_id=None, product_code=None, confirm=False,
                     try:
                         if product_choices is not None:
                             product_family, product_code = selected_product(product_choices)
-                        product_family, product_code = confirm_mapping(conn, prefix, product_family, product_code)
+                        product_family, product_code = confirm_mapping(conn, prefix, product_family, product_code,
+                                                                        edit=mapping_edit)
+                        mapping_edit = False
                     except ValueError:
                         context.update(product_selection_context(cursor, selected))
                         raise
                 mapped = read_mapping(cursor, prefix)
                 if mapped:
-                    context["product_family"], context["product_code"] = mapped
-                    context["lot"] = lot_prefix(mapped[0], mapped[1], selected["StartTime"])
-                    context["running_no"] = next_running_no(cursor, context["lot"],
-                        mapped[0], mapped[1], selected["StartTime"])
-                    if create:
-                        new_id = insert_lot(conn, selected, mapped[1], context["lot"], running_no,
-                                            product_family=mapped[0])
-                        return RedirectResponse(f"/?production_id={new_id}&production_date={production_date}", status_code=303)
+                    if mapping_edit:
+                        context.update(product_selection_context(cursor, selected))
+                        context["product_family"], context["product_code"] = mapped
+                        context["mapping_edit"] = True
+                    else:
+                        context["product_family"], context["product_code"] = mapped
+                        context["lot"] = lot_prefix(mapped[0], mapped[1], selected["StartTime"])
+                        context["running_no"] = next_running_no(cursor, context["lot"],
+                            mapped[0], mapped[1], selected["StartTime"])
+                        if create:
+                            new_id = insert_lot(conn, selected, mapped[1], context["lot"], running_no,
+                                                product_family=mapped[0])
+                            return RedirectResponse(f"/?production_id={new_id}&production_date={production_date}", status_code=303)
                 else:
                     context.update(product_selection_context(cursor, selected))
                     if create:
@@ -211,10 +218,11 @@ def production_page(request, plan_id=None, product_code=None, confirm=False,
 
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request, plan_id: str | None = None, production_date: date | None = None,
+         mapping_edit: bool = False,
         production_id: int | None = None, edit: bool = False, data_saved: bool = False,
         press_message: str | None = None, press_message_type: str | None = None,
         wet_reject_message: str | None = None, wet_reject_message_type: str | None = None):
-    return production_page(request, plan_id, production_date=production_date, production_id=production_id,
+    return production_page(request, plan_id, mapping_edit=mapping_edit, production_date=production_date, production_id=production_id,
                       edit=edit, data_saved=data_saved, press_message=press_message,
                       press_message_type=press_message_type, wet_reject_message=wet_reject_message,
                       wet_reject_message_type=wet_reject_message_type)
@@ -223,8 +231,9 @@ def home(request: Request, plan_id: str | None = None, production_date: date | N
 @app.post("/", response_class=HTMLResponse)
 def confirm_product(request: Request, plan_id: str = Form(...), production_date: date = Form(...),
                     neufit: str = Form(""), oriental: str = Form(""),
-                    special_ridge: str = Form(""), prestige_common: str = Form("")):
-    return production_page(request, plan_id, confirm=True, production_date=production_date,
+                    special_ridge: str = Form(""), prestige_common: str = Form(""),
+                    mapping_edit: bool = Form(False)):
+    return production_page(request, plan_id, confirm=True, mapping_edit=mapping_edit, production_date=production_date,
                            product_choices=[neufit, oriental, special_ridge, prestige_common])
 
 

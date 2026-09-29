@@ -156,10 +156,11 @@ main>header,main>.panel,main>.error{flex-shrink:0}
 {% if selected %}<div class="workflow">
 {% if lot %}<form method="post" action="/lots">
 <input type="hidden" name="production_date" value="{{ production_date }}"><input type="hidden" name="plan_id" value="{{ selected.selection_id }}">
-<div><label>Product</label>{{ product_family }} / {{ product_code }}</div><div><label for="running_no">Next Running No</label><input id="running_no" name="running_no" value="{{ running_no }}" readonly></div>
+<div><label>Product</label>{{ product_family }} / {{ product_code }} <a class="button" href="/?plan_id={{ selected.selection_id }}&production_date={{ production_date }}&mapping_edit=true">EDIT</a></div><div><label for="running_no">Next Running No</label><input id="running_no" name="running_no" value="{{ running_no }}" readonly></div>
 <div><label>Lot No. preview</label><output class="preview">{{ lot }}{{ '%02d'|format(running_no) }}</output></div><button class="primary" type="submit">CREATE LOT</button></form>
 {% else %}<form method="post" action="/" id="family-product-form">
 <input type="hidden" name="production_date" value="{{ production_date }}"><input type="hidden" name="plan_id" value="{{ selected.selection_id }}">
+{% if mapping_edit %}<input type="hidden" name="mapping_edit" value="true">{% endif %}
 <span class="material-prefix" hidden>Material prefix <strong>{{ material_prefix }}</strong></span>
 {% set field_names = ['neufit','oriental','special_ridge','prestige_common'] %}
 {% set short_labels = {'NeuFit / NeuStile': 'NeuStile', 'Oriental': 'Oriental', 'Special Ridge': 'Ridge', 'Prestige Common': 'Prestige'} %}
@@ -168,10 +169,11 @@ main>header,main>.panel,main>.error{flex-shrink:0}
 <div class="family-product-field"><label for="family-product-{{ loop.index }}">{{ short_labels.get(family, family) }}</label>
 <select id="family-product-{{ loop.index }}" name="{{ field_names[loop.index0] }}" class="family-product-select" data-family="{{ family }}" {% if not choices %}disabled{% endif %}>
 <option value="">{{ '- / Select Product' if choices else '- / No master rows' }}</option>
-{% for product in choices %}<option value="{{ product.ProductCode }}">{{ product.ProductCode }} &mdash; {{ product.ProductName }}</option>{% endfor %}
+{% for product in choices %}<option value="{{ product.ProductCode }}" {% if product_family == family and product_code == product.ProductCode %}selected{% endif %}>{{ product.ProductCode }} &mdash; {{ product.ProductName }}</option>{% endfor %}
 </select></div>
 {% endfor %}
 <button type="submit" class="primary" {% if not products %}disabled{% endif %}>Confirm</button>
+{% if mapping_edit %}<a class="button" href="/?plan_id={{ selected.selection_id }}&production_date={{ production_date }}">CANCEL</a>{% endif %}
 <div id="family-lot-preview" class="family-lot-preview" aria-live="polite" hidden>
 <span>Product <output data-preview="ProductFamily"></output> / <output data-preview="ProductCode"></output></span>
 <span>Prefix <output data-preview="LotPrefix"></output></span>
