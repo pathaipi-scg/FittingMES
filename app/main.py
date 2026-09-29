@@ -1,6 +1,7 @@
 import hashlib
 import json
 from contextlib import closing
+from uuid import uuid4
 from pathlib import Path
 from datetime import date, datetime, time
 from urllib.parse import urlencode
@@ -20,6 +21,7 @@ from app.usage import read_usage_context, save_usage
 from app.prod_api import read_prod_records, build_pis_date_preview, field_mapping, lot_readiness, preview_readiness
 from app.production_pis_log import latest_states
 from app.production_pis_send import FAILED, SUCCESS, UNKNOWN, send_ready_groups
+from app.pis_send_log import audit_row, insert_audit_rows
 from app.reject_api import (read_reject_records, reject_readiness, build_reject_preview,
                             build_output_details_query, parse_output_details_response,
                             summarize_output_details, build_change_status_preview)
@@ -634,6 +636,7 @@ def _prod_records_and_states(conn, production_date):
 
 
 def _send_one(production_date, production_id, unknown_retry=False):
+    batch_run_id = uuid4()
     config, error = _send_config_or_error()
     if error:
         return _prod_redirect(production_date, send_error=error)
@@ -644,13 +647,20 @@ def _send_one(production_date, production_id, unknown_retry=False):
             return _prod_redirect(production_date, send_error='Select an active Production Lot from this date.')
         readiness = lot_readiness(record)
         if not readiness['ready']:
+            insert_audit_rows(conn, [audit_row(
+                batch_run_id, 'PROD', 'SINGLE', record['LotNo'], 'SKIP',
+                'NOT_READY: ' + ', '.join(readiness['missing']),
+                send_date=record['ProdDate'], PlantCode=record.get('Plant'),
+                MachineCode=record.get('Machine'), ShiftID=record.get('Shift'))])
+            conn.commit()
             return _prod_redirect(production_date, send_error='Production Lot is NOT READY. Missing: ' + ', '.join(readiness['missing']) + '.')
         state = states.get(production_id)
         if state and state['Outcome'] == SUCCESS:
             return _prod_redirect(production_date, send_error='This Production Lot is already SENT.')
         if state and state['Outcome'] == UNKNOWN and not unknown_retry:
             return _prod_redirect(production_date, send_error='This Production Lot has UNKNOWN delivery status. Use RETRY UNKNOWN explicitly.')
-        results = send_ready_groups(conn, [record], PISClient(config), include_unknown=unknown_retry)
+        results = send_ready_groups(conn, [record], PISClient(config), include_unknown=unknown_retry,
+                        audit_batch_id=batch_run_id, audit_mode='SINGLE')
         if not results:
             return _prod_redirect(production_date, send_error='This Production Lot is not eligible for sending.')
         result = results[0]
@@ -671,6 +681,7 @@ def retry_unknown_prod(request: Request, production_date: date = Form(...), prod
 
 @app.post('/prod-api/send-all')
 def send_all_prod(request: Request, production_date: date = Form(...)):
+    batch_run_id = uuid4()
     config, error = _send_config_or_error()
     if error:
         return _prod_redirect(production_date, send_error=error)
@@ -679,7 +690,20 @@ def send_all_prod(request: Request, production_date: date = Form(...)):
         skipped_not_ready = sum(not lot_readiness(row)['ready'] for row in records)
         skipped_sent = sum(state and state['Outcome'] == SUCCESS for state in states.values())
         skipped_unknown = sum(state and state['Outcome'] == UNKNOWN for state in states.values())
-        results = send_ready_groups(conn, records, PISClient(config))
+        not_ready_rows = []
+        for record in records:
+            readiness = lot_readiness(record)
+            if not readiness['ready']:
+                not_ready_rows.append(audit_row(
+                    batch_run_id, 'PROD', 'BATCH', record['LotNo'], 'SKIP',
+                    'NOT_READY: ' + ', '.join(readiness['missing']),
+                    send_date=record['ProdDate'], PlantCode=record.get('Plant'),
+                    MachineCode=record.get('Machine'), ShiftID=record.get('Shift')))
+        insert_audit_rows(conn, not_ready_rows)
+        results = send_ready_groups(conn, records, PISClient(config),
+                                    audit_batch_id=batch_run_id, audit_mode='BATCH')
+        if not_ready_rows:
+            conn.commit()
     return _prod_redirect(production_date, send_message='Production SEND ALL completed.',
                           send_groups=len(results), send_lots=sum(len(result['production_ids']) for result in results),
                           send_success=sum(result['outcome'] == SUCCESS for result in results for _ in result['production_ids']),

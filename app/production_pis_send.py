@@ -12,6 +12,8 @@ from fastapi.encoders import jsonable_encoder
 from app.pis_client import PISClientError
 from app.prod_api import build_pis_prodorders_payload, group_key, lot_readiness
 from app.production_pis_log import has_success, insert_attempts, latest_state
+from app.pis_send_log import (RESULT_ERROR, RESULT_SKIP, RESULT_SUCCESS,
+                               audit_row, insert_audit_rows)
 
 
 SUCCESS = 'SUCCESS'
@@ -43,18 +45,21 @@ def _group_records(records):
 
 
 def send_ready_groups(conn, records, client, *, include_unknown=False, production_ids=None,
-                       attempted_at=None):
+                       attempted_at=None, audit_batch_id=None, audit_mode='BATCH'):
     """Send eligible groups through a supplied client; never retries automatically."""
     selected = [record for record in records if lot_readiness(record)['ready']]
     if production_ids is not None:
         selected = [record for record in selected if record['ProductionID'] in set(production_ids)]
     cursor = conn.cursor()
     eligible = []
+    skipped = []
     for record in selected:
         if has_success(cursor, record['ProductionID']):
+            skipped.append((record, 'ALREADY_SENT'))
             continue
         state = latest_state(cursor, record['ProductionID'])
         if state and state['Outcome'] == UNKNOWN and not include_unknown:
+            skipped.append((record, 'UNKNOWN_NOT_RETRIED'))
             continue
         eligible.append(record)
 
@@ -97,6 +102,16 @@ def send_ready_groups(conn, records, client, *, include_unknown=False, productio
         } for record in group_records]
         try:
             insert_attempts(conn, attempts)
+            if audit_batch_id is not None:
+                audit_result = (RESULT_SUCCESS if outcome == SUCCESS else RESULT_ERROR)
+                insert_audit_rows(conn, [audit_row(
+                    audit_batch_id, 'PROD', audit_mode, record['LotNo'], audit_result,
+                    None if audit_result == RESULT_SUCCESS else (
+                        'API_NON_SUCCESS_RESPONSE' if outcome == FAILED else 'TRANSPORT_FAILURE'),
+                    send_date=record['ProdDate'], PlantCode=record.get('Plant'),
+                    MachineCode=record.get('Machine'), ShiftID=record.get('Shift'),
+                    ServerMessage=error_message, RequestJson=request_json,
+                    ResponseJson=response_text) for record in group_records])
             conn.commit()
         except Exception:
             conn.rollback()
@@ -104,4 +119,14 @@ def send_ready_groups(conn, records, client, *, include_unknown=False, productio
         results.append(dict(request_group_id=request_group_id, group_key=key,
                             production_ids=[r['ProductionID'] for r in group_records],
                             outcome=outcome, http_status=status_code))
+    if audit_batch_id is not None:
+        skipped_rows = []
+        for record, reason in skipped:
+            skipped_rows.append(audit_row(
+                audit_batch_id, 'PROD', audit_mode, record['LotNo'], RESULT_SKIP, reason,
+                send_date=record['ProdDate'], PlantCode=record.get('Plant'),
+                MachineCode=record.get('Machine'), ShiftID=record.get('Shift')))
+        if skipped_rows:
+            insert_audit_rows(conn, skipped_rows)
+            conn.commit()
     return results
