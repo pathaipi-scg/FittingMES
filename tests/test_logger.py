@@ -5,10 +5,13 @@ from app.logger import (
     RELATED_MAIN,
     RELATED_SUB,
     LoggerResolutionError,
+    LoggerSaveInput,
+    LoggerValidationError,
     expand_main_machine,
     expand_sub_related_options,
     normalize_sub_related_selection,
     read_logger_masters,
+    save_logger_event,
     suggest_cause,
 )
 
@@ -25,6 +28,37 @@ class QueueCursor:
         return next(self.result_sets)
 
 
+class SaveCursor:
+    def __init__(self, event_id=101, fail=False):
+        self.event_id = event_id
+        self.fail = fail
+        self.executed = []
+
+    def execute(self, query, *params):
+        if self.fail:
+            raise RuntimeError("simulated INSERT failure")
+        self.executed.append((query, params))
+
+    def fetchone(self):
+        return (self.event_id,)
+
+
+class SaveConnection:
+    def __init__(self, event_id=101, fail=False):
+        self.cursor_instance = SaveCursor(event_id=event_id, fail=fail)
+        self.commits = 0
+        self.rollbacks = 0
+
+    def cursor(self):
+        return self.cursor_instance
+
+    def commit(self):
+        self.commits += 1
+
+    def rollback(self):
+        self.rollbacks += 1
+
+
 class LoggerResolverTests(unittest.TestCase):
     def setUp(self):
         self.main_machines = [
@@ -39,6 +73,44 @@ class LoggerResolverTests(unittest.TestCase):
             {"SubMcId": 24, "McId": 5, "SubMachine": "LINE proxy", "No": 1, "IsRelated": 1},
             {"SubMcId": 99, "McId": 7, "SubMachine": "Inactive", "No": 4, "IsRelated": 0},
         ]
+        self.stop_types = [
+            {"StopId": 1, "StopType": "RUN"},
+            {"StopId": 2, "StopType": "SETUP"},
+            {"StopId": 6, "StopType": "SMDT"},
+            {"StopId": 7, "StopType": "BD"},
+        ]
+        self.sub_stop_types = [
+            {"SubStopId": 1, "StopId": 1, "SubStopType": "--"},
+            {"SubStopId": 2, "StopId": 2, "SubStopType": "Setup reason"},
+            {"SubStopId": 20, "StopId": 6, "SubStopType": "Other"},
+            {"SubStopId": 21, "StopId": 7, "SubStopType": "--"},
+        ]
+        self.causes = [
+            {"CauseId": 1, "Cause": "Setup cause", "McId": 7, "SubMcId": 2,
+             "StopId": 2, "SubStopId": 2, "MEO": "M"},
+            {"CauseId": 2, "Cause": "SMDT cause", "McId": 7, "SubMcId": 2,
+             "StopId": 6, "SubStopId": 20, "MEO": "E"},
+            {"CauseId": 3, "Cause": "Mixed shortcut", "McId": 5, "SubMcId": 2,
+             "StopId": 1, "SubStopId": 1, "MEO": None},
+        ]
+
+    def masters(self):
+        return type("Masters", (), {
+            "main_machines": self.main_machines,
+            "sub_machines": self.sub_machines[:4],
+            "stop_types": self.stop_types,
+            "sub_stop_types": self.sub_stop_types,
+            "causes": self.causes,
+        })()
+
+    def save_input(self, **overrides):
+        values = dict(
+            production_date="2026-10-01", stop="08:00", start="08:15",
+            mc_id=7, mc_instance_no=1, sub_mc_id=2, sub_mc_instance_no=1,
+            stop_id=1, sub_stop_id=1, classification_edited=False,
+        )
+        values.update(overrides)
+        return LoggerSaveInput(**values)
 
     def test_main_machine_instance_expansion(self):
         instances = expand_main_machine(self.main_machines[0])
@@ -135,6 +207,125 @@ class LoggerResolverTests(unittest.TestCase):
         self.assertEqual(masters.sub_stop_types[0]["StopId"], 1)
         self.assertEqual(masters.causes[0]["SubMcId"], 2)
         self.assertTrue(all("IsActive=1" in query for query in cursor.queries))
+
+    def test_save_direct_sub_builds_snapshots_and_returns_identity(self):
+        connection = SaveConnection(event_id=501)
+        event_id = save_logger_event(connection, self.save_input(), self.masters())
+        self.assertEqual(event_id, 501)
+        self.assertEqual(connection.commits, 1)
+        self.assertEqual(connection.rollbacks, 0)
+        query, params = connection.cursor_instance.executed[0]
+        self.assertIn("OUTPUT INSERTED.LoggerEventID", query)
+        self.assertIn("?", query)
+        self.assertNotIn("F1", query)
+        self.assertEqual(params[14:20], ("F1", None, "Mould1", "RUN", "--", None))
+
+    def test_save_related_main_and_related_sub(self):
+        related_main = save_logger_event(
+            SaveConnection(), self.save_input(related_mc_id=5, related_mc_instance_no=1,
+                                               sub_mc_id=None, sub_mc_instance_no=None), self.masters())
+        related_sub = save_logger_event(
+            SaveConnection(), self.save_input(related_mc_id=5, related_mc_instance_no=1,
+                                               sub_mc_id=9, sub_mc_instance_no=3), self.masters())
+        self.assertEqual((related_main, related_sub), (101, 101))
+
+    def test_save_robot_proxy_uses_related_main_not_physical_submachine(self):
+        connection = SaveConnection()
+        save_logger_event(connection, self.save_input(
+            related_mc_id=4, related_mc_instance_no=2,
+            sub_mc_id=None, sub_mc_instance_no=None), self.masters())
+        params = connection.cursor_instance.executed[0][1]
+        self.assertEqual(params[8], None)
+        self.assertEqual(params[12], None)
+
+    def test_proxy_submachine_is_rejected(self):
+        with self.assertRaisesRegex(LoggerValidationError, "proxy"):
+            save_logger_event(SaveConnection(), self.save_input(
+                sub_mc_id=23, sub_mc_instance_no=1), self.masters())
+
+    def test_invalid_instance_numbers_are_rejected(self):
+        for overrides, text in (
+            ({"mc_instance_no": 15}, "McInstanceNo"),
+            ({"related_mc_id": 5, "related_mc_instance_no": 3,
+              "sub_mc_id": None, "sub_mc_instance_no": None}, "RelatedMcInstanceNo"),
+            ({"sub_mc_instance_no": 2}, "SubMcInstanceNo"),
+        ):
+            with self.subTest(text=text):
+                with self.assertRaises(LoggerValidationError):
+                    save_logger_event(SaveConnection(), self.save_input(**overrides), self.masters())
+
+    def test_time_rules_and_equal_time_rejection(self):
+        same_day = save_logger_event(SaveConnection(event_id=1), self.save_input(), self.masters())
+        midnight_connection = SaveConnection(event_id=2)
+        save_logger_event(midnight_connection, self.save_input(stop="23:55", start="00:05"), self.masters())
+        params = midnight_connection.cursor_instance.executed[0][1]
+        self.assertEqual(same_day, 1)
+        self.assertEqual(params[3], 10)
+        self.assertEqual(str(params[1]), "2026-10-01 23:55:00")
+        self.assertEqual(str(params[2]), "2026-10-02 00:05:00")
+        with self.assertRaisesRegex(LoggerValidationError, "differ"):
+            save_logger_event(SaveConnection(), self.save_input(stop="10:00", start="10:00"), self.masters())
+
+    def test_classification_provenance_and_duration_rule(self):
+        cause_shortcut = SaveConnection()
+        save_logger_event(cause_shortcut, self.save_input(cause_id=1, stop_id=2, sub_stop_id=2), self.masters())
+        self.assertEqual(cause_shortcut.cursor_instance.executed[0][1][22], "CAUSE_SHORTCUT")
+
+        manual = SaveConnection()
+        save_logger_event(manual, self.save_input(cause_id=1, classification_edited=True), self.masters())
+        self.assertEqual(manual.cursor_instance.executed[0][1][22], "MANUAL")
+
+        no_cause = SaveConnection()
+        save_logger_event(no_cause, self.save_input(cause_id=None), self.masters())
+        self.assertEqual(no_cause.cursor_instance.executed[0][1][22], "MANUAL")
+
+        mismatch = self.save_input(cause_id=1, stop_id=1, sub_stop_id=1)
+        with self.assertRaisesRegex(LoggerValidationError, "classification"):
+            save_logger_event(SaveConnection(), mismatch, self.masters())
+
+        smdt_short = SaveConnection()
+        save_logger_event(smdt_short, self.save_input(cause_id=2, stop_id=6, sub_stop_id=20,
+                                                       stop="08:00", start="08:09"), self.masters())
+        short_params = smdt_short.cursor_instance.executed[0][1]
+        self.assertEqual(short_params[10:13], (6, 20, 2))
+        self.assertEqual(short_params[22], "CAUSE_SHORTCUT")
+
+        smdt_long = SaveConnection()
+        save_logger_event(smdt_long, self.save_input(cause_id=2, stop_id=6, sub_stop_id=20,
+                                                      stop="08:00", start="08:10"), self.masters())
+        long_params = smdt_long.cursor_instance.executed[0][1]
+        self.assertEqual(long_params[10:13], (7, 21, 2))
+        self.assertEqual(long_params[17:20], ("BD", "--", "SMDT cause"))
+        self.assertEqual(long_params[22], "DURATION_RULE")
+
+    def test_setup_is_not_duration_converted_and_nullable_fields_are_supported(self):
+        connection = SaveConnection()
+        save_logger_event(connection, self.save_input(
+            cause_id=None, stop_id=2, sub_stop_id=2, stop="08:00", start="08:10",
+            related_mc_id=5, related_mc_instance_no=1,
+            sub_mc_id=None, sub_mc_instance_no=None), self.masters())
+        params = connection.cursor_instance.executed[0][1]
+        self.assertEqual(params[10:13], (2, 2, None))
+        self.assertEqual(params[17:20], ("SETUP", "Setup reason", None))
+
+    def test_cause_owner_mismatch_is_allowed(self):
+        connection = SaveConnection()
+        save_logger_event(connection, self.save_input(
+            cause_id=3, stop_id=1, sub_stop_id=1), self.masters())
+        self.assertEqual(connection.commits, 1)
+
+    def test_validation_and_database_failures_rollback(self):
+        validation_connection = SaveConnection()
+        with self.assertRaises(LoggerValidationError):
+            save_logger_event(validation_connection, self.save_input(mc_instance_no=99), self.masters())
+        self.assertEqual(validation_connection.rollbacks, 1)
+        self.assertEqual(validation_connection.commits, 0)
+
+        database_connection = SaveConnection(fail=True)
+        with self.assertRaisesRegex(LoggerValidationError, "INSERT"):
+            save_logger_event(database_connection, self.save_input(), self.masters())
+        self.assertEqual(database_connection.rollbacks, 1)
+        self.assertEqual(database_connection.commits, 0)
 
 
 if __name__ == "__main__":

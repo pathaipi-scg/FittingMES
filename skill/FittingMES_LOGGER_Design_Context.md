@@ -1154,3 +1154,312 @@ implementation remains a separate approved phase.
 
 When implementation is approved later, re-read this file first and
 follow it as the LOGGER design source of truth.
+
+# 30. Phase 3B Classification Provenance Contract
+
+Phase 3B design is approved, but implementation has not started.
+
+## Classification Provenance Input
+
+The backend/form SAVE input includes the transient value:
+
+`classification_edited: bool`
+
+This records whether the operator explicitly changed or re-selected the
+Stop Type / Sub Stop Type classification after Cause shortcut population.
+
+`classification_edited` is not stored as a LoggerEvent database column. It
+is used only to determine the final `ClassificationSource`.
+
+## ClassificationSource Decision Table
+
+ClassificationSource describes only how the final `StopId` and `SubStopId`
+were determined. It does not describe provenance of Machine, Main Machine
+instance, Related Main Machine, Related Main Machine instance, physical
+SubMachine, physical SubMachine instance, MEO, or Note.
+
+| Precedence | Condition | Final classification | ClassificationSource |
+| --- | --- | --- | --- |
+| 1 | Final pre-duration classification is `StopId = 6`, `SubStopId = 20`, and `DurationMin >= 10` | `StopId = 7`, `SubStopId = 21` | `DURATION_RULE` |
+| 2 | No Cause supplied the classification, or `classification_edited = true` | Final operator-confirmed classification | `MANUAL` |
+| 3 | `CauseId` is present, `classification_edited = false`, and final pre-duration StopId/SubStopId equal the selected Cause StopId/SubStopId | Final operator-confirmed classification | `CAUSE_SHORTCUT` |
+
+The duration rule takes precedence over all other provenance.
+
+If `CauseId` is NULL, `CAUSE_SHORTCUT` is impossible. Use `MANUAL` unless
+the duration rule subsequently applies.
+
+If `classification_edited = false` but the submitted StopId/SubStopId
+differs from the selected Cause classification, reject the SAVE request as
+inconsistent classification provenance. Do not silently restore the Cause
+mapping.
+
+If the operator manually re-selects the same StopId/SubStopId values that
+Cause populated, `classification_edited = true` and the result is
+`MANUAL`.
+
+Cause may still prefill or suggest Machine, Related Machine, SubMachine,
+MEO, and Note. Edits to those fields do not change `ClassificationSource`.
+
+Do not add `classification_edited` to `dbo.LoggerEvent`. Do not create a
+migration for it. It is transient SAVE provenance only.
+
+## Phase 3B Time Rule Review
+
+StopDateTime is constructed from ProductionDate plus Stop HH:mm.
+
+If Start HH:mm is greater than Stop HH:mm, StartDateTime uses the same
+ProductionDate.
+
+Example:
+
+- ProductionDate = 2026-10-01
+- Stop = 08:00
+- Start = 08:15
+- StopDateTime = 2026-10-01 08:00
+- StartDateTime = 2026-10-01 08:15
+- DurationMin = 15
+
+If Start HH:mm is less than Stop HH:mm, the event crosses midnight and
+StartDateTime uses ProductionDate plus one calendar day.
+
+Example:
+
+- ProductionDate = 2026-10-01
+- Stop = 23:55
+- Start = 00:05
+- StopDateTime = 2026-10-01 23:55
+- StartDateTime = 2026-10-02 00:05
+- DurationMin = 10
+
+If Start HH:mm equals Stop HH:mm, reject the SAVE as an invalid
+zero-duration or ambiguous time entry. Do not interpret equal times as a
+24-hour event.
+
+Example:
+
+- ProductionDate = 2026-10-01
+- Stop = 10:00
+- Start = 10:00
+- Result = INVALID
+
+Do not convert equal times to 2026-10-02 10:00 or DurationMin = 1440. The
+operator must correct the time before SAVE.
+
+DurationMin is calculated from StartDateTime minus StopDateTime. LOGGER
+manual input accepts minute precision only, so DurationMin must be an exact
+positive integer. The final value must satisfy DurationMin > 0 and
+StartDateTime > StopDateTime.
+
+Do not silently repair invalid time input.
+
+## Phase 3B Design Status
+
+The classification provenance contract and final time rule are internally
+consistent. Equal-time ambiguity is closed.
+
+No other Phase 3B design ambiguity remains.
+
+Phase 3B design is frozen and ready for implementation approval.
+
+# 31. Phase 3B Completion Record
+
+## Phase 3B Status
+
+Phase 3B SAVE/service layer is COMPLETE.
+
+The LOGGER backend validation, normalization, time, classification,
+snapshot, and transaction INSERT behavior has been implemented in
+`app/logger.py`, tested with fake connections, and confirmed against the
+live database through controlled read-only validation.
+
+## Implemented Interfaces
+
+The final Phase 3B interfaces implemented in `app/logger.py` are:
+
+- `LoggerSaveInput`
+- `LoggerValidationError`
+- `save_logger_event(conn, data, masters=None)`
+
+Supporting implemented behavior includes:
+
+- `_as_save_input()` accepts `LoggerSaveInput` or mapping input and supports
+   the implemented camel-case field names.
+- `_parse_production_date()` accepts date, datetime, and ISO date input.
+- `_parse_hhmm()` enforces exact `HH:mm` input.
+- `_validate_logger_masters()` validates scalar fields, active Main Machine
+   and instance, Related Main Machine and instance, physical SubMachine and
+   instance, hierarchy, StopId, nullable SubStopId, optional CauseId, MEO,
+   note, CreatedBy, classification provenance, time ordering, duration, and
+   SMDT/BD behavior.
+- `_build_logger_snapshots()` derives final snapshot labels from validated
+   Master rows.
+- `save_logger_event()` loads active Masters when they are not supplied,
+   validates the final input, builds snapshots, executes one parameterized
+   INSERT, retrieves the identity, and commits only after successful identity
+   retrieval.
+
+## SAVE Contract
+
+SAVE:
+
+- loads and validates active Master data
+- validates the final downtime Machine and instance
+- validates the normalized final Sub / Related M/C hierarchy
+- rejects `IsRelated = 1` proxy rows supplied as physical
+   `LoggerEvent.SubMcId`
+- validates `StopId` and nullable `SubStopId`
+- validates optional `CauseId`
+- validates MEO
+- calculates `StopDateTime` and `StartDateTime` server-side
+- calculates `DurationMin` server-side
+- applies the SMDT-to-BD duration rule
+- determines `ClassificationSource`
+- generates snapshots from final validated Master values
+- performs one parameterized INSERT into `dbo.LoggerEvent`
+- retrieves `LoggerEventID` using `OUTPUT INSERTED.LoggerEventID`
+- commits only after successful INSERT
+- rolls back on validation/database failure
+
+The INSERT writes the 24 implemented transaction columns and leaves
+`LoggerEventID` and `CreatedAt` to the database identity/default behavior.
+`SourceType` is written as `MANUAL` by this service.
+
+## Time Rule
+
+The frozen time rule is:
+
+- Start `HH:mm` greater than Stop `HH:mm`: same `ProductionDate`.
+- Start `HH:mm` less than Stop `HH:mm`: `StartDateTime` is on the next
+   calendar day.
+- Start `HH:mm` equal to Stop `HH:mm`: INVALID.
+- Equal times are never interpreted as a 24-hour event.
+- `DurationMin` must be a positive integer.
+
+Verified examples:
+
+- `2026-10-01`, `08:00 -> 08:15`, `DurationMin = 15`.
+- `2026-10-01`, `23:55 -> 00:05`, `StartDateTime = 2026-10-02 00:05`,
+   `DurationMin = 10`.
+- `10:00 -> 10:00`: INVALID.
+
+## Classification Rule
+
+SMDT is `StopId = 6`, `SubStopId = 20`.
+
+BD is `StopId = 7`, `SubStopId = 21`.
+
+- SMDT duration less than 10 minutes remains SMDT.
+- SMDT duration greater than or equal to 10 minutes becomes BD.
+- The conversion changes only the LoggerEvent transaction classification.
+- `Fitting_Cause` is never modified.
+- Non-SMDT classifications such as SETUP, CHGOVER, IDLE, and CLEAN are not
+   converted by this duration rule.
+
+## Classification Source
+
+The final precedence is:
+
+1. `DURATION_RULE` when submitted pre-duration SMDT 6/20 becomes BD 7/21
+    because `DurationMin >= 10`.
+2. `MANUAL` when no Cause classification supplied the classification, or
+    `classification_edited = true`.
+3. `CAUSE_SHORTCUT` when `CauseId` exists, `classification_edited = false`,
+    and submitted pre-duration StopId/SubStopId matches the Cause mapping.
+
+If `CauseId` exists, `classification_edited = false`, and the submitted
+pre-duration classification differs from the Cause mapping, SAVE rejects
+the inconsistent provenance.
+
+`classification_edited` is transient form/SAVE provenance only. It is not
+stored in `dbo.LoggerEvent` and is not an INSERT parameter or database
+column.
+
+## Snapshot Contract
+
+Snapshots are generated from the final validated live Master selections,
+not client display text.
+
+The snapshot fields are:
+
+- `MachineNameSnapshot`
+- `RelatedMachineSnapshot`
+- `SubMachineSnapshot`
+- `StopTypeSnapshot`
+- `SubStopTypeSnapshot`
+- `CauseSnapshot`
+
+Snapshots preserve historical display meaning after later Master edits.
+
+## Hierarchy Contract
+
+- `McId + McInstanceNo` is the downtime subject.
+- `RelatedMcId + RelatedMcInstanceNo` is the optional Related Main Machine.
+- `SubMcId + SubMcInstanceNo` is an optional physical SubMachine only.
+- `IsRelated = 1` proxy rows are resolution/configuration rows and must
+   never be stored as `LoggerEvent.SubMcId`.
+
+Validated final cases:
+
+- `F1 -> Mould1`: `DIRECT_SUB`
+- `F1 -> LINE1`: `RELATED_MAIN`
+- `F1 -> LINE1 -> Conv3`: `RELATED_SUB`
+- `F1 -> Robot2`: `RELATED_MAIN`
+
+## Live Validation Result
+
+Controlled Phase 3B live READ-ONLY validation PASSED.
+
+- `dbo.LoggerEvent` row count before validation: 0
+- `dbo.LoggerEvent` row count after validation: 0
+- No `save_logger_event()` call was made against the live database.
+- No INSERT, UPDATE, DELETE, schema modification, migration execution, or
+   database write occurred.
+
+Live validation confirmed:
+
+- LoggerEvent schema compatibility
+- constraints
+- defaults
+- foreign keys
+- Master loaders
+- hierarchy normalization
+- proxy rejection
+- time rules
+- midnight crossing
+- equal-time rejection
+- SMDT/BD duration behavior
+- Cause classification provenance
+- final snapshots
+
+## Test Status
+
+- Focused LOGGER tests: 23 passed
+- Full Python regression: 357 passed
+- Static diagnostics: no errors in the Phase 3B modified Python files
+
+## Phase 3B Exclusions
+
+Phase 3B did not implement:
+
+- LOGGER HTML/UI
+- navigation
+- frontend JavaScript
+- Phase 3C
+- PLC integration
+- PIS
+- CAL FROM LOG
+- EquipmentTimeEvent integration
+- ProductionData integration
+- ProductionLot integration
+- Master-data modification
+- new migration
+
+## Database State
+
+`dbo.LoggerEvent` exists.
+
+At final Phase 3B live validation it contained 0 rows. No test LoggerEvent
+rows were inserted.
+
+Phase 3B made no database schema or Master-data changes.
