@@ -898,6 +898,158 @@ means:
 - RelatedMc = Robot2
 - SubMc = NULL
 
+# 28. Phase 3A Completion Record
+
+## Phase 3A Status
+
+Phase 3A is COMPLETE.
+
+The LOGGER backend Master loading and hierarchy normalization/resolver layer
+exists and has been validated against the LIVE FittingMES Master data.
+
+## Implemented Backend Interfaces
+
+The Phase 3A backend interfaces are:
+
+- `read_main_machines(cursor)`
+- `read_sub_machines(cursor)`
+- `read_stop_types(cursor)`
+- `read_sub_stop_types(cursor)`
+- `read_causes(cursor)`
+- `read_logger_masters(cursor)`
+- `expand_main_machine(machine)`
+- `expand_sub_related_options(main_machines, sub_machines)`
+- `normalize_sub_related_selection(selection, main_machines, sub_machines)`
+- `suggest_cause(cause, selected_machine_id=None, sub_related_options=None)`
+
+## Live Schema Correction
+
+The live `dbo.Fitting_SubMachine` display column is `Equipment`.
+
+The Python-facing normalized field remains `SubMachine`.
+
+Therefore `read_sub_machines()` intentionally reads:
+
+`Equipment AS SubMachine`
+
+Do not change this SQL back to the nonexistent physical column named
+`SubMachine`.
+
+## Confirmed Live Master Loaders
+
+`read_main_machines`:
+
+- 7 active rows
+- Normalized fields: `McId`, `Machine`, `No`, `Relate`
+
+`read_sub_machines`:
+
+- 26 active rows
+- Normalized fields: `SubMcId`, `McId`, `SubMachine`, `No`, `IsRelated`
+
+`read_stop_types`:
+
+- 7 active rows
+- Normalized fields: `StopId`, `StopType`
+
+`read_sub_stop_types`:
+
+- 20 active rows
+- Normalized fields: `SubStopId`, `StopId`, `SubStopType`
+
+`read_causes`:
+
+- 18 active rows
+- Normalized fields: `CauseId`, `Cause`, `McId`, `SubMcId`, `StopId`,
+  `SubStopId`, `MEO`
+
+## Confirmed Live Instance Behavior
+
+The F Main Machine has `No = 14` and expands to `F1` through `F14`.
+
+The physical Conv SubMachine has `IsRelated = 0` and `No = 5`, and expands
+to `Conv1` through `Conv5`.
+
+The Robot proxy has `IsRelated = 1` and resolves through its `McId` to the
+Robot Main Machine. Instance generation uses `Fitting_MainMachine.No = 7`
+and produces `Robot1` through `Robot7`.
+
+The Robot proxy `SubMcId` is never emitted as physical `sub_mc_id`.
+
+## Confirmed Normalization
+
+`DIRECT_SUB` represents a physical SubMachine selection, for example
+`F1 -> Mould1`.
+
+`RELATED_MAIN` was validated with `F1 -> LINE1` and stores:
+
+- `RelatedMcId = LINE` Main Machine `McId`
+- `RelatedMcInstanceNo =` selected LINE instance
+- `SubMcId = NULL`
+- `SubMcInstanceNo = NULL`
+
+`RELATED_SUB` was validated with `F1 -> LINE1 -> Conv3` and stores:
+
+- `RelatedMcId = 5`
+- `RelatedMcInstanceNo = 1`
+- `SubMcId = 17`
+- `SubMcInstanceNo = 3`
+
+`SubMcId = 17` is the physical Conv row. The LINE proxy `SubMcId` is not
+stored as `SubMcId`.
+
+## Cause Semantics Confirmed
+
+All 18 active Cause rows load successfully.
+
+Cause remains a permissive shortcut. Do not introduce an ownership-equality
+validation rule between `Fitting_Cause.McId` and `Fitting_SubMachine.McId`.
+
+Machine-first Cause behavior preserves the already selected downtime
+Machine. Cause-first behavior may suggest an initial Machine when none has
+been selected. Final operator-confirmed values remain authoritative.
+
+## IsRelated Confirmed Live
+
+SubMcId 20 through 26 currently have `IsRelated = 1`. Physical rows such as
+Conv have `IsRelated = 0`.
+
+Runtime resolver behavior is Master-driven through `IsRelated`. Do not
+hard-code SubMcId 20 through 26 into application resolver logic.
+
+## Stop Classification Master Confirmation
+
+- SMDT: `StopId = 6`, `SubStopId = 20`
+- BD: `StopId = 7`, `SubStopId = 21`
+
+The duration conversion rule has not been implemented in Phase 3A.
+
+## Test Status
+
+- Focused LOGGER tests: 13 passed
+- Full Python unittest regression: 347 passed
+- Pytest was unavailable in the environment and was not installed
+- No regression failures were found
+
+## Not Implemented Yet
+
+Phase 3A did not implement:
+
+- LOGGER UI
+- LOGGER page route
+- final SAVE route
+- `LoggerEvent` INSERT
+- duration calculation/save pipeline
+- SMDT-to-BD conversion
+- PLC integration
+- PIS
+- CAL FROM LOG
+- `EquipmentTimeEvent` changes
+
+No database data was modified during Phase 3A live validation.
+
+Phase 3B must not start without separate approval.
+
 ---
 
 # 28. Phase 2 Live Status
