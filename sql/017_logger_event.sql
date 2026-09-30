@@ -18,25 +18,25 @@ BEGIN
         SubMcId int NULL,
         SubMcInstanceNo int NULL,
         StopId int NOT NULL,
-        SubStopId int NOT NULL,
+        SubStopId int NULL,
         CauseId int NULL,
         MEO char(1) NULL,
-        MachineNameSnapshot nvarchar(200) NOT NULL,
-        RelatedMachineSnapshot nvarchar(200) NULL,
-        SubMachineSnapshot nvarchar(200) NULL,
-        StopTypeSnapshot nvarchar(200) NOT NULL,
-        SubStopTypeSnapshot nvarchar(200) NOT NULL,
+        MachineNameSnapshot nvarchar(100) NOT NULL,
+        RelatedMachineSnapshot nvarchar(100) NULL,
+        SubMachineSnapshot nvarchar(100) NULL,
+        StopTypeSnapshot nvarchar(100) NOT NULL,
+        SubStopTypeSnapshot nvarchar(100) NULL,
         CauseSnapshot nvarchar(500) NULL,
-        Note nvarchar(2000) NULL,
+        Note nvarchar(1000) NULL,
         SourceType varchar(20) NOT NULL
             CONSTRAINT DF_LoggerEvent_SourceType DEFAULT ('MANUAL'),
         ClassificationSource varchar(20) NOT NULL,
         CreatedAt datetime2(3) NOT NULL
-            CONSTRAINT DF_LoggerEvent_CreatedAt DEFAULT (SYSUTCDATETIME()),
-        CreatedBy nvarchar(200) NOT NULL,
+            CONSTRAINT DF_LoggerEvent_CreatedAt DEFAULT (SYSDATETIME()),
+        CreatedBy nvarchar(200) NULL,
 
-        CONSTRAINT CK_LoggerEvent_DurationMin_NonNegative
-            CHECK (DurationMin >= 0),
+        CONSTRAINT CK_LoggerEvent_DurationMin_Positive
+            CHECK (DurationMin > 0),
         CONSTRAINT CK_LoggerEvent_McInstanceNo_Positive
             CHECK (McInstanceNo > 0),
         CONSTRAINT CK_LoggerEvent_RelatedMachine_InstancePair
@@ -55,7 +55,7 @@ BEGIN
             CHECK (ClassificationSource IN
                 ('CAUSE_SHORTCUT', 'MANUAL', 'DURATION_RULE')),
         CONSTRAINT CK_LoggerEvent_StartAfterStop
-            CHECK (StartDateTime >= StopDateTime)
+            CHECK (StartDateTime > StopDateTime)
     );
 
     ALTER TABLE dbo.LoggerEvent
@@ -78,8 +78,8 @@ BEGIN
             FOREIGN KEY (CauseId)
             REFERENCES dbo.Fitting_Cause (CauseId);
 
-    CREATE INDEX IX_LoggerEvent_ProductionDate_Start
-        ON dbo.LoggerEvent (ProductionDate, StartDateTime, LoggerEventID);
+    CREATE INDEX IX_LoggerEvent_ProductionDate_Stop
+        ON dbo.LoggerEvent (ProductionDate, StopDateTime, LoggerEventID);
 
     CREATE INDEX IX_LoggerEvent_Machine
         ON dbo.LoggerEvent (McId, McInstanceNo, StopDateTime);

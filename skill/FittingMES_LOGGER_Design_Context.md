@@ -615,7 +615,7 @@ means StartDateTime is on the next calendar date and duration is 10 minutes.
 
 ---
 
-# 18. Proposed LoggerEvent Transaction Fields
+# 18. LoggerEvent Transaction Fields
 
 Current design:
 
@@ -900,30 +900,105 @@ means:
 
 ---
 
-# 28. Phase 2 Preparation Status
+# 28. Phase 2 Live Status
 
-Phase 1 Master configuration is complete. `LoggerEvent` does not yet
-exist in the live database.
+Phase 1 Master configuration is complete and live. Migration
+`016_submachine_is_related.sql` was executed successfully.
 
-The proposed Phase 2 migration is `017_logger_event.sql`. It is prepared
-for review only and has not been executed. It must store final
-operator-confirmed hierarchy values, including the downtime Main Machine,
-optional Related Main Machine, and optional physical SubMachine. An
-`IsRelated = 1` proxy must never be stored in `LoggerEvent.SubMcId`.
+Phase 2 is complete and live. Migration `017_logger_event.sql` was
+executed successfully through the existing FittingMES application
+database connection using `app.database.get_connection()`.
+
+`dbo.LoggerEvent` exists in the live database and contained zero rows at
+the time of verification. Its live schema, primary key, CHECK
+constraints, DEFAULT constraints, six foreign keys, and indexes were
+verified successfully.
+
+## 28.1 Live LoggerEvent Columns
+
+- `LoggerEventID bigint IDENTITY(1,1) NOT NULL`
+- `ProductionDate date NOT NULL`
+- `StopDateTime datetime2(0) NOT NULL`
+- `StartDateTime datetime2(0) NOT NULL`
+- `DurationMin int NOT NULL`
+- `McId int NOT NULL`
+- `McInstanceNo int NOT NULL`
+- `RelatedMcId int NULL`
+- `RelatedMcInstanceNo int NULL`
+- `SubMcId int NULL`
+- `SubMcInstanceNo int NULL`
+- `StopId int NOT NULL`
+- `SubStopId int NULL`
+- `CauseId int NULL`
+- `MEO char(1) NULL`
+- `MachineNameSnapshot nvarchar(100) NOT NULL`
+- `RelatedMachineSnapshot nvarchar(100) NULL`
+- `SubMachineSnapshot nvarchar(100) NULL`
+- `StopTypeSnapshot nvarchar(100) NOT NULL`
+- `SubStopTypeSnapshot nvarchar(100) NULL`
+- `CauseSnapshot nvarchar(500) NULL`
+- `Note nvarchar(1000) NULL`
+- `SourceType varchar(20) NOT NULL DEFAULT MANUAL`
+- `ClassificationSource varchar(20) NOT NULL`
+- `CreatedAt datetime2(3) NOT NULL DEFAULT SYSDATETIME()`
+- `CreatedBy nvarchar(200) NULL`
+
+## 28.2 Live LoggerEvent Rules
+
+The verified live CHECK rules are:
+
+- `DurationMin > 0`
+- `McInstanceNo > 0`
+- `RelatedMcId` and `RelatedMcInstanceNo` are both NULL or both NOT NULL.
+- `SubMcId` and `SubMcInstanceNo` are both NULL or both NOT NULL.
+- Related and physical SubMachine instance numbers are positive when present.
+- `MEO` is NULL, `M`, `E`, or `O`.
+- `SourceType` is `MANUAL`, `PLC`, or `SYSTEM`.
+- `ClassificationSource` is `CAUSE_SHORTCUT`, `MANUAL`, or `DURATION_RULE`.
+- `StartDateTime > StopDateTime`.
+
+The verified live foreign keys are:
+
+- `McId -> Fitting_MainMachine.McId`
+- `RelatedMcId -> Fitting_MainMachine.McId`
+- `SubMcId -> Fitting_SubMachine.SubMcId`
+- `StopId -> Fitting_StopType.StopId`
+- `SubStopId -> Fitting_SubStopType.SubStopId`
+- `CauseId -> Fitting_Cause.CauseId`
+
+The verified live indexes are:
+
+- `PK_LoggerEvent`
+- `IX_LoggerEvent_ProductionDate_Stop`
+- `IX_LoggerEvent_Machine`
+- `IX_LoggerEvent_RelatedMachine`
+- `IX_LoggerEvent_Cause`
+
+`IX_LoggerEvent_RelatedMachine` is filtered to `RelatedMcId IS NOT NULL`.
+`IX_LoggerEvent_Cause` is filtered to `CauseId IS NOT NULL`.
+
+## 28.3 Phase 2 Boundaries
+
+No LoggerEvent test rows were inserted. No LOGGER backend or UI
+implementation has started.
+
+PLC integration, PIS integration, and CAL FROM LOG are not part of this
+phase. `EquipmentTimeEvent` remains separate and unchanged.
+
+The application must preserve the following rule during later LOGGER
+implementation:
+
+> An `IsRelated = 1` `Fitting_SubMachine` proxy must never be saved as
+> `LoggerEvent.SubMcId`. `LoggerEvent.SubMcId` is for a physical
+> SubMachine only.
+
+This is enforced by LOGGER application normalization and validation, not
+by an additional database constraint.
 
 # 29. Implementation Gate
 
-Reading/validation and implementation are different phases.
+Phase 2 database execution is complete. LOGGER application
+implementation remains a separate approved phase.
 
-Unless the user explicitly approves implementation, remain in DESIGN / REVIEW mode.
-
-Do not:
-
-- modify SQL
-- create migrations
-- modify application code
-- modify Master data
-- implement LOGGER
-- implement PLC/PIS behavior
-
-When implementation is approved later, re-read this file first and follow it as the LOGGER design source of truth.
+When implementation is approved later, re-read this file first and
+follow it as the LOGGER design source of truth.
