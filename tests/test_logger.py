@@ -10,6 +10,7 @@ from app.logger import (
     expand_main_machine,
     expand_sub_related_options,
     normalize_sub_related_selection,
+    read_logger_events,
     read_logger_masters,
     save_logger_event,
     suggest_cause,
@@ -21,8 +22,8 @@ class QueueCursor:
         self.result_sets = iter(result_sets)
         self.queries = []
 
-    def execute(self, query):
-        self.queries.append(query)
+    def execute(self, query, *params):
+        self.queries.append((query, params))
 
     def fetchall(self):
         return next(self.result_sets)
@@ -206,7 +207,21 @@ class LoggerResolverTests(unittest.TestCase):
         self.assertEqual(masters.stop_types[0]["StopType"], "RUN")
         self.assertEqual(masters.sub_stop_types[0]["StopId"], 1)
         self.assertEqual(masters.causes[0]["SubMcId"], 2)
-        self.assertTrue(all("IsActive=1" in query for query in cursor.queries))
+        self.assertTrue(all("IsActive=1" in query for query, _ in cursor.queries))
+
+    def test_read_logger_events_filters_and_orders_with_snapshots(self):
+        cursor = QueueCursor([[
+            (2, "2026-10-01", "stop", "start", 10, "F2", "LINE1", None,
+             "Cause", "RUN", None, "M", "note"),
+        ]])
+        events = read_logger_events(cursor, "2026-10-01")
+        query, params = cursor.queries[0]
+        self.assertIn("WHERE ProductionDate=?", query)
+        self.assertIn("ORDER BY StopDateTime DESC, LoggerEventID DESC", query)
+        self.assertEqual(params, ("2026-10-01",))
+        self.assertEqual(events[0]["MachineNameSnapshot"], "F2")
+        self.assertEqual(events[0]["RelatedMachineSnapshot"], "LINE1")
+        self.assertIsNone(events[0]["SubMachineSnapshot"])
 
     def test_save_direct_sub_builds_snapshots_and_returns_identity(self):
         connection = SaveConnection(event_id=501)

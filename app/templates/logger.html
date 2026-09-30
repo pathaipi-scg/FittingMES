@@ -1,0 +1,160 @@
+{% extends 'api_base.html' %}
+{% block content %}
+<style>
+.logger-form{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:6px;align-items:end}
+.logger-form label{display:grid;gap:2px;font-weight:600}.logger-form input,.logger-form select{width:100%;height:24px}
+.logger-wide{grid-column:span 2}.logger-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap}.logger-duration{font-variant-numeric:tabular-nums;font-weight:600}.logger-help{margin:4px 0;color:#718096}
+.logger-error{background:#fff0ef;color:#9d2525;padding:4px;margin-bottom:5px}.logger-success{background:#e7f4eb;color:#25643b;padding:4px;margin-bottom:5px}
+.logger-history{margin-top:8px}.logger-history table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}.logger-history th,.logger-history td{padding:3px 4px;border:1px solid #c7d2df;text-align:left;vertical-align:top}.logger-history th{background:#eaf0f6}.logger-history td:nth-child(7),.logger-history td:nth-child(8),.logger-history td:nth-child(9){white-space:nowrap}
+@media(max-width:760px){.logger-form{grid-template-columns:1fr 1fr}.logger-wide{grid-column:span 2}}
+@media(max-width:430px){.logger-form{grid-template-columns:1fr}.logger-wide{grid-column:auto}}
+</style>
+<h1>LOGGER</h1>
+{% if error %}<div class="logger-error" role="alert">{{ error }}</div>{% endif %}
+{% if saved %}<div class="logger-success" role="status">LOGGER entry saved.</div>{% endif %}
+<section class="panel" aria-label="LOGGER entry">
+<form id="logger-form" class="logger-form" method="post" action="/logger/save">
+<label>Production Date<input name="production_date" type="date" value="{{ form.get('production_date', production_date) }}" required></label>
+<label>Stop<input name="stop" id="logger-stop" inputmode="numeric" pattern="(?:[01][0-9]|2[0-3]):[0-5][0-9]" placeholder="HH:mm" maxlength="5" value="{{ form.get('stop', '') }}" required></label>
+<label>Start<input name="start" id="logger-start" inputmode="numeric" pattern="(?:[01][0-9]|2[0-3]):[0-5][0-9]" placeholder="HH:mm" maxlength="5" value="{{ form.get('start', '') }}" required></label>
+<div class="logger-actions"><span>Duration</span><output id="logger-duration" class="logger-duration">-</output><span id="logger-time-message" class="logger-error" role="alert" hidden></span></div>
+<label>Main Machine<select id="logger-machine" name="mc_id" required><option value="">Select machine</option>{% for item in main_instances %}<option value="{{ item.mc_id }}" data-instance="{{ item.mc_instance_no }}" {% if form.get('mc_id')|string == item.mc_id|string and form.get('mc_instance_no')|string == item.mc_instance_no|string %}selected{% endif %}>{{ item.display_label }}</option>{% endfor %}</select></label>
+<input type="hidden" id="logger-machine-instance" name="mc_instance_no" value="{{ form.get('mc_instance_no', '') }}">
+<label class="logger-wide">Sub / Related M/C<select id="logger-sub-related" required><option value="">Select Sub / Related M/C</option>{% for item in sub_related_options %}<option value="{{ item|tojson|forceescape }}">{{ item.display_label }}</option>{% endfor %}</select></label>
+<input type="hidden" id="logger-sub-selection" name="sub_related_selection" value="{{ form.get('sub_related_selection', '') }}">
+<input type="hidden" name="related_mc_id" id="logger-related-id"><input type="hidden" name="related_mc_instance_no" id="logger-related-instance">
+<input type="hidden" name="sub_mc_id" id="logger-sub-id"><input type="hidden" name="sub_mc_instance_no" id="logger-sub-instance">
+<label>Cause<select id="logger-cause" name="cause_id"><option value="">No Cause</option>{% for cause in causes %}<option value="{{ cause.CauseId }}" {% if form.get('cause_id')|string == cause.CauseId|string %}selected{% endif %}>{{ cause.Cause }}</option>{% endfor %}</select></label>
+<label>Type<select id="logger-stop-type" name="stop_id" required><option value="">Select Type</option>{% for item in stop_types %}<option value="{{ item.StopId }}" {% if form.get('stop_id')|string == item.StopId|string %}selected{% endif %}>{{ item.StopType }}</option>{% endfor %}</select></label>
+<label>Sub Type<select id="logger-sub-stop-type" name="sub_stop_id"><option value="">No Sub Type</option></select></label>
+<label>M/E/O<select name="meo"><option value="">-</option>{% for value in ('M','E','O') %}<option value="{{ value }}" {% if form.get('meo') == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label>
+<label class="logger-wide">Note<input name="note" maxlength="1000" value="{{ form.get('note', '') }}"></label>
+<input type="hidden" id="logger-classification-edited" name="classification_edited" value="{{ form.get('classification_edited', 'false') }}">
+<div class="logger-actions logger-wide"><button class="primary" id="logger-save" type="submit">SAVE</button><span id="logger-status" role="status" aria-live="polite"></span></div>
+</form>
+<p class="logger-help">Duration is informational. LOGGER calculates and validates the saved time and classification on the server.</p>
+</section>
+<section class="panel logger-history" aria-label="LOGGER saved entries">
+<h2>LOGGER ENTRIES</h2>
+{% if logger_events %}
+<div class="table-scroll"><table><thead><tr><th>Machine</th><th>Sub / Related M/C</th><th>Cause</th><th>Type</th><th>Sub Type</th><th>M/E/O</th><th>Stop</th><th>Start</th><th>Duration</th><th>Note</th></tr></thead><tbody>
+{% for event in logger_events %}
+{% set hierarchy = event.RelatedMachineSnapshot ~ ' / ' ~ event.SubMachineSnapshot if event.RelatedMachineSnapshot and event.SubMachineSnapshot else event.RelatedMachineSnapshot if event.RelatedMachineSnapshot else event.SubMachineSnapshot if event.SubMachineSnapshot else '-' %}
+<tr><td>{{ event.MachineNameSnapshot or '-' }}</td><td>{{ hierarchy }}</td><td>{{ event.CauseSnapshot or '-' }}</td><td>{{ event.StopTypeSnapshot or '-' }}</td><td>{{ event.SubStopTypeSnapshot or '-' }}</td><td>{{ event.MEO or '-' }}</td><td>{{ event.StopDateTime.strftime('%Y-%m-%d %H:%M') if event.StopDateTime else '-' }}</td><td>{% if event.StartDateTime %}{{ event.StartDateTime.strftime('%Y-%m-%d %H:%M') }}{% else %}-{% endif %}</td><td>{{ event.DurationMin if event.DurationMin is not none else '-' }}{% if event.DurationMin is not none %} min{% endif %}</td><td>{{ event.Note or '-' }}</td></tr>
+{% endfor %}
+</tbody></table></div>
+{% else %}<p>No LOGGER entries for this Production Date.</p>{% endif %}
+</section>
+<script type="application/json" id="logger-main-data">{{ main_instances_json|safe }}</script>
+<script type="application/json" id="logger-options-data">{{ sub_related_options_json|safe }}</script>
+<script type="application/json" id="logger-stop-data">{{ stop_types_json|safe }}</script>
+<script type="application/json" id="logger-sub-stop-data">{{ sub_stop_types_json|safe }}</script>
+<script type="application/json" id="logger-causes-data">{{ causes_json|safe }}</script>
+<script>
+function chooseUniqueCandidate(candidates) {
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+function causeSubRelatedCandidates(options, selectedCause) {
+  return options.filter(item =>
+    (selectedCause.SubMcId != null && item.sub_mc_id === selectedCause.SubMcId) ||
+    (selectedCause.McId != null && item.related_mc_id === selectedCause.McId));
+}
+
+function classificationAfterCause() { return 'false'; }
+function classificationAfterManualChange() { return 'true'; }
+function subTypeCandidates(subTypes, stopId) {
+  return subTypes.filter(item => String(item.StopId) === String(stopId));
+}
+function previewDuration(stop, start) {
+  if (!/^\d{2}:\d{2}$/.test(stop) || !/^\d{2}:\d{2}$/.test(start)) return null;
+  const [sh, sm] = stop.split(':').map(Number), [eh, em] = start.split(':').map(Number);
+  const minutes = (eh * 60 + em) - (sh * 60 + sm);
+  if (minutes === 0) return { minutes: null, equal: true };
+  return { minutes: minutes > 0 ? minutes : minutes + 1440, equal: false };
+}
+
+(() => {
+  const form = document.getElementById('logger-form');
+  if (!form) return;
+  const machine = document.getElementById('logger-machine');
+  const machineInstance = document.getElementById('logger-machine-instance');
+  const subRelated = document.getElementById('logger-sub-related');
+  const subSelection = document.getElementById('logger-sub-selection');
+  const cause = document.getElementById('logger-cause');
+  const type = document.getElementById('logger-stop-type');
+  const subType = document.getElementById('logger-sub-stop-type');
+  const classificationEdited = document.getElementById('logger-classification-edited');
+  const options = JSON.parse(document.getElementById('logger-options-data').textContent);
+  const subTypes = JSON.parse(document.getElementById('logger-sub-stop-data').textContent);
+  const causes = JSON.parse(document.getElementById('logger-causes-data').textContent);
+  const duration = document.getElementById('logger-duration'), timeMessage = document.getElementById('logger-time-message');
+  const hidden = {related_mc_id:document.getElementById('logger-related-id'),related_mc_instance_no:document.getElementById('logger-related-instance'),sub_mc_id:document.getElementById('logger-sub-id'),sub_mc_instance_no:document.getElementById('logger-sub-instance')};
+  const selectedForm = {{ form|tojson }};
+  function optionKey(item) { return JSON.stringify(item); }
+  function setMachineInstance() { machineInstance.value = machine.selectedOptions[0]?.dataset.instance || ''; }
+  function applySelection(item) {
+    subSelection.value = item ? optionKey(item) : '';
+    for (const key of Object.keys(hidden)) hidden[key].value = item?.[key] ?? '';
+  }
+  function rebuildOptions(selected) {
+    subRelated.replaceChildren(new Option('Select Sub / Related M/C',''));
+    options.forEach(item => { const option = new Option(item.display_label, optionKey(item)); subRelated.add(option); });
+    if (selected) { subRelated.value = optionKey(selected); applySelection(selected); }
+  }
+  function rebuildSubTypes(selected) {
+    subType.replaceChildren(new Option('No Sub Type',''));
+    subTypeCandidates(subTypes, type.value).forEach(item => subType.add(new Option(item.SubStopType, item.SubStopId)));
+    if (selected != null) subType.value = String(selected);
+  }
+  function setClassificationEdited() { classificationEdited.value = 'true'; }
+  function applyCause() {
+    const selectedCause = causes.find(item => String(item.CauseId) === String(cause.value));
+    if (!selectedCause) return;
+    const selectedMachine = machine.value ? Number(machine.value) : null;
+    const machineCandidates = Array.from(machine.options).filter(option =>
+      String(option.value) === String(selectedCause.McId));
+    const machineSuggestion = chooseUniqueCandidate(machineCandidates);
+    const subRelatedSuggestion = chooseUniqueCandidate(
+      causeSubRelatedCandidates(options, selectedCause));
+    const suggestion = {
+      machine_id: selectedMachine ?? selectedCause.McId,
+      sub_related_option: subRelatedSuggestion
+    };
+    if (!selectedMachine && machineSuggestion) {
+      machine.value = machineSuggestion.value;
+      setMachineInstance();
+    }
+    if (suggestion.sub_related_option) rebuildOptions(suggestion.sub_related_option);
+    type.value = selectedCause.StopId ?? '';
+    rebuildSubTypes(selectedCause.SubStopId);
+    classificationEdited.value = classificationAfterCause();
+    const meo = form.elements.meo; if (meo) meo.value = selectedCause.MEO || '';
+  }
+  function updateDuration() {
+    const stop = document.getElementById('logger-stop').value, start = document.getElementById('logger-start').value;
+    timeMessage.hidden = true; duration.value = '-';
+    const preview = previewDuration(stop, start);
+    if (!preview) return;
+    if (preview.equal) { timeMessage.textContent = 'Stop and Start times must differ.'; timeMessage.hidden = false; return; }
+    duration.value = preview.minutes + ' min';
+  }
+  machine.addEventListener('change', () => { setMachineInstance(); });
+  subRelated.addEventListener('change', () => applySelection(subRelated.value ? JSON.parse(subRelated.value) : null));
+  cause.addEventListener('change', applyCause);
+  type.addEventListener('change', () => { rebuildSubTypes(); classificationEdited.value = classificationAfterManualChange(); });
+  subType.addEventListener('change', () => { classificationEdited.value = classificationAfterManualChange(); });
+  form.querySelectorAll('#logger-stop,#logger-start').forEach(input => input.addEventListener('input', updateDuration));
+  form.addEventListener('submit', event => {
+    updateDuration();
+    if (timeMessage.hidden === false) { event.preventDefault(); return; }
+    if (!subRelated.value) { event.preventDefault(); subRelated.setCustomValidity('Select a Sub / Related M/C.'); subRelated.reportValidity(); return; }
+    subRelated.setCustomValidity('');
+    if (form.dataset.busy === 'true') { event.preventDefault(); return; }
+    form.dataset.busy = 'true'; document.getElementById('logger-save').disabled = true; document.getElementById('logger-status').textContent = 'Saving LOGGER entry...';
+  });
+  setMachineInstance(); rebuildOptions(selectedForm.sub_related_selection ? JSON.parse(selectedForm.sub_related_selection) : null);
+  rebuildSubTypes(selectedForm.sub_stop_id || null); updateDuration();
+})();
+</script>
+{% endblock %}

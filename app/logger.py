@@ -396,6 +396,24 @@ def read_logger_masters(cursor):
     )
 
 
+def read_logger_events(cursor, production_date):
+    cursor.execute("""
+        SELECT LoggerEventID, ProductionDate, StopDateTime, StartDateTime,
+               DurationMin, MachineNameSnapshot, RelatedMachineSnapshot,
+               SubMachineSnapshot, CauseSnapshot, StopTypeSnapshot,
+               SubStopTypeSnapshot, MEO, Note
+        FROM dbo.LoggerEvent
+        WHERE ProductionDate=?
+        ORDER BY StopDateTime DESC, LoggerEventID DESC
+    """, production_date)
+    return _rows(cursor, (
+        "LoggerEventID", "ProductionDate", "StopDateTime", "StartDateTime",
+        "DurationMin", "MachineNameSnapshot", "RelatedMachineSnapshot",
+        "SubMachineSnapshot", "CauseSnapshot", "StopTypeSnapshot",
+        "SubStopTypeSnapshot", "MEO", "Note",
+    ))
+
+
 def expand_main_machine(machine):
     return [
         {"mc_id": machine["McId"], "mc_instance_no": instance_no,

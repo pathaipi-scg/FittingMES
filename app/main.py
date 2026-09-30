@@ -45,9 +45,91 @@ from app.wet_reject import build_wet_reject_context, save_wet_reject, save_wet_r
 from app.print_prod import read_print_prod_context
 from app.browser_pdf import (PdfGenerationError, generate_print_prod_pdf,
                              finish_pdf_process)
+from app.logger import (LoggerValidationError, read_logger_events,
+                        read_logger_masters, save_logger_event)
+from app.logger_page import (cause_suggestion, logger_form_input,
+                             logger_page_context, normalize_form_selection)
 
 app = FastAPI(title="FittingMES", version="0.1.0")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+
+
+def logger_load_context(production_date, saved=False, error=None, form=None):
+    with closing(get_connection()) as conn:
+        cursor = conn.cursor()
+        masters = read_logger_masters(cursor)
+        events = read_logger_events(cursor, production_date)
+    return logger_page_context(masters, production_date, logger_events=events, saved=saved,
+                               error=error, form=form)
+
+
+@app.get('/logger', response_class=HTMLResponse)
+def logger_page(request: Request, production_date: date | None = None,
+                saved: bool = False):
+    production_date = production_date or date.today()
+    status = 200
+    try:
+        context = logger_load_context(production_date, saved=saved)
+    except ValueError as exc:
+        context = dict(page_title='LOGGER', active_tab='logger',
+                       production_date=production_date, error=str(exc), saved=False,
+                       logger_events=[])
+        status = 400
+    except Exception:
+        context = dict(page_title='LOGGER', active_tab='logger',
+                       production_date=production_date,
+                       error='Unable to load LOGGER data. Please retry.', saved=False,
+                       logger_events=[])
+        status = 503
+    return templates.TemplateResponse(request=request, name='logger.html',
+                                      context=context, status_code=status,
+                                      headers={'Cache-Control': 'no-store'})
+
+
+def save_logger_form(form):
+    data, selection = logger_form_input(form)
+    with closing(get_connection()) as conn:
+        masters = read_logger_masters(conn.cursor())
+        normalized = normalize_form_selection(selection, masters)
+        data = data.__class__(
+            **{**data.__dict__,
+               'related_mc_id': normalized['related_mc_id'],
+               'related_mc_instance_no': normalized['related_mc_instance_no'],
+               'sub_mc_id': normalized['sub_mc_id'],
+               'sub_mc_instance_no': normalized['sub_mc_instance_no']})
+        save_logger_event(conn, data, masters)
+    return data.production_date
+
+
+@app.post('/logger/save', response_class=HTMLResponse)
+async def save_logger_route(request: Request):
+    form = await request.form()
+    form_values = dict(form)
+    try:
+        production_date = await run_in_threadpool(save_logger_form, form_values)
+        return RedirectResponse(f'/logger?production_date={production_date}&saved=true',
+                                status_code=303)
+    except LoggerValidationError as exc:
+        try:
+            selected_date = date.fromisoformat(str(form_values.get('production_date', '')))
+        except ValueError:
+            selected_date = date.today()
+        try:
+            context = await run_in_threadpool(
+                logger_load_context, selected_date, False,
+                f'{exc.code}: {exc}', form_values)
+        except Exception:
+            context = dict(page_title='LOGGER', active_tab='logger',
+                           production_date=selected_date, error=str(exc),
+                           saved=False, form=form_values, logger_events=[])
+        return templates.TemplateResponse(request=request, name='logger.html',
+                                          context=context, status_code=400,
+                                          headers={'Cache-Control': 'no-store'})
+    except ValueError as exc:
+        return JSONResponse({'error': str(exc)}, status_code=400)
+    except Exception:
+        return JSONResponse({'error': 'Unable to save LOGGER entry. Please retry.'},
+                            status_code=503)
 
 
 def read_plans(cursor, production_date):

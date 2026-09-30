@@ -898,6 +898,101 @@ means:
 - RelatedMc = Robot2
 - SubMc = NULL
 
+---
+
+# 28. Phase 3C Implementation and Live Verification
+
+Phase 3C operator UI is implemented.
+
+The LOGGER page provides:
+
+- `GET /logger` with active LOGGER Master data and date-filtered
+   `LoggerEvent` history.
+- `POST /logger/save` through the Phase 3B `save_logger_event` service.
+- Successful SAVE redirect back to the selected `ProductionDate`.
+- A read-only `LOGGER ENTRIES` table below the entry form.
+
+The history query filters by `ProductionDate` and orders by:
+
+`StopDateTime DESC, LoggerEventID DESC`
+
+The operator table uses stored LoggerEvent snapshot values rather than
+reconstructing historical names from current Master descriptions. It shows
+Machine, Sub / Related M/C, Cause, Type, Sub Type, M/E/O, Stop, Start,
+Duration, and Note.
+
+Stored snapshot display rules are:
+
+- `RelatedMachineSnapshot IS NULL` and `SubMachineSnapshot IS NOT NULL` →
+   physical Sub / Related M/C display.
+- `RelatedMachineSnapshot IS NOT NULL` and `SubMachineSnapshot IS NULL` →
+   Related Main Machine display.
+- Both snapshots present → Related Main Machine / physical SubMachine.
+- Both snapshots NULL → `-`.
+
+Cause-first auto-selection occurs only when exactly one valid candidate
+exists. Multiple Main Machine or Sub / Related M/C instances remain
+unresolved for operator selection. Machine-first Cause selection preserves
+the already selected downtime Machine.
+
+`classification_edited` remains transient form provenance and is not stored
+as a LoggerEvent column. Browser Duration is informational only; server-side
+datetime, duration, classification, and persistence logic remain
+authoritative. Equal Stop/Start is invalid. No UI-side SMDT-to-BD conversion
+exists.
+
+## Phase 3C Live End-to-End Verification
+
+Live manual SAVE and read-back verification was completed for
+`ProductionDate = 2026-10-01`.
+
+### DIRECT_SUB — 15:00
+
+- `LoggerEventID = 2`
+- Display: `F1 / Mould1`
+- `McId = 7`, `McInstanceNo = 1`
+- `RelatedMcId = NULL`, `RelatedMcInstanceNo = NULL`
+- `SubMcId = 3`, `SubMcInstanceNo = 1`
+- Stored SubMachine `IsRelated = 0`
+- Duration: `10` minutes
+- Final Type: `BD`
+- `ClassificationSource = DURATION_RULE`
+
+### RELATED_MAIN — 15:20
+
+- `LoggerEventID = 3`
+- Display: `F1 / LINE1`
+- `McId = 7`, `McInstanceNo = 1`
+- `RelatedMcId = 5`, `RelatedMcInstanceNo = 1`
+- `SubMcId = NULL`, `SubMcInstanceNo = NULL`
+- Duration: `9` minutes
+- Final Type: `SMDT`
+- `ClassificationSource = CAUSE_SHORTCUT`
+- The LINE proxy `SubMcId` was not stored in `LoggerEvent.SubMcId`.
+
+### RELATED_SUB — 15:30
+
+- `LoggerEventID = 4`
+- Display: `F1 / LINE1 / Conv1`
+- `McId = 7`, `McInstanceNo = 1`
+- `RelatedMcId = 5`, `RelatedMcInstanceNo = 1`
+- `SubMcId = 17`, `SubMcInstanceNo = 1`
+- Stored SubMachine `IsRelated = 0`
+- Duration: `5` minutes
+- Final Type: `SMDT`
+- `ClassificationSource = CAUSE_SHORTCUT`
+- The LINE proxy `SubMcId` was not stored in `LoggerEvent.SubMcId`.
+
+At verification time, no LoggerEvent row stored an `IsRelated = 1` proxy
+as `LoggerEvent.SubMcId`. The total LoggerEvent row count was `4`.
+
+The earlier empty LOGGER ENTRIES display was caused by a stale running
+Uvicorn process. No source correction was required for that issue. Restarting
+`FittingMES.bat` loaded the current `app.main` implementation and resolved
+the display problem.
+
+The Phase 3C live SAVE and read-back path has been verified end-to-end.
+
 # 28. Phase 3A Completion Record
 
 ## Phase 3A Status
