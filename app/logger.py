@@ -152,6 +152,12 @@ def _validate_logger_masters(data, masters):
     if mc_instance_no > int(machine["No"]):
         _validation_error("INVALID_MACHINE_INSTANCE", "McInstanceNo is outside the active Main Machine range.")
 
+    stop_id = _positive_int(data.stop_id, "INVALID_STOP", "StopId")
+    stop_type = _master_by_id(masters.stop_types, "StopId", stop_id)
+    if stop_type is None:
+        _validation_error("INVALID_STOP", "StopId is not an active Stop Type.")
+    machine_level = stop_type["StopType"] in {"SETUP", "CHGOVER", "CLEAN", "IDLE"}
+
     _validate_pair(data.related_mc_id, data.related_mc_instance_no,
                    "INVALID_RELATED_MACHINE", "Related Main Machine")
     related_mc_id = _optional_int(data.related_mc_id, "INVALID_RELATED_MACHINE", "RelatedMcId")
@@ -181,9 +187,11 @@ def _validate_logger_masters(data, masters):
         if sub_instance_no > int(sub_machine["No"]):
             _validation_error("INVALID_SUBMACHINE_INSTANCE", "SubMcInstanceNo is outside the physical SubMachine range.")
 
-    if related_mc_id is None and sub_mc_id is None:
+    if related_mc_id is None and sub_mc_id is None and not machine_level:
         _validation_error("INVALID_HIERARCHY", "A final physical or Related M/C selection is required.")
-    if related_mc_id is None and sub_mc_id is not None:
+    if related_mc_id is None and sub_mc_id is None:
+        kind = None
+    elif related_mc_id is None and sub_mc_id is not None:
         kind = DIRECT_SUB
     elif related_mc_id is not None and sub_mc_id is None:
         kind = RELATED_MAIN
@@ -192,10 +200,6 @@ def _validate_logger_masters(data, masters):
         if sub_machine["McId"] != related_mc_id:
             _validation_error("INVALID_HIERARCHY", "The physical SubMachine is not owned by the Related Main Machine.")
 
-    stop_id = _positive_int(data.stop_id, "INVALID_STOP", "StopId")
-    stop_type = _master_by_id(masters.stop_types, "StopId", stop_id)
-    if stop_type is None:
-        _validation_error("INVALID_STOP", "StopId is not an active Stop Type.")
     sub_stop_id = _optional_int(data.sub_stop_id, "INVALID_SUBSTOP", "SubStopId")
     sub_stop_type = None
     if sub_stop_id is not None:
@@ -572,6 +576,17 @@ def expand_sub_related_options(main_machines, sub_machines):
 
 
 def normalize_sub_related_selection(selection, main_machines, sub_machines):
+    if not selection:
+        return {
+            "kind": None,
+            "related_mc_id": None,
+            "related_mc_instance_no": None,
+            "sub_mc_id": None,
+            "sub_mc_instance_no": None,
+            "display_label": "-",
+            "related_machine_snapshot": None,
+            "sub_machine_snapshot": None,
+        }
     options = expand_sub_related_options(main_machines, sub_machines)
     for option in options:
         if all(selection.get(key) == option[key] for key in (

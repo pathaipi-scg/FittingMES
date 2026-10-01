@@ -97,6 +97,9 @@ class LoggerResolverTests(unittest.TestCase):
         self.stop_types = [
             {"StopId": 1, "StopType": "RUN"},
             {"StopId": 2, "StopType": "SETUP"},
+            {"StopId": 3, "StopType": "CHGOVER"},
+            {"StopId": 4, "StopType": "CLEAN"},
+            {"StopId": 5, "StopType": "IDLE"},
             {"StopId": 6, "StopType": "SMDT"},
             {"StopId": 7, "StopType": "BD"},
         ]
@@ -299,6 +302,34 @@ class LoggerResolverTests(unittest.TestCase):
         self.assertNotIn("F1", query)
         self.assertEqual(params[14:20], ("F1", None, "Mould1", "RUN", "--", None))
 
+    def test_save_machine_level_types_without_target(self):
+        for stop_id, stop_type in ((2, "SETUP"), (3, "CHGOVER"), (4, "CLEAN"), (5, "IDLE")):
+            with self.subTest(stop_type=stop_type):
+                connection = SaveConnection()
+                save_logger_event(connection, self.save_input(
+                    stop_id=stop_id, sub_stop_id=None,
+                    sub_mc_id=None, sub_mc_instance_no=None,
+                    related_mc_id=None, related_mc_instance_no=None), self.masters())
+                params = connection.cursor_instance.inserted[0][1]
+                self.assertEqual(params[4:13], (7, 1, None, None, None, None,
+                                                stop_id, None, None))
+                self.assertEqual(params[3], 15)
+
+    def test_machine_level_overlap_still_uses_primary_machine_identity(self):
+        existing = self.overlap_row("08:00", "08:15", stop_type="SETUP", cause=None)
+        with self.assertRaisesRegex(LoggerValidationError, "overlaps"):
+            save_logger_event(SaveConnection(overlap_row=existing), self.save_input(
+                stop_id=2, sub_stop_id=None, sub_mc_id=None,
+                sub_mc_instance_no=None, related_mc_id=None,
+                related_mc_instance_no=None), self.masters())
+
+    def test_logger_template_disables_target_requirement_for_machine_level_types(self):
+        from pathlib import Path
+        template = Path("app/templates/logger.html").read_text(encoding="utf-8")
+        self.assertIn("subRelated.required = !machineLevel", template)
+        self.assertIn("subRelated.disabled = machineLevel", template)
+        self.assertIn("!isMachineLevel(type.value) && !subRelated.value", template)
+
     def test_save_related_main_and_related_sub(self):
         related_main = save_logger_event(
             SaveConnection(), self.save_input(related_mc_id=5, related_mc_instance_no=1,
@@ -373,7 +404,12 @@ class LoggerResolverTests(unittest.TestCase):
             save_logger_event(SaveConnection(), self.save_input(stop="10:00", start="10:00"), self.masters())
 
     def overlap_row(self, stop, start, machine="F1", stop_type="SMDT", cause="Existing cause"):
-        return (900, machine, stop_type, cause, stop, start, 10)
+        if isinstance(stop, str):
+            stop = datetime(2026, 10, 1, int(stop[:2]), int(stop[3:]))
+        if isinstance(start, str):
+            start = datetime(2026, 10, 1, int(start[:2]), int(start[3:]))
+        return (900, machine, stop_type, cause,
+                stop, start, 10)
 
     def test_overlapping_intervals_are_rejected_without_insert(self):
         cases = (

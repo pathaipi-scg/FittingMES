@@ -19,7 +19,7 @@
 @media(max-width:430px){.logger-form label,.logger-form label:has(#logger-stop),.logger-form label:has(#logger-start),.logger-form label:has(#logger-machine),.logger-form label:has(#logger-machine-instance),.logger-form label:has(#logger-sub-related),.logger-form label:has(#logger-stop-type),.logger-form label:has(#logger-cause),.logger-form label:has(#logger-sub-stop-type),.logger-form label:has(select[name="meo"]),.logger-form label.logger-note{width:100%}.logger-actions:first-of-type{width:100%}}
 </style>
 <h1>LOGGER</h1>
-<p><a href="/logger/summary?production_date={{ production_date }}">LOGGER TIME SUMMARY</a></p>
+<p><a href="/logger/summary?production_date={{ production_date }}">LOGGER TIME SUMMARY</a> | <a href="/logger/master?production_date={{ production_date }}">LOGGER MASTER</a></p>
 {% if error %}<div class="logger-error" role="alert">{{ error }}</div>{% endif %}
 {% if saved %}<div class="logger-success" role="status">LOGGER entry saved.</div>{% endif %}
 <section class="panel" aria-label="LOGGER entry">
@@ -157,6 +157,21 @@ function durationDisplay(stop, start) {
   function optionKey(item) { return JSON.stringify(item); }
   function clearCause() { cause.value = ''; form.elements.meo.value = ''; }
   function isSmdt(stopId) { return stopTypes.some(item => String(item.StopId) === String(stopId) && item.StopType === 'SMDT'); }
+  function isMachineLevel(stopId) {
+    return stopTypes.some(item => String(item.StopId) === String(stopId)
+      && ['SETUP', 'CHGOVER', 'CLEAN', 'IDLE'].includes(item.StopType));
+  }
+  function updateTargetRequirement() {
+    const machineLevel = isMachineLevel(type.value);
+    subRelated.required = !machineLevel;
+    subRelated.disabled = machineLevel;
+    if (machineLevel) {
+      applySelection(null);
+      subSelection.value = '{}';
+      causeDrivenTargetFilter = false;
+      renderOptions([], null);
+    }
+  }
   function rebuildCauses(selectedOption, stopId, subStopId, selectedCauseId, optionsOverride) {
     cause.replaceChildren(new Option('No Cause',''));
     const candidates = selectedOption
@@ -261,6 +276,7 @@ function durationDisplay(stop, start) {
   type.addEventListener('change', () => {
     manualStopTypeOverride = true;
     rebuildSubTypes(); clearCause(); causeDrivenTargetFilter = false;
+    updateTargetRequirement();
     classificationEdited.value = classificationAfterManualChange();
     const selected = subRelated.value ? JSON.parse(subRelated.value) : null;
     rebuildCauses(selected, type.value, subType.value, null,
@@ -283,7 +299,7 @@ function durationDisplay(stop, start) {
     form.querySelectorAll('#logger-stop,#logger-start').forEach(input => input.dispatchEvent(new Event('change')));
     updateDuration();
     if (timeMessage.hidden === false) { event.preventDefault(); return; }
-    if (!subRelated.value) { event.preventDefault(); subRelated.setCustomValidity('Select a Sub / Related M/C.'); subRelated.reportValidity(); return; }
+    if (!isMachineLevel(type.value) && !subRelated.value) { event.preventDefault(); subRelated.setCustomValidity('Select a Sub / Related M/C.'); subRelated.reportValidity(); return; }
     subRelated.setCustomValidity('');
     if (form.dataset.busy === 'true') { event.preventDefault(); return; }
     form.dataset.busy = 'true'; document.getElementById('logger-save').disabled = true; document.getElementById('logger-status').textContent = 'Saving LOGGER entry...';
@@ -298,6 +314,7 @@ function durationDisplay(stop, start) {
   rebuildSubTypes(selectedForm.sub_stop_id || null);
   rebuildOptions(initialSelection, selectedForm.cause_id || null);
   if (selectedForm.cause_id) applyCause();
+  updateTargetRequirement();
   updateDuration();
 })();
 </script>
