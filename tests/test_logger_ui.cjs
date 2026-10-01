@@ -23,12 +23,15 @@ assert.ok(html.indexOf('id="logger-sub-related"') < html.indexOf('id="logger-sto
 assert.ok(html.indexOf('id="logger-stop-type"') < html.indexOf('id="logger-cause"'));
 assert.ok(html.indexOf('id="logger-cause"') < html.indexOf('id="logger-sub-stop-type"'));
 assert.match(source, /causeCandidates\(causes, selectedOption, subMachines, stopId, subStopId, isSmdt\(stopId\)\)/);
+assert.match(source, /rebuildCauses\(selected, type\.value, subType\.value, selectedCauseId,\s*selected \? null : options\)/);
 assert.match(source, /type\.addEventListener\('change'/);
 assert.match(source, /subType\.addEventListener\('change'/);
 assert.doesNotMatch(source, /type\.value = selectedCause\.StopId/);
 assert.match(source, /manualStopTypeOverride/);
 assert.match(source, /clearCause\(\);/);
 assert.match(source, /form\.elements\.meo\.value = ''/);
+assert.ok(source.indexOf('rebuildSubTypes(selectedForm.sub_stop_id || null)')
+  < source.indexOf('rebuildOptions(initialSelection, selectedForm.cause_id || null)'));
 
 const context = { document: { getElementById: () => null }, window: {} };
 vm.runInNewContext(source, context);

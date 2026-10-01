@@ -182,7 +182,8 @@ function durationDisplay(stop, start) {
   function rebuildOptions(selected, selectedCauseId, optionsOverride) {
     const options = optionsOverride || availableOptions();
     renderOptions(options, selected);
-    rebuildCauses(selected, type.value, subType.value, selectedCauseId);
+    rebuildCauses(selected, type.value, subType.value, selectedCauseId,
+      selected ? null : options);
   }
   function rebuildSubTypes(selected) {
     subType.replaceChildren(new Option('No Sub Type',''));
@@ -293,9 +294,8 @@ function durationDisplay(stop, start) {
     machineInstance.value = selectedForm.mc_instance_no || '';
   }
   const initialSelection = selectedForm.sub_related_selection ? JSON.parse(selectedForm.sub_related_selection) : null;
-  rebuildOptions(initialSelection, null);
   rebuildSubTypes(selectedForm.sub_stop_id || null);
-  rebuildCauses(initialSelection, type.value, subType.value, selectedForm.cause_id || null);
+  rebuildOptions(initialSelection, selectedForm.cause_id || null);
   if (selectedForm.cause_id) applyCause();
   updateDuration();
 })();
