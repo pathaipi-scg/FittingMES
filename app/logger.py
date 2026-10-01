@@ -209,6 +209,15 @@ def _validate_logger_masters(data, masters):
         cause = _master_by_id(masters.causes, "CauseId", cause_id)
         if cause is None:
             _validation_error("INVALID_CAUSE", "CauseId is not an active Cause.")
+        if related_mc_id is not None and sub_mc_id is None:
+            if cause.get("McId") != related_mc_id:
+                _validation_error("INVALID_CAUSE", "Cause does not belong to the selected Related Main Machine.")
+            cause_sub_mc_id = cause.get("SubMcId")
+            if cause_sub_mc_id is not None:
+                proxy = _master_by_id(masters.sub_machines, "SubMcId", cause_sub_mc_id)
+                if (proxy is None or not bool(proxy["IsRelated"])
+                        or proxy["McId"] != related_mc_id):
+                    _validation_error("INVALID_CAUSE", "Cause is not mapped to a valid Related Main Machine proxy.")
     else:
         cause_id = None
 
@@ -348,12 +357,12 @@ def read_main_machines(cursor):
 
 def read_sub_machines(cursor):
     cursor.execute("""
-        SELECT SubMcId, McId, Equipment AS SubMachine, No, IsRelated
+        SELECT SubMcId, McId, Equipment AS SubMachine, No, IsActive, IsRelated
         FROM dbo.Fitting_SubMachine
         WHERE IsActive=1
         ORDER BY SubMcId
     """)
-    return _rows(cursor, ("SubMcId", "McId", "SubMachine", "No", "IsRelated"))
+    return _rows(cursor, ("SubMcId", "McId", "SubMachine", "No", "IsActive", "IsRelated"))
 
 
 def read_stop_types(cursor):
@@ -432,11 +441,11 @@ def main_machine_categories(main_machines):
             continue
         seen.add(name)
         categories.append({"mc_id": machine["McId"], "machine": name})
-    return categories
+    return sorted(categories, key=lambda item: item["machine"] != "F")
 
 
 def sub_related_options_for_instance(main_machines, sub_machines, mc_id, instance_no):
-    """Expand configured physical equipment for one Main Machine instance."""
+    """Expand physical equipment and configured related machines for one instance."""
     machine = _master_by_id(main_machines, "McId", mc_id)
     if machine is None or not 1 <= int(instance_no) <= int(machine["No"]):
         return []
@@ -458,6 +467,13 @@ def sub_related_options_for_instance(main_machines, sub_machines, mc_id, instanc
                 "related_machine_snapshot": None,
                 "sub_machine_snapshot": label,
             })
+    for option in expand_sub_related_options(main_machines, sub_machines):
+        if option["kind"] not in (RELATED_MAIN, RELATED_SUB):
+            continue
+        related_option = option.copy()
+        related_option["owner_mc_id"] = mc_id
+        related_option["owner_mc_instance_no"] = int(instance_no)
+        options.append(related_option)
     return options
 
 

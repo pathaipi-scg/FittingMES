@@ -122,7 +122,7 @@ class LoggerResolverTests(unittest.TestCase):
         self.assertEqual(instances[-1]["display_label"], "F14")
 
     def test_main_machine_categories_are_broad_master_names(self):
-        categories = main_machine_categories(self.main_machines)
+        categories = main_machine_categories([self.main_machines[1], self.main_machines[0], self.main_machines[2]])
         self.assertEqual([item["machine"] for item in categories], ["F", "Robot", "LINE"])
         self.assertEqual([item["mc_id"] for item in categories], [7, 4, 5])
 
@@ -131,14 +131,39 @@ class LoggerResolverTests(unittest.TestCase):
             self.main_machines, self.sub_machines, 5, 1)
         line_two = sub_related_options_for_instance(
             self.main_machines, self.sub_machines, 5, 2)
-        self.assertEqual([item["display_label"] for item in line_one],
-                         ["Conv1", "Conv2", "Conv3", "Conv4", "Conv5"])
-        self.assertEqual([item["display_label"] for item in line_two],
-                         ["Conv1", "Conv2", "Conv3", "Conv4", "Conv5"])
+        self.assertEqual([item["display_label"] for item in line_one[:5]],
+                 ["Conv1", "Conv2", "Conv3", "Conv4", "Conv5"])
+        self.assertEqual([item["display_label"] for item in line_two[:5]],
+                 ["Conv1", "Conv2", "Conv3", "Conv4", "Conv5"])
+        self.assertIn("LINE1", {item["display_label"] for item in line_one})
+        self.assertIn("Robot1", {item["display_label"] for item in line_one})
         self.assertTrue(all(item["owner_mc_id"] == 5 for item in line_one))
         self.assertTrue(all(item["owner_mc_instance_no"] == 1 for item in line_one))
-        self.assertEqual(sub_related_options_for_instance(
-            self.main_machines, self.sub_machines, 4, 1), [])
+        robot_options = sub_related_options_for_instance(
+            self.main_machines, self.sub_machines, 4, 1)
+        self.assertNotIn("Conv1", {item["display_label"] for item in robot_options})
+        self.assertIn("LINE1", {item["display_label"] for item in robot_options})
+
+    def test_f_instance_options_include_direct_and_related_main_machines(self):
+        main_machines = self.main_machines + [
+            {"McId": 1, "Machine": "CABLE CAR", "No": 1, "Relate": 1},
+        ]
+        sub_machines = self.sub_machines + [
+            {"SubMcId": 25, "McId": 1, "SubMachine": "CABLE CAR", "No": 1, "IsRelated": 1},
+        ]
+        options = sub_related_options_for_instance(main_machines, sub_machines, 7, 1)
+        labels = {option["display_label"] for option in options}
+        self.assertIn("Mould1", labels)
+        self.assertIn("LINE1", labels)
+        self.assertIn("CABLE CAR1", labels)
+        self.assertEqual(
+            next(option for option in options if option["display_label"] == "LINE1")["kind"],
+            RELATED_MAIN,
+        )
+        self.assertEqual(
+            next(option for option in options if option["display_label"] == "CABLE CAR1")["related_mc_id"],
+            1,
+        )
 
     def test_physical_submachine_instance_expansion(self):
         options = expand_sub_related_options(self.main_machines, self.sub_machines[1:2])
@@ -216,7 +241,7 @@ class LoggerResolverTests(unittest.TestCase):
     def test_read_logger_masters_loads_each_active_master(self):
         cursor = QueueCursor([
             [(7, "F", 14, 0)],
-            [(2, 7, "Mould", 1, 0)],
+            [(2, 7, "Mould", 1, 1, 0)],
             [(1, "RUN")],
             [(1, 1, "Unplanned")],
             [(1, "Cause", 7, 2, 1, None, "M")],
@@ -264,6 +289,33 @@ class LoggerResolverTests(unittest.TestCase):
             SaveConnection(), self.save_input(related_mc_id=5, related_mc_instance_no=1,
                                                sub_mc_id=9, sub_mc_instance_no=3), self.masters())
         self.assertEqual((related_main, related_sub), (101, 101))
+
+    def test_save_related_main_accepts_proxy_cause_without_storing_proxy_submachine(self):
+        masters = self.masters()
+        masters.causes.extend([
+            {"CauseId": 11, "Cause": "Wait concrete", "McId": 5, "SubMcId": 24,
+             "StopId": 6, "SubStopId": 20, "MEO": "O"},
+        ])
+        connection = SaveConnection()
+        save_logger_event(connection, self.save_input(
+            related_mc_id=5, related_mc_instance_no=1,
+            sub_mc_id=None, sub_mc_instance_no=None,
+            cause_id=11, stop_id=6, sub_stop_id=20, meo="O",
+            stop="08:00", start="08:09"), masters)
+        params = connection.cursor_instance.executed[0][1]
+        self.assertEqual(params[6:13], (5, 1, None, None, 6, 20, 11))
+        self.assertEqual(params[14:20], ("F1", "LINE1", None, "SMDT", "Other", "Wait concrete"))
+
+    def test_save_related_main_rejects_physical_cause(self):
+        masters = self.masters()
+        masters.causes.append(
+            {"CauseId": 12, "Cause": "Conv stopped", "McId": 5, "SubMcId": 9,
+             "StopId": 6, "SubStopId": 20, "MEO": "M"})
+        with self.assertRaisesRegex(LoggerValidationError, "proxy"):
+            save_logger_event(SaveConnection(), self.save_input(
+                related_mc_id=5, related_mc_instance_no=1,
+                sub_mc_id=None, sub_mc_instance_no=None,
+                cause_id=12, stop_id=6, sub_stop_id=20, meo="M"), masters)
 
     def test_save_robot_proxy_uses_related_main_not_physical_submachine(self):
         connection = SaveConnection()
