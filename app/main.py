@@ -50,6 +50,7 @@ from app.logger import (LoggerValidationError, read_logger_events,
 from app.logger_page import (cause_suggestion, logger_form_input,
                              logger_page_context, normalize_form_selection)
 
+from app.logger_master import read_logger_master_review
 app = FastAPI(title="FittingMES", version="0.1.0")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
@@ -84,6 +85,28 @@ def logger_page(request: Request, production_date: date | None = None,
     return templates.TemplateResponse(request=request, name='logger.html',
                                       context=context, status_code=status,
                                       headers={'Cache-Control': 'no-store'})
+
+
+@app.get('/logger/master', response_class=HTMLResponse)
+def logger_master_page(request: Request, production_date: date | None = None):
+    production_date = production_date or date.today()
+    try:
+        with closing(get_connection()) as conn:
+            review = read_logger_master_review(conn.cursor())
+        context = dict(page_title='LOGGER MASTER', active_tab='logger',
+                       production_date=production_date, **review)
+        return templates.TemplateResponse(request=request, name='logger_master.html',
+                                          context=context,
+                                          headers={'Cache-Control': 'no-store'})
+    except Exception:
+        context = dict(page_title='LOGGER MASTER', active_tab='logger',
+                       production_date=production_date,
+                       counts=[], warnings=['Unable to load LOGGER Master review. Please retry.'],
+                       main_machines=[], sub_machines=[], stop_types=[],
+                       sub_stop_types=[], causes=[])
+        return templates.TemplateResponse(request=request, name='logger_master.html',
+                                          context=context, status_code=503,
+                                          headers={'Cache-Control': 'no-store'})
 
 
 def save_logger_form(form):
