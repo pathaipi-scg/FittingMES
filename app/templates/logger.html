@@ -86,19 +86,34 @@ function durationDefaultStopId(stopTypes, minutes) {
 function causeMEO(causes, causeId) {
   return causes.find(item => String(item.CauseId) === String(causeId))?.MEO || '';
 }
+function causeMatchesOption(item, selectedOption, subMachines) {
+  if (selectedOption.sub_mc_id != null) {
+    return item.SubMcId === selectedOption.sub_mc_id;
+  }
+  return item.McId === selectedOption.related_mc_id
+    && (item.SubMcId == null || subMachines.some(proxy =>
+      proxy.SubMcId === item.SubMcId
+      && Boolean(proxy.IsActive)
+      && Boolean(proxy.IsRelated)
+      && proxy.McId === selectedOption.related_mc_id));
+}
 function causeCandidates(causes, selectedOption, subMachines, stopId, subStopId, allowAnySubStop) {
   if (!selectedOption) return [];
-  return causes.filter(item => selectedOption.sub_mc_id != null
-    ? item.SubMcId === selectedOption.sub_mc_id && String(item.StopId) === String(stopId)
-      && (allowAnySubStop || String(item.SubStopId) === String(subStopId))
-    : item.McId === selectedOption.related_mc_id
-      && (item.SubMcId == null || subMachines.some(proxy =>
-        proxy.SubMcId === item.SubMcId
-        && Boolean(proxy.IsActive)
-        && Boolean(proxy.IsRelated)
-        && proxy.McId === selectedOption.related_mc_id))
-      && String(item.StopId) === String(stopId)
-      && (allowAnySubStop || String(item.SubStopId) === String(subStopId)));
+  return causes.filter(item => causeMatchesOption(item, selectedOption, subMachines)
+    && String(item.StopId) === String(stopId)
+    && (allowAnySubStop || String(item.SubStopId) === String(subStopId)));
+}
+function causeCandidatesForOptions(causes, options, subMachines, stopId, subStopId, allowAnySubStop) {
+  const compatible = new Set(options.flatMap(option =>
+    causeCandidates(causes, option, subMachines, stopId, subStopId, allowAnySubStop)
+      .map(item => String(item.CauseId))));
+  return causes.filter(item => compatible.has(String(item.CauseId)));
+}
+function compatibleOptionsForCause(causes, options, subMachines, causeId, stopId, subStopId, allowAnySubStop) {
+  const selectedCause = causes.find(item => String(item.CauseId) === String(causeId));
+  if (!selectedCause) return [];
+  return options.filter(option => causeCandidates(
+    [selectedCause], option, subMachines, stopId, subStopId, allowAnySubStop).length > 0);
 }
 function previewDuration(stop, start) {
   if (!/^\d{2}:\d{2}$/.test(stop) || !/^\d{2}:\d{2}$/.test(start)) return null;
@@ -137,13 +152,17 @@ function durationDisplay(stop, start) {
   const hidden = {related_mc_id:document.getElementById('logger-related-id'),related_mc_instance_no:document.getElementById('logger-related-instance'),sub_mc_id:document.getElementById('logger-sub-id'),sub_mc_instance_no:document.getElementById('logger-sub-instance')};
   const selectedForm = {{ form|tojson }};
   let manualStopTypeOverride = Boolean(selectedForm.stop_id);
+  let causeDrivenTargetFilter = false;
   function optionKey(item) { return JSON.stringify(item); }
   function clearCause() { cause.value = ''; form.elements.meo.value = ''; }
   function isSmdt(stopId) { return stopTypes.some(item => String(item.StopId) === String(stopId) && item.StopType === 'SMDT'); }
-  function rebuildCauses(selectedOption, stopId, subStopId, selectedCauseId) {
+  function rebuildCauses(selectedOption, stopId, subStopId, selectedCauseId, optionsOverride) {
     cause.replaceChildren(new Option('No Cause',''));
-    if (!selectedOption) return;
-    causeCandidates(causes, selectedOption, subMachines, stopId, subStopId, isSmdt(stopId))
+    const candidates = selectedOption
+      ? causeCandidates(causes, selectedOption, subMachines, stopId, subStopId, isSmdt(stopId))
+      : causeCandidatesForOptions(causes, optionsOverride || [], subMachines,
+        stopId, subStopId, isSmdt(stopId));
+    candidates
       .forEach(item => cause.add(new Option(item.Cause, item.CauseId)));
     if (selectedCauseId != null) cause.value = String(selectedCauseId);
   }
@@ -151,17 +170,26 @@ function durationDisplay(stop, start) {
     subSelection.value = item ? optionKey(item) : '';
     for (const key of Object.keys(hidden)) hidden[key].value = item?.[key] ?? '';
   }
-  function rebuildOptions(selected, selectedCauseId) {
+  function renderOptions(options, selected) {
     subRelated.replaceChildren(new Option('Select Sub / Rel M/C',''));
-    const key = machine.value && machineInstance.value ? `${machine.value}:${machineInstance.value}` : '';
-    (instanceOptions[key] || []).forEach(item => { const option = new Option(item.display_label, optionKey(item)); subRelated.add(option); });
+    options.forEach(item => { const option = new Option(item.display_label, optionKey(item)); subRelated.add(option); });
     if (selected) { subRelated.value = optionKey(selected); applySelection(selected); }
+  }
+  function availableOptions() {
+    const key = machine.value && machineInstance.value ? `${machine.value}:${machineInstance.value}` : '';
+    return instanceOptions[key] || [];
+  }
+  function rebuildOptions(selected, selectedCauseId, optionsOverride) {
+    const options = optionsOverride || availableOptions();
+    renderOptions(options, selected);
     rebuildCauses(selected, type.value, subType.value, selectedCauseId);
   }
   function rebuildSubTypes(selected) {
     subType.replaceChildren(new Option('No Sub Type',''));
-    subTypeCandidates(subTypes, type.value).forEach(item => subType.add(new Option(item.SubStopType, item.SubStopId)));
+    const candidates = subTypeCandidates(subTypes, type.value);
+    candidates.forEach(item => subType.add(new Option(item.SubStopType, item.SubStopId)));
     if (selected != null) subType.value = String(selected);
+    else if (candidates.length === 1) subType.value = String(candidates[0].SubStopId);
   }
   function applyDurationDefault(minutes) {
     if (manualStopTypeOverride) return;
@@ -181,6 +209,19 @@ function durationDisplay(stop, start) {
       rebuildSubTypes(selectedCause.SubStopId);
     }
     const meo = form.elements.meo; if (meo) meo.value = causeMEO(causes, selectedCause.CauseId);
+    if (!subRelated.value) {
+      const compatible = compatibleOptionsForCause(
+        causes, availableOptions(), subMachines, selectedCause.CauseId,
+        type.value, subType.value, isSmdt(type.value));
+      causeDrivenTargetFilter = true;
+      if (compatible.length === 1) {
+        renderOptions(compatible, compatible[0]);
+        applySelection(compatible[0]);
+      } else {
+        renderOptions(compatible, null);
+        applySelection(null);
+      }
+    }
   }
   function updateDuration() {
     const stop = stopInput.value, start = startInput.value;
@@ -202,17 +243,32 @@ function durationDisplay(stop, start) {
   });
   subRelated.addEventListener('change', () => {
     const selected = subRelated.value ? JSON.parse(subRelated.value) : null;
-    applySelection(selected); clearCause(); rebuildCauses(selected, type.value, subType.value);
+    const selectedCause = causes.find(item => String(item.CauseId) === String(cause.value));
+    applySelection(selected);
+    if (causeDrivenTargetFilter && selectedCause && selected
+        && causeMatchesOption(selectedCause, selected, subMachines)
+        && causeCandidates([selectedCause], selected, subMachines, type.value, subType.value, isSmdt(type.value)).length) {
+      causeDrivenTargetFilter = false;
+      rebuildCauses(selected, type.value, subType.value, selectedCause.CauseId);
+      return;
+    }
+    causeDrivenTargetFilter = false;
+    clearCause(); rebuildCauses(selected, type.value, subType.value);
   });
   cause.addEventListener('change', applyCause);
   type.addEventListener('change', () => {
     manualStopTypeOverride = true;
-    rebuildSubTypes(); clearCause(); classificationEdited.value = classificationAfterManualChange();
-    rebuildCauses(subRelated.value ? JSON.parse(subRelated.value) : null, type.value, subType.value);
+    rebuildSubTypes(); clearCause(); causeDrivenTargetFilter = false;
+    classificationEdited.value = classificationAfterManualChange();
+    const selected = subRelated.value ? JSON.parse(subRelated.value) : null;
+    rebuildCauses(selected, type.value, subType.value, null,
+      selected ? null : availableOptions());
   });
   subType.addEventListener('change', () => {
     classificationEdited.value = classificationAfterManualChange();
-    rebuildCauses(subRelated.value ? JSON.parse(subRelated.value) : null, type.value, subType.value);
+    const selected = subRelated.value ? JSON.parse(subRelated.value) : null;
+    rebuildCauses(selected, type.value, subType.value, null,
+      selected ? null : availableOptions());
   });
   form.querySelectorAll('#logger-stop,#logger-start').forEach(input => {
     input.addEventListener('input', () => {

@@ -8,7 +8,8 @@ const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(match =>
 assert.equal(scripts.length, 1);
 const source = timeInputSource + '\n' + scripts[0].replace('{{ form|tojson }}', '{}') +
   '\nglobalThis.loggerTest = { chooseUniqueCandidate, causeSubRelatedCandidates,' +
-  ' causeCandidates, causeMEO, durationDefaultStopId,' +
+  ' causeCandidates, causeCandidatesForOptions, compatibleOptionsForCause,' +
+  ' causeMatchesOption, causeMEO, durationDefaultStopId,' +
   ' classificationAfterCause, classificationAfterManualChange, durationDisplay,' +
   ' subTypeCandidates, previewDuration };';
 new vm.Script(source);
@@ -32,7 +33,8 @@ assert.match(source, /form\.elements\.meo\.value = ''/);
 const context = { document: { getElementById: () => null }, window: {} };
 vm.runInNewContext(source, context);
 const { chooseUniqueCandidate, causeSubRelatedCandidates, classificationAfterCause,
-  causeCandidates, causeMEO, durationDefaultStopId, classificationAfterManualChange,
+  causeCandidates, causeCandidatesForOptions, compatibleOptionsForCause,
+  causeMatchesOption, causeMEO, durationDefaultStopId, classificationAfterManualChange,
   subTypeCandidates, previewDuration, durationDisplay } = context.loggerTest;
 const machineOptions = [{ value: '7', dataset: { instance: '1' } },
   { value: '7', dataset: { instance: '2' } }];
@@ -66,6 +68,22 @@ assert.deepEqual(causeCandidates([
 assert.deepEqual(causeCandidates([
   { CauseId: 11, McId: 3, SubMcId: 22, StopId: 6, SubStopId: 20 },
 ], { sub_mc_id: null, related_mc_id: 3 }, subMachines, 6, 20).map(item => item.CauseId), [11]);
+const fOptions = [
+  { sub_mc_id: 3, related_mc_id: null, display_label: 'Mould1' },
+  { sub_mc_id: 5, related_mc_id: null, display_label: 'ถ้วยจ่าย1' },
+  { sub_mc_id: null, related_mc_id: 3, display_label: 'CABLE CAR1' },
+  { sub_mc_id: null, related_mc_id: 3, display_label: 'CABLE CAR2' },
+];
+const reverseCauses = [
+  { CauseId: 20, McId: 7, SubMcId: 3, StopId: 7, SubStopId: 21 },
+  { CauseId: 21, McId: 7, SubMcId: 5, StopId: 7, SubStopId: 21 },
+  { CauseId: 11, McId: 3, SubMcId: 22, StopId: 6, SubStopId: 20 },
+];
+assert.equal(causeMatchesOption(reverseCauses[0], fOptions[0], subMachines), true);
+assert.deepEqual(compatibleOptionsForCause(reverseCauses, fOptions, subMachines, 20, 7, 21, false), [fOptions[0]]);
+assert.deepEqual(compatibleOptionsForCause(reverseCauses, fOptions, subMachines, 11, 6, 20, true), [fOptions[2], fOptions[3]]);
+assert.deepEqual(causeCandidatesForOptions(reverseCauses, fOptions.slice(0, 2), subMachines, 7, 21, false)
+  .map(item => item.CauseId), [20, 21]);
 const stopTypes = [{ StopId: 6, StopType: 'SMDT' }, { StopId: 7, StopType: 'BD' }];
 assert.equal(durationDefaultStopId(stopTypes, 1), 6);
 assert.equal(durationDefaultStopId(stopTypes, 9), 6);
