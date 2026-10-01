@@ -1,5 +1,6 @@
 {% extends 'api_base.html' %}
 {% macro number(value, places=3) -%}{{ ('{:,.3f}' if places == 3 else '{:,.0f}').format(value) if value is not none else '-' }}{%- endmacro %}
+{% macro quantity(value) -%}{{ '{:,.1f}'.format(value) if value is not none else '-' }}{%- endmacro %}
 {% macro material_label(material) -%}{{ material.MaterialNameTH or material.MaterialNameEN or material.MaterialUsageCode }}{%- endmacro %}
 {% macro usage_rates(material, consumable) -%}
 {% if consumable %}<td>{{ number(material.CounterPerUnit) }}</td>{% else %}
@@ -8,7 +9,7 @@
 {% endif %}
 {%- endmacro %}
 {% macro usage_input(material, section) -%}
-<td class="usage-group">{% if material.SourceType and material.SourceType != 'MANUAL' %}{{ number(material.RawQty) }} <span class="muted">{{ material.SourceType }}</span>{% else %}<input form="usage-shift-{{ section.shift }}" type="number" name="qty_{{ material.MaterialUsageCode }}" aria-label="Shift {{ section.shift }} {{ material_label(material) }} quantity" min="0" max="999999999999999.999" step="0.001" value="{{ material.RawQty if material.RawQty is not none else '' }}">{% endif %}</td>
+<td class="usage-group">{% if material.SourceType and material.SourceType != 'MANUAL' %}{{ quantity(material.RawQty) }} <span class="muted">{{ material.SourceType }}</span>{% else %}<input form="usage-shift-{{ section.shift }}" type="number" name="qty_{{ material.MaterialUsageCode }}" aria-label="Shift {{ section.shift }} {{ material_label(material) }} quantity" min="0" max="999999999999999.999" step="0.001" value="{{ quantity(material.RawQty) if material.RawQty is not none else '' }}" data-exact-value="{{ material.RawQty if material.RawQty is not none else '' }}">{% endif %}</td>
 {%- endmacro %}
 {% block content %}
 <h1>USAGE</h1>
@@ -70,7 +71,7 @@
 {{ usage_input(material, section) }}
 {{ usage_rates(material, consumable) }}
 {% endfor %}
-<td class="usage-group">{{ number(daily_material.RawQty) }}</td>
+<td class="usage-group">{{ quantity(daily_material.RawQty) }}</td>
 {{ usage_rates(daily_material, consumable) }}
 </tr>
 {% endif %}
@@ -82,5 +83,12 @@
 <div class="usage-actions">{% for section in shifts %}<button class="primary" type="submit" form="usage-shift-{{ section.shift }}" {% if not section.materials %}disabled{% endif %}>SAVE SHIFT {{ section.shift }}</button>{% endfor %}</div>
 {% for section in shifts %}<p class="muted">Shift {{ section.shift }} &middot; Counter: {{ number(section.totals.get('CounterQty'),0) }} &middot; Curing: {{ number(section.totals.get('CuringQty'),0) }} &middot; Lots with Production data: {{ number(section.totals.get('LotCount'),0) }}</p>{% endfor %}
 <p class="muted">Enter raw quantities. Blank removes a manual entry; zero is saved as zero. Calculations come from the existing SQL views. MATERIAL uses Qty / 1000; CONSUMABLE uses Counter / Unit; RAW has no calculated rate. A dash means not applicable, no saved value, or no available calculation (including a zero denominator).</p>
+<script>
+document.querySelectorAll('form[id^="usage-shift-"]').forEach(form => form.addEventListener('submit', () => {
+    form.querySelectorAll('input[data-exact-value]').forEach(input => {
+        if (input.value === input.defaultValue) input.value = input.dataset.exactValue;
+    });
+}));
+</script>
 {% endif %}
 {% endblock %}

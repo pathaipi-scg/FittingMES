@@ -2,7 +2,7 @@ import asyncio
 import copy
 import re
 import unittest
-from datetime import date
+from datetime import date, time
 from decimal import Decimal
 from unittest.mock import patch
 from app.usage import read_usage_context, save_usage, validate_quantities
@@ -30,6 +30,9 @@ class UsageConnection:
         result=[]
         if 'sp_getapplock' in sql: result=[{'result':0}]
         elif 'FROM dbo.MaterialUsageMaster' in sql: result=self.materials
+        elif 'FROM dbo.ProductionShiftRuleHistory' in sql:
+            result=[dict(EffectiveFromDate=DAY, ShiftID=1, StartTime=time(6,0)),
+                dict(EffectiveFromDate=DAY, ShiftID=2, StartTime=time(20,0))]
         elif 'FROM dbo.P_ActivePlan' in sql:
             result=[]
         elif 'FROM dbo.ProductionLot' in sql:
@@ -52,6 +55,21 @@ class UsageConnection:
 
 
 class UsageTests(unittest.TestCase):
+    def test_denominators_use_effective_production_shift(self):
+        conn=UsageConnection()
+        records=[dict(LOT,Shift='1',ProductionStartTime=time(8,10),CounterQty=910,CuringQty=890),
+                  dict(LOT,Shift='1',ProductionStartTime=time(21,0),CounterQty=1410,CuringQty=1390),
+                  dict(LOT,Shift='1',ProductionStartTime=time(22,0),CounterQty=1490,CuringQty=1409)]
+        conn.calculated=[dict(CALC,RawQty=Decimal('20'))]
+        conn.daily_calculated=[dict(CALC,RawQty=Decimal('20'))]
+        with patch('app.usage.read_prod_records',return_value=records):
+            context=read_usage_context(conn,DAY)
+        self.assertEqual([section['totals'] for section in context['shifts']], [
+            dict(CounterQty=910,CuringQty=890,LotCount=1),
+            dict(CounterQty=2900,CuringQty=2799,LotCount=2)])
+        self.assertEqual(context['daily'][0]['QtyPer1000Counter'], Decimal(20000) / Decimal(3810))
+        self.assertEqual(context['daily'][0]['QtyPer1000Curing'], Decimal(20000) / Decimal(3689))
+
     def test_read_uses_authoritative_views_and_dynamic_materials(self):
         conn=UsageConnection()
         context=read_usage_context(conn,DAY)
@@ -78,7 +96,7 @@ class UsageTests(unittest.TestCase):
         for label in ('Version','Wet Reject'):
             self.assertIn('<th>'+label+'</th>',body)
         self.assertIn('name="qty_dynamic"',body)
-        self.assertIn('value="12.345"',body)
+        self.assertIn('value="12.3"',body)
         self.assertIn('0.987',body)
         self.assertNotIn('type="radio"',body)
         self.assertIn('action="/usage"',body)
@@ -219,8 +237,8 @@ class UsageContractTests(unittest.TestCase):
         with patch('app.main.get_connection',return_value=conn):
             status,body=asyncio.run(get_page('/usage','production_date=2026-09-21'))
         self.assertEqual(status,200)
-        self.assertIn('value="15.500"',body)
-        self.assertIn('value="7.250"',body)
+        self.assertIn('value="15.5"',body)
+        self.assertIn('value="7.2"',body)
 
     def test_empty_initial_usage_renders_every_master_for_both_shifts(self):
         conn=StoredUsageConnection()
@@ -352,12 +370,12 @@ class UsageSpreadsheetTests(unittest.TestCase):
         cells=re.findall(r'<td(?: class="usage-group")?>(.*?)</td>',row,re.S)
         self.assertEqual(len(cells),9)
         self.assertNotIn('<input',cells[0])
-        self.assertIn('12.345',cells[0])
+        self.assertIn('12.3',cells[0])
         self.assertIn('EXTERNAL',cells[0])
         self.assertEqual(cells[1],'1.234')
         self.assertEqual(cells[2],'-')
         self.assertIn('form="usage-shift-2"',cells[3])
-        self.assertEqual(cells[6],'20.000')
+        self.assertEqual(cells[6],'20.0')
         self.assertEqual(cells[7],'0.987')
 
 
@@ -406,9 +424,9 @@ class UsageTypeTests(unittest.TestCase):
             self.assertEqual(len(cells),stride*3)
             for i,cell in enumerate(cells):
                 self.assertEqual('<input ' in cell,i in (0,stride))
-            self.assertIn('value="12.345"',cells[0])
-            self.assertIn('value="12.345"',cells[stride])
-            self.assertEqual(cells[stride*2],'24.690')
+            self.assertIn('value="12.3"',cells[0])
+            self.assertIn('value="12.3"',cells[stride])
+            self.assertEqual(cells[stride*2],'24.7')
         self.assertEqual(conn.commits,0)
         self.assertTrue(all(sql.lstrip().startswith('SELECT') for sql,_ in conn.sql))
         self.assertIn('ORDER BY SortOrder,MaterialUsageCode',conn.sql[0][0])
@@ -442,7 +460,7 @@ class UsageTypeTests(unittest.TestCase):
                 self.assertEqual(row[offset+1:offset+stride],expected)
             expected=[f'{i+500:.3f}'] if consumable else (
                 [f'{i+300:.3f}',f'{i+400:.3f}'] if m['UsageType']=='MATERIAL' else ['-','-'])
-            self.assertEqual(row[stride*2:],[f'{i+70:.3f}']+expected)
+            self.assertEqual(row[stride*2:],[f'{i+70:.1f}']+expected)
 
     def test_consumable_zero_and_null_sql_results_are_not_recomputed(self):
         for value,expected in ((None,'-'),(Decimal('0'),'0.000')):
