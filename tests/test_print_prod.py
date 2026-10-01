@@ -2,6 +2,7 @@ import asyncio
 import tempfile
 import unittest
 from datetime import date, time
+from decimal import Decimal
 from unittest.mock import patch
 
 from app.main import app, print_prod_pdf_page
@@ -46,6 +47,31 @@ class PrintProdTests(unittest.TestCase):
         status, body, _ = self.page('/print-prod', 'production_date=2026-09-22')
         self.assertEqual(status, 200)
         self.assertNotIn(str(OTHER_DAY), body)
+
+    def test_print_prod_formats_decimal_usage_to_one_place(self):
+        report = dict(records=[dict(ProdDate=DAY, Shift='1', LotNo='I01690901',
+                                    ProductCode='01', ProductName='ปิดจั่ว', PlanQty=800,
+                                    CounterQty=910, CuringQty=890, WetRejectQty=5,
+                                    WetRejectPercent=5.26)],
+                      shifts=[dict(shift='1', records=[], totals=dict(PlanQty=800,
+                               CounterQty=910, CuringQty=890), materials=[
+                                   dict(MaterialNameEN='Cement', RawQty=Decimal('30.000'),
+                                        QtyPer1000Counter=Decimal('6.896551'),
+                                        QtyPer1000Curing=Decimal('7.145409'),
+                                        CounterPerUnit=Decimal('13.553806'))])],
+                      daily_totals=dict(PlanQty=800, CounterQty=910, CuringQty=890),
+                      daily_materials=[dict(MaterialNameEN='Cement', RawQty=Decimal('20.000'),
+                                            QtyPer1000Counter=Decimal('13.123359'),
+                                            QtyPer1000Curing=Decimal('33.707865'))],
+                      plan_week='2026W37')
+        with patch('app.main.read_print_prod_context', return_value=report):
+            status, body = asyncio.run(get_page('/print-prod', 'production_date=2026-09-22'))[:2]
+        self.assertEqual(status, 200)
+        for value in ('30.0', '6.9', '7.1', '20.0', '13.1', '33.7'):
+            self.assertIn(value, body)
+        self.assertIn('>800<', body)
+        self.assertNotIn('800.0', body)
+        self.assertIn('/print-prod/pdf?production_date=2026-09-22', body)
 
     def test_print_oee_placeholder_route_preserves_date(self):
         status, body, _ = self.page('/print-oee', 'production_date=2026-09-22')
