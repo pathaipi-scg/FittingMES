@@ -299,6 +299,41 @@ def _build_logger_snapshots(values):
     }
 
 
+def _format_logger_time(value):
+    return value.strftime("%H:%M")
+
+
+def _overlap_message(existing, values, snapshots):
+    existing_machine = existing[1] or snapshots["MachineNameSnapshot"] or "-"
+    existing_type = existing[2] or "-"
+    existing_cause = existing[3] or "-"
+    new_machine = snapshots["MachineNameSnapshot"] or "-"
+    new_type = snapshots["StopTypeSnapshot"] or "-"
+    return ("Time overlaps an existing LOGGER event.\n\n"
+            f"Existing: {existing_machine} | {existing_type} | "
+            f"{_format_logger_time(existing[4])} - {_format_logger_time(existing[5])} | "
+            f"{existing_cause}\n\n"
+            f"New: {new_machine} | {new_type} | "
+            f"{_format_logger_time(values['stop_datetime'])} - "
+            f"{_format_logger_time(values['start_datetime'])}\n\n"
+            "Please correct the Stop / Start time before saving.")
+
+
+def _reject_overlapping_logger_event(cursor, values, snapshots):
+    cursor.execute("""
+        SELECT TOP (1) LoggerEventID, MachineNameSnapshot, StopTypeSnapshot,
+               CauseSnapshot, StopDateTime, StartDateTime, DurationMin
+        FROM dbo.LoggerEvent WITH (UPDLOCK,HOLDLOCK)
+        WHERE McId=? AND McInstanceNo=?
+          AND StopDateTime < ? AND StartDateTime > ?
+        ORDER BY StopDateTime, LoggerEventID
+    """, values["mc_id"], values["mc_instance_no"], values["start_datetime"],
+        values["stop_datetime"])
+    existing = cursor.fetchone()
+    if existing:
+        _validation_error("OVERLAPPING_EVENT", _overlap_message(existing, values, snapshots))
+
+
 def save_logger_event(conn, data, masters=None):
     """Validate and insert one final operator-confirmed LOGGER event."""
     try:
@@ -307,6 +342,7 @@ def save_logger_event(conn, data, masters=None):
             masters = read_logger_masters(cursor)
         values = _validate_logger_masters(_as_save_input(data), masters)
         snapshots = _build_logger_snapshots(values)
+        _reject_overlapping_logger_event(cursor, values, snapshots)
         cursor.execute("""
             INSERT INTO dbo.LoggerEvent
                 (ProductionDate, StopDateTime, StartDateTime, DurationMin,

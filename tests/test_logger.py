@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime
 
 from app.logger import (
     DIRECT_SUB,
@@ -32,23 +33,40 @@ class QueueCursor:
 
 
 class SaveCursor:
-    def __init__(self, event_id=101, fail=False):
+    def __init__(self, event_id=101, fail=False, overlap_row=None, overlap_machine=(7, 1)):
         self.event_id = event_id
         self.fail = fail
+        self.overlap_row = overlap_row
+        self.overlap_machine = overlap_machine
         self.executed = []
+        self.inserted = []
 
     def execute(self, query, *params):
         if self.fail:
             raise RuntimeError("simulated INSERT failure")
         self.executed.append((query, params))
+        if "INSERT INTO dbo.LoggerEvent" in query:
+            self.inserted.append((query, params))
 
     def fetchone(self):
+        if self.executed and "SELECT TOP (1) LoggerEventID" in self.executed[-1][0]:
+            if self.overlap_row is None:
+                return None
+            params = self.executed[-1][1]
+            if params[:2] != self.overlap_machine:
+                return None
+            new_start, new_stop = params[2:4]
+            existing_stop, existing_start = self.overlap_row[4:6]
+            if new_stop < existing_start and new_start > existing_stop:
+                return self.overlap_row
+            return None
         return (self.event_id,)
 
 
 class SaveConnection:
-    def __init__(self, event_id=101, fail=False):
-        self.cursor_instance = SaveCursor(event_id=event_id, fail=fail)
+    def __init__(self, event_id=101, fail=False, overlap_row=None, overlap_machine=(7, 1)):
+        self.cursor_instance = SaveCursor(event_id=event_id, fail=fail, overlap_row=overlap_row,
+                                          overlap_machine=overlap_machine)
         self.commits = 0
         self.rollbacks = 0
 
@@ -275,7 +293,7 @@ class LoggerResolverTests(unittest.TestCase):
         self.assertEqual(event_id, 501)
         self.assertEqual(connection.commits, 1)
         self.assertEqual(connection.rollbacks, 0)
-        query, params = connection.cursor_instance.executed[0]
+        query, params = connection.cursor_instance.inserted[0]
         self.assertIn("OUTPUT INSERTED.LoggerEventID", query)
         self.assertIn("?", query)
         self.assertNotIn("F1", query)
@@ -302,7 +320,7 @@ class LoggerResolverTests(unittest.TestCase):
             sub_mc_id=None, sub_mc_instance_no=None,
             cause_id=11, stop_id=6, sub_stop_id=20, meo="O",
             stop="08:00", start="08:09"), masters)
-        params = connection.cursor_instance.executed[0][1]
+        params = connection.cursor_instance.inserted[0][1]
         self.assertEqual(params[6:13], (5, 1, None, None, 6, 20, 11))
         self.assertEqual(params[14:20], ("F1", "LINE1", None, "SMDT", "Other", "Wait concrete"))
 
@@ -322,7 +340,7 @@ class LoggerResolverTests(unittest.TestCase):
         save_logger_event(connection, self.save_input(
             related_mc_id=4, related_mc_instance_no=2,
             sub_mc_id=None, sub_mc_instance_no=None), self.masters())
-        params = connection.cursor_instance.executed[0][1]
+        params = connection.cursor_instance.inserted[0][1]
         self.assertEqual(params[8], None)
         self.assertEqual(params[12], None)
 
@@ -346,7 +364,7 @@ class LoggerResolverTests(unittest.TestCase):
         same_day = save_logger_event(SaveConnection(event_id=1), self.save_input(), self.masters())
         midnight_connection = SaveConnection(event_id=2)
         save_logger_event(midnight_connection, self.save_input(stop="23:55", start="00:05"), self.masters())
-        params = midnight_connection.cursor_instance.executed[0][1]
+        params = midnight_connection.cursor_instance.inserted[0][1]
         self.assertEqual(same_day, 1)
         self.assertEqual(params[3], 10)
         self.assertEqual(str(params[1]), "2026-10-01 23:55:00")
@@ -354,24 +372,93 @@ class LoggerResolverTests(unittest.TestCase):
         with self.assertRaisesRegex(LoggerValidationError, "differ"):
             save_logger_event(SaveConnection(), self.save_input(stop="10:00", start="10:00"), self.masters())
 
+    def overlap_row(self, stop, start, machine="F1", stop_type="SMDT", cause="Existing cause"):
+        return (900, machine, stop_type, cause, stop, start, 10)
+
+    def test_overlapping_intervals_are_rejected_without_insert(self):
+        cases = (
+            ("08:05", "08:15"),
+            ("08:00", "08:10"),
+            ("07:55", "08:05"),
+            ("08:02", "08:08"),
+            ("07:50", "08:20"),
+        )
+        for stop, start in cases:
+            with self.subTest(stop=stop, start=start):
+                connection = SaveConnection(overlap_row=self.overlap_row(
+                    datetime(2026, 10, 1, 8), datetime(2026, 10, 1, 10)))
+                with self.assertRaisesRegex(LoggerValidationError, "Time overlaps an existing LOGGER event"):
+                    save_logger_event(connection, self.save_input(stop=stop, start=start), self.masters())
+                self.assertEqual(len(connection.cursor_instance.executed), 1)
+                self.assertEqual(connection.commits, 0)
+                self.assertEqual(connection.rollbacks, 1)
+
+    def test_touching_boundary_is_allowed(self):
+        connection = SaveConnection(overlap_row=self.overlap_row(
+            datetime(2026, 10, 1, 8), datetime(2026, 10, 1, 10)))
+        save_logger_event(connection, self.save_input(stop="10:00", start="10:10"), self.masters())
+        self.assertEqual(len(connection.cursor_instance.executed), 2)
+        self.assertEqual(connection.commits, 1)
+
+    def test_different_primary_instance_or_machine_is_allowed(self):
+        for overrides in ({"mc_instance_no": 2}, {"mc_id": 5}):
+            with self.subTest(overrides=overrides):
+                connection = SaveConnection()
+                save_logger_event(connection, self.save_input(**overrides), self.masters())
+                self.assertEqual(connection.commits, 1)
+
+    def test_related_main_and_related_sub_use_primary_machine_for_overlap(self):
+        for overrides in (
+            {"related_mc_id": 5, "related_mc_instance_no": 1,
+             "sub_mc_id": None, "sub_mc_instance_no": None},
+            {"related_mc_id": 5, "related_mc_instance_no": 1,
+             "sub_mc_id": 9, "sub_mc_instance_no": 3},
+        ):
+            with self.subTest(overrides=overrides):
+                connection = SaveConnection(overlap_row=self.overlap_row(
+                    datetime(2026, 10, 1, 8), datetime(2026, 10, 1, 10)))
+                with self.assertRaisesRegex(LoggerValidationError, "Time overlaps"):
+                    save_logger_event(connection, self.save_input(**overrides), self.masters())
+                query, params = connection.cursor_instance.executed[0]
+                self.assertEqual(params[:2], (7, 1))
+
+    def test_related_machine_does_not_create_false_primary_overlap(self):
+        connection = SaveConnection(
+            overlap_row=self.overlap_row(datetime(2026, 10, 1, 8), datetime(2026, 10, 1, 10)),
+            overlap_machine=(5, 1))
+        save_logger_event(connection, self.save_input(
+            related_mc_id=5, related_mc_instance_no=1,
+            sub_mc_id=None, sub_mc_instance_no=None), self.masters())
+        self.assertEqual(connection.commits, 1)
+        self.assertEqual(connection.cursor_instance.executed[0][1][:2], (7, 1))
+
+    def test_cross_midnight_overlap_is_rejected_using_actual_datetimes(self):
+        connection = SaveConnection(overlap_row=self.overlap_row(
+            datetime(2026, 10, 1, 23, 55), datetime(2026, 10, 2, 0, 5)))
+        with self.assertRaisesRegex(LoggerValidationError, "Time overlaps"):
+            save_logger_event(connection, self.save_input(stop="23:58", start="00:08"), self.masters())
+        query, params = connection.cursor_instance.executed[0]
+        self.assertNotIn("ProductionDate", query)
+        self.assertEqual(params[:2], (7, 1))
+
     def test_classification_provenance_and_duration_rule(self):
         cause_shortcut = SaveConnection()
         save_logger_event(cause_shortcut, self.save_input(cause_id=1, stop_id=2, sub_stop_id=2), self.masters())
-        self.assertEqual(cause_shortcut.cursor_instance.executed[0][1][22], "CAUSE_SHORTCUT")
+        self.assertEqual(cause_shortcut.cursor_instance.inserted[0][1][22], "CAUSE_SHORTCUT")
 
         manual = SaveConnection()
         save_logger_event(manual, self.save_input(cause_id=1, classification_edited=True), self.masters())
-        self.assertEqual(manual.cursor_instance.executed[0][1][22], "MANUAL")
+        self.assertEqual(manual.cursor_instance.inserted[0][1][22], "MANUAL")
 
         manual_smdt_subtype = SaveConnection()
         save_logger_event(manual_smdt_subtype, self.save_input(
             cause_id=2, stop_id=6, sub_stop_id=20, classification_edited=True,
             stop="08:00", start="08:09"), self.masters())
-        self.assertEqual(manual_smdt_subtype.cursor_instance.executed[0][1][10:13], (6, 20, 2))
+        self.assertEqual(manual_smdt_subtype.cursor_instance.inserted[0][1][10:13], (6, 20, 2))
 
         no_cause = SaveConnection()
         save_logger_event(no_cause, self.save_input(cause_id=None), self.masters())
-        self.assertEqual(no_cause.cursor_instance.executed[0][1][22], "MANUAL")
+        self.assertEqual(no_cause.cursor_instance.inserted[0][1][22], "MANUAL")
 
         mismatch = self.save_input(cause_id=1, stop_id=1, sub_stop_id=1)
         with self.assertRaisesRegex(LoggerValidationError, "classification"):
@@ -380,14 +467,14 @@ class LoggerResolverTests(unittest.TestCase):
         smdt_short = SaveConnection()
         save_logger_event(smdt_short, self.save_input(cause_id=2, stop_id=6, sub_stop_id=20,
                                                        stop="08:00", start="08:09"), self.masters())
-        short_params = smdt_short.cursor_instance.executed[0][1]
+        short_params = smdt_short.cursor_instance.inserted[0][1]
         self.assertEqual(short_params[10:13], (6, 20, 2))
         self.assertEqual(short_params[22], "CAUSE_SHORTCUT")
 
         smdt_long = SaveConnection()
         save_logger_event(smdt_long, self.save_input(cause_id=2, stop_id=6, sub_stop_id=20,
                                                       stop="08:00", start="08:10"), self.masters())
-        long_params = smdt_long.cursor_instance.executed[0][1]
+        long_params = smdt_long.cursor_instance.inserted[0][1]
         self.assertEqual(long_params[10:13], (7, 21, 2))
         self.assertEqual(long_params[17:20], ("BD", "--", "SMDT cause"))
         self.assertEqual(long_params[22], "DURATION_RULE")
@@ -398,7 +485,7 @@ class LoggerResolverTests(unittest.TestCase):
             cause_id=None, stop_id=2, sub_stop_id=2, stop="08:00", start="08:10",
             related_mc_id=5, related_mc_instance_no=1,
             sub_mc_id=None, sub_mc_instance_no=None), self.masters())
-        params = connection.cursor_instance.executed[0][1]
+        params = connection.cursor_instance.inserted[0][1]
         self.assertEqual(params[10:13], (2, 2, None))
         self.assertEqual(params[17:20], ("SETUP", "Setup reason", None))
 
