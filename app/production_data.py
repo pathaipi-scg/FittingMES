@@ -5,6 +5,28 @@ from decimal import Decimal
 from app.lots import lock_lots, rows, history
 
 
+def read_shift_rules(cursor, production_date):
+    cursor.execute("""SELECT EffectiveFromDate, ShiftID, StartTime
+        FROM dbo.ProductionShiftRuleHistory
+        WHERE EffectiveFromDate=(
+            SELECT MAX(EffectiveFromDate)
+            FROM dbo.ProductionShiftRuleHistory
+            WHERE EffectiveFromDate<=?)
+        ORDER BY StartTime, ShiftID""", production_date)
+    return rows(cursor)
+
+
+def resolve_shift(production_date, start_value, planned_shift, rules):
+    if not start_value:
+        return planned_shift
+    start = start_value if isinstance(start_value, time) else time.fromisoformat(str(start_value))
+    schedule = sorted(rules, key=lambda rule: (rule['StartTime'], rule['ShiftID']))
+    if not schedule:
+        return planned_shift
+    applicable = [rule for rule in schedule if rule['StartTime'] <= start]
+    return str((applicable[-1] if applicable else schedule[-1])['ShiftID'])
+
+
 def calculate(counter, curing):
     if counter is None or curing is None:
         return dict(WetRejectQty=None, WetRejectPercent=None)
@@ -46,7 +68,7 @@ def read_production_data(cursor, production_id):
     return found[0] if found else {}
 
 
-def save_production_data(conn, production_id, raw):
+def save_production_data(conn, production_id, raw, production_date=None):
     try:
         data = validate(raw)
         calculated = calculate(data['CounterQty'], data['CuringQty'])
@@ -56,6 +78,8 @@ def save_production_data(conn, production_id, raw):
         lot = cursor.fetchone()
         if not lot:
             raise ValueError('This Lot is no longer active.')
+        shift_rules = read_shift_rules(cursor, production_date) if production_date is not None else []
+        resolved_shift = resolve_shift(production_date, data['ProductionStartTime'], data['Shift'], shift_rules)
         cursor.execute('SELECT ProductionID FROM dbo.ProductionData WITH (UPDLOCK,HOLDLOCK) WHERE ProductionID=?', production_id)
         exists = cursor.fetchone()
         values = (data['ProductionStartTime'], data['ProductionEndTime'],
@@ -68,7 +92,7 @@ def save_production_data(conn, production_id, raw):
             cursor.execute("""INSERT INTO dbo.ProductionData
                 (ProductionStartTime,ProductionEndTime,CounterQty,CuringQty,Remark,ProductionID)
                 VALUES (?,?,?,?,?,?)""", *values)
-        cursor.execute('UPDATE dbo.ProductionLot SET Shift=?,UpdatedAt=SYSDATETIME() WHERE ProductionID=?', data['Shift'], production_id)
+        cursor.execute('UPDATE dbo.ProductionLot SET Shift=?,UpdatedAt=SYSDATETIME() WHERE ProductionID=?', resolved_shift, production_id)
         history(cursor, production_id, lot[0], lot[0], lot[1], lot[1], 'PRODUCTION_SAVE')
         conn.commit()
         return calculated

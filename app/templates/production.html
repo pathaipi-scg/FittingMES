@@ -284,8 +284,26 @@ main>header,main>.panel,main>.error{flex-shrink:0}
 </section>
 {% endif %}
 </main>
+<script type="application/json" id="production-shift-rules">{{ shift_rules|tojson }}</script>
 <script>
 (() => {
+  const shiftRulesElement = document.getElementById('production-shift-rules');
+  const shiftRules = shiftRulesElement ? JSON.parse(shiftRulesElement.textContent) : [];
+  function resolveShift(start, planned) {
+    if (!start || !shiftRules.length) return planned;
+    const schedule = [...shiftRules].sort((a, b) => a.StartTime.localeCompare(b.StartTime) || a.ShiftID - b.ShiftID);
+    const applicable = schedule.filter(rule => rule.StartTime <= start);
+    return String((applicable.length ? applicable[applicable.length - 1] : schedule[schedule.length - 1]).ShiftID);
+  }
+  document.querySelectorAll('.lot-table tbody tr').forEach(row => {
+    const start = row.querySelector('[name="start_time"]');
+    const shift = row.querySelector('[name="shift"]');
+    if (!start || !shift) return;
+    const updateShift = () => { shift.value = resolveShift(start.value, shift.value); };
+    start.addEventListener('input', updateShift);
+    start.addEventListener('change', updateShift);
+  });
+
   const table = document.querySelector('.press-production-table');
   if (!table) return;
   const dayStart = table.dataset.dayStartTime;

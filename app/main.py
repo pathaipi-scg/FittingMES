@@ -32,7 +32,8 @@ from app.depallet import (read_context as read_depallet_context, read_reasons as
                           read_curing_lots, read_daily_work, save_depallet, save_depallet_batch,
                           reorder_depallet_run)
 from app.products import FAMILIES, lot_prefix, read_products, read_mapping, confirm_mapping, selected_product, month_start
-from app.production_data import read_production_data, save_production_data, calculate
+from app.production_data import (read_production_data, save_production_data, calculate,
+                                  read_shift_rules)
 from app.press_mc import (page_context as press_mc_context, add_press, update_press_name,
                           assign_line, remove_from_line, set_active, save_capabilities)
 from app.mould import (page_context as mould_context, register_mould, update_mould_info,
@@ -214,6 +215,7 @@ def production_page(request, plan_id=None, product_code=None, confirm=False, map
                    press_message=press_message, press_message_type=press_message_type,
                    wet_reject_reasons=[], wet_reject_events=[], wet_reject_summary=[], wet_reject_total=0,
                    wet_reject_reason_groups=[], wet_reject_summary_groups=[],
+                   shift_rules=[],
                    wet_reject_now=datetime.now().strftime('%Y-%m-%dT%H:%M:%S'),
                    wet_reject_message=wet_reject_message, wet_reject_message_type=wet_reject_message_type)
     status = 200
@@ -237,6 +239,14 @@ def production_page(request, plan_id=None, product_code=None, confirm=False, map
                         production_id = None
                         context['edit'] = False
             context["lots_for_date"] = [lot for lot in context["lots"] if day(lot["ProdDate"]) == production_date]
+            try:
+                context["shift_rules"] = read_shift_rules(cursor, production_date)
+                context["shift_rules"] = [dict(rule,
+                                                EffectiveFromDate=rule["EffectiveFromDate"].isoformat(),
+                                                StartTime=rule["StartTime"].strftime('%H:%M'))
+                                            for rule in context["shift_rules"]]
+            except Exception:
+                context["shift_rules"] = []
             for index, lot in enumerate(context["lots_for_date"]):
                 lot['CanMoveUp'] = index > 0
                 lot['CanMoveDown'] = index < len(context["lots_for_date"]) - 1
@@ -275,7 +285,7 @@ def production_page(request, plan_id=None, product_code=None, confirm=False, map
                 if production_input is not None:
                     context["production_data"] = production_input
                     context["current"]["Shift"] = production_input.get("Shift", current["Shift"])
-                    save_production_data(conn, production_id, production_input)
+                    save_production_data(conn, production_id, production_input, production_date)
                     return RedirectResponse(f"/?production_id={production_id}&production_date={production_date}&data_saved=true", status_code=303)
                 context["production_data"] = read_production_data(cursor, production_id)
                 context["calculated"] = calculate(

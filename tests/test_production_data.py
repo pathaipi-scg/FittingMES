@@ -1,8 +1,9 @@
 import unittest
-from datetime import time
+from datetime import date, time
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
-from app.production_data import validate, calculate, save_production_data, read_production_data
+from app.production_data import (validate, calculate, save_production_data, read_production_data,
+                                  read_shift_rules, resolve_shift)
 from app.main import production_page, save_production
 from app.lots import insert_lot, update_lot
 from test_production import LOT, PLAN, DAY, request
@@ -12,6 +13,85 @@ RAW = dict(Shift='2',ProductionStartTime='08:10',ProductionEndTime='14:25',
 
 
 class ProductionDataTests(unittest.TestCase):
+    RULES = [
+        dict(EffectiveFromDate=date(2026, 1, 1), ShiftID=1, StartTime=time(6)),
+        dict(EffectiveFromDate=date(2026, 1, 1), ShiftID=2, StartTime=time(20)),
+    ]
+
+    def test_resolve_shift_current_boundaries_and_midnight_wrap(self):
+        expected = {
+            '05:59': '2', '06:00': '1', '06:01': '1', '19:59': '1',
+            '20:00': '2', '20:01': '2', '23:59': '2', '00:00': '2',
+        }
+        for start, shift in expected.items():
+            with self.subTest(start=start):
+                self.assertEqual(resolve_shift(date(2026, 10, 1), start, '1', self.RULES), shift)
+
+    def test_resolve_shift_uses_latest_effective_rule_and_ignores_future(self):
+        rules = [
+            dict(EffectiveFromDate=date(2026, 1, 1), ShiftID=1, StartTime=time(6)),
+            dict(EffectiveFromDate=date(2026, 1, 1), ShiftID=2, StartTime=time(20)),
+            dict(EffectiveFromDate=date(2026, 9, 1), ShiftID=4, StartTime=time(7)),
+            dict(EffectiveFromDate=date(2026, 9, 1), ShiftID=5, StartTime=time(15)),
+            dict(EffectiveFromDate=date(2026, 11, 1), ShiftID=8, StartTime=time(8)),
+        ]
+        self.assertEqual(resolve_shift(date(2026, 8, 31), '21:00', '1', self.RULES), '2')
+        self.assertEqual(resolve_shift(date(2026, 10, 1), '16:00', '1', rules[2:4]), '5')
+        self.assertEqual(resolve_shift(date(2026, 10, 1), '06:30', '1', rules[2:4]), '5')
+
+    def test_resolve_shift_supports_changed_three_shift_schedule(self):
+        rules = [
+            dict(EffectiveFromDate=date(2027, 1, 1), ShiftID=10, StartTime=time(5)),
+            dict(EffectiveFromDate=date(2027, 1, 1), ShiftID=20, StartTime=time(13)),
+            dict(EffectiveFromDate=date(2027, 1, 1), ShiftID=30, StartTime=time(21)),
+        ]
+        self.assertEqual(resolve_shift(date(2027, 1, 1), '04:59', '10', rules), '30')
+        self.assertEqual(resolve_shift(date(2027, 1, 1), '13:00', '10', rules), '20')
+        self.assertEqual(resolve_shift(date(2027, 1, 1), '22:00', '10', rules), '30')
+
+    def test_resolve_shift_blank_start_preserves_planned_shift(self):
+        self.assertEqual(resolve_shift(date(2026, 10, 1), '', '7', self.RULES), '7')
+
+    def test_read_shift_rules_uses_latest_effective_date(self):
+        cursor = MagicMock()
+        cursor.description = [('EffectiveFromDate',), ('ShiftID',), ('StartTime',)]
+        cursor.fetchall.return_value = [(date(2026, 1, 1), 1, time(6))]
+        result = read_shift_rules(cursor, date(2026, 10, 1))
+        query, parameter = cursor.execute.call_args.args
+        self.assertIn('MAX(EffectiveFromDate)', query)
+        self.assertIn('EffectiveFromDate<=?', query)
+        self.assertEqual(parameter, date(2026, 10, 1))
+        self.assertEqual(result[0]['ShiftID'], 1)
+
+    def test_save_replaces_incorrect_submitted_shift_from_start(self):
+        conn = self.connection(exists=False)
+        rules = self.RULES
+        with patch('app.production_data.read_shift_rules', return_value=rules):
+            save_production_data(conn, 7, dict(RAW, Shift='1', ProductionStartTime='21:00'), date(2026, 10, 1))
+        shift = next(a for a in (item.args for item in conn.cursor.return_value.execute.call_args_list)
+                     if 'UPDATE dbo.ProductionLot' in a[0])
+        self.assertEqual(shift[1:], ('2', 7))
+
+    def test_save_path_persists_shift_from_start_and_ignores_end(self):
+        cases = (
+            ('22:00', '03:00', '1', '2'),
+            ('10:00', '15:00', '2', '1'),
+            ('07:00', '08:00', '2', '1'),
+            ('05:59', '06:00', '1', '2'),
+            ('20:00', '03:00', '1', '2'),
+        )
+        for start, end, submitted, expected in cases:
+            with self.subTest(start=start, end=end):
+                conn = self.connection(exists=False)
+                with patch('app.production_data.read_shift_rules', return_value=self.RULES):
+                    save_production_data(conn, 7, dict(RAW, Shift=submitted,
+                                                        ProductionStartTime=start,
+                                                        ProductionEndTime=end),
+                                         date(2026, 10, 1))
+                shift = next(a for a in (item.args for item in conn.cursor.return_value.execute.call_args_list)
+                             if 'UPDATE dbo.ProductionLot' in a[0])
+                self.assertEqual(shift[1:], (expected, 7))
+
     def test_calculations_and_zero_missing(self):
         result=calculate(3648,3310)
         self.assertEqual(result['WetRejectQty'],338)
