@@ -61,14 +61,15 @@ h2{font-size:10.5px;font-weight:600;line-height:1.2;letter-spacing:0;margin:3px 
 .lot-table td:nth-child(15) button{padding-left:4px;padding-right:4px}
 .lot-table input[name="remark"]{width:100%;min-width:90px}
 .press-production-table{table-layout:fixed}
-.press-production-table th:nth-child(1),.press-production-table td:nth-child(1){width:72px}
-.press-production-table th:nth-child(2),.press-production-table td:nth-child(2){width:42px}
-.press-production-table th:nth-child(3),.press-production-table td:nth-child(3),.press-production-table th:nth-child(4),.press-production-table td:nth-child(4),.press-production-table th:nth-child(5),.press-production-table td:nth-child(5){width:58px}
-.press-production-table th:nth-child(6),.press-production-table td:nth-child(6),.press-production-table th:nth-child(7),.press-production-table td:nth-child(7){width:68px}
-.press-production-table th:nth-child(8),.press-production-table td:nth-child(8),.press-production-table th:nth-child(9),.press-production-table td:nth-child(9),.press-production-table th:nth-child(10),.press-production-table td:nth-child(10),.press-production-table th:nth-child(11),.press-production-table td:nth-child(11),.press-production-table th:nth-child(12),.press-production-table td:nth-child(12){width:62px}
-.press-production-table th:nth-child(14),.press-production-table td:nth-child(14){width:58px}
-.press-production-table th:nth-child(15),.press-production-table td:nth-child(15){width:58px}
-.press-production-table th:nth-child(16),.press-production-table td:nth-child(16){width:58px}
+.press-production-table th:nth-child(1),.press-production-table td:nth-child(1){width:92px}
+.press-production-table th:nth-child(2),.press-production-table td:nth-child(2){width:38px}
+.press-production-table th:nth-child(3),.press-production-table td:nth-child(3){width:260px}
+.press-production-table th:nth-child(4),.press-production-table td:nth-child(4),.press-production-table th:nth-child(5),.press-production-table td:nth-child(5),.press-production-table th:nth-child(6),.press-production-table td:nth-child(6){width:56px}
+.press-production-table th:nth-child(7),.press-production-table td:nth-child(7),.press-production-table th:nth-child(8),.press-production-table td:nth-child(8){width:58px}
+.press-production-table th:nth-child(9),.press-production-table td:nth-child(9),.press-production-table th:nth-child(10),.press-production-table td:nth-child(10),.press-production-table th:nth-child(11),.press-production-table td:nth-child(11),.press-production-table th:nth-child(12),.press-production-table td:nth-child(12),.press-production-table th:nth-child(13),.press-production-table td:nth-child(13){width:58px}
+.press-production-table th:nth-child(14),.press-production-table td:nth-child(14),.press-production-table th:nth-child(15),.press-production-table td:nth-child(15){width:58px}
+.press-production-table th:nth-child(16),.press-production-table td:nth-child(16){width:68px}
+.press-production-table th:nth-child(17),.press-production-table td:nth-child(17){width:48px}
 .press-production-table td:nth-child(1),.press-production-table td:nth-child(2),.press-production-table td:nth-child(8){vertical-align:middle}
 .press-production-table td:nth-child(3) input,.press-production-table td:nth-child(4) input,.press-production-table td:nth-child(5) input{text-align:right}
 .press-production-table td:nth-child(8) input{width:100%;min-width:0}
@@ -244,7 +245,7 @@ main>header,main>.panel,main>.error{flex-shrink:0}
 <section class="panel" aria-label="Press Production">
 <div class="lot-input-heading"><h2>PRESS PRODUCTION</h2><span class="muted">Per-Press records for {{ current.LotNo }}</span></div>
 {% for pp in press_production %}<form id="press-production-{{ pp.PressProductionID }}" method="post" action="/lots/{{ current.ProductionID }}/press-production/{{ pp.PressProductionID }}"><input type="hidden" name="production_date" value="{{ current.ProdDate }}"></form>{% endfor %}
-<div class="table-scroll"><table class="depallet-grid press-production-table" data-production-date="{{ current.ProdDate }}" data-day-start-time="{{ day_start_time.strftime('%H:%M') if day_start_time else '' }}"><thead><tr><th>Release</th><th>Press</th><th>Mould</th><th>Dispatch</th><th>Counter</th><th>Curing</th><th>Start</th><th>End</th><th class="press-time-header">Setup</th><th class="press-time-header">ChgOver</th><th class="press-time-header">Idle</th><th class="press-time-header">Cleaning</th><th class="press-time-header">Breakdown</th><th class="press-time-header">SMDT</th><th class="press-time-header">Log SMDT</th><th>LOG CAL</th><th>Save</th></tr></thead><tbody>
+<div class="table-scroll"><table class="depallet-grid press-production-table" data-production-date="{{ current.ProdDate }}" data-day-start-time="{{ day_start_time.strftime('%H:%M') if day_start_time else '' }}"><thead><tr><th>Release</th><th>Press</th><th>Mould</th><th>Dispatch</th><th>Counter</th><th>Curing</th><th>Start</th><th>End</th><th class="press-time-header">Setup</th><th class="press-time-header">ChgOver</th><th class="press-time-header">Idle</th><th class="press-time-header">Cleaning</th><th class="press-time-header">BD</th><th class="press-time-header">SMDT</th><th class="press-time-header">Log SMDT</th><th>LOG CAL</th><th>Save</th></tr></thead><tbody>
 {% for pp in press_production %}
 {% set assignment_locked = (pp.UsageCycles is not none) or ((pp.CounterQty or 0) > 0) or pp.ReleasedAt %}
 <tr data-guide-url="/lots/{{ current.ProductionID }}/press-production/{{ pp.PressProductionID }}/logger-guide"{% if pp.ReleasedAt %} class="press-production-released"{% endif %}>
