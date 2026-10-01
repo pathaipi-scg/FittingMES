@@ -14,11 +14,20 @@ def read_print_prod_context(cursor, production_date):
                                              record.get("Shift"), shift_rules)
         except (TypeError, ValueError):
             pass
+    cursor.execute("""SELECT TOP (1) PlanWeek
+        FROM dbo.P_ActivePlan
+        WHERE Company=? AND Plant=? AND Machine=? AND StartTime=?
+          AND PlanWeek IS NOT NULL
+                ORDER BY VersionNo DESC, Shift""", 'CRTC', '30A1', 'SB2-3', production_date)
+    plan_row = cursor.fetchone()
+    plan_week = plan_row[0] if plan_row and plan_row[0] is not None else None
     cursor.execute("""SELECT ProductFamily,ProductCode,ProductName
         FROM dbo.ProductCodeMaster WHERE IsActive=1""")
     product_names = {(row[0], row[1]): row[2] for row in cursor.fetchall()}
     for record in records:
         record["ProductName"] = product_names.get((record.get("ProductFamily"), record.get("ProductCode")))
+        if record.get("PlanQty") is not None:
+            record["PlanQty"] = int(record["PlanQty"])
     usage = read_usage_context(cursor, production_date)
     daily_totals = {field: sum(record.get(field) or 0 for record in records)
                     for field in ("PlanQty", "CounterQty", "CuringQty")}
@@ -30,4 +39,4 @@ def read_print_prod_context(cursor, production_date):
         shifts.append(dict(shift=shift["shift"], records=shift_records, totals=totals,
                            materials=shift["materials"]))
     return dict(records=records, shifts=shifts, daily_totals=daily_totals,
-                daily_materials=usage["daily"])
+                daily_materials=usage["daily"], plan_week=plan_week)

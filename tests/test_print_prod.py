@@ -19,7 +19,7 @@ REPORT = dict(records=[dict(ProdDate=DAY, Shift='1', LotNo='I01690901', ProductC
                              CuringQty=90, WetRejectQty=5, WetRejectPercent=5.26)],
                             totals=dict(PlanQty=100, CounterQty=95, CuringQty=90), materials=[])],
               daily_totals=dict(PlanQty=100, CounterQty=95, CuringQty=90),
-              daily_materials=[])
+              daily_materials=[], plan_week='2026W37')
 
 
 class PrintProdTests(unittest.TestCase):
@@ -37,6 +37,7 @@ class PrintProdTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn('value="2026-09-22"', body)
         self.assertIn('I01690901', body)
+        self.assertIn('สัปดาห์ที่: <strong>2026W37</strong>', body)
         self.assertIn('>PRINT<', body)
         self.assertIn('>SAVE PDF<', body)
         self.assertIn('/print-prod/pdf?production_date=2026-09-22', body)
@@ -88,6 +89,7 @@ class PrintProdTests(unittest.TestCase):
         ]
         usage = dict(shifts=[dict(shift='1', materials=[]), dict(shift='2', materials=[])], daily=[])
         cursor = unittest.mock.MagicMock()
+        cursor.fetchone.return_value = ('2026W37',)
         with patch('app.print_prod.read_prod_records', return_value=records), \
              patch('app.print_prod.read_shift_rules', return_value=self.RULES) as read_rules, \
              patch('app.print_prod.read_usage_context', return_value=usage), \
@@ -95,12 +97,18 @@ class PrintProdTests(unittest.TestCase):
             context = read_print_prod_context(cursor, DAY)
 
         read_rules.assert_called_once_with(cursor, DAY)
+        self.assertEqual(context['plan_week'], '2026W37')
         self.assertEqual([row['Shift'] for row in context['records']], ['1', '2', '2'])
         self.assertEqual([row['ProductionID'] for row in context['shifts'][0]['records']], [1])
         self.assertEqual([row['ProductionID'] for row in context['shifts'][1]['records']], [2, 3])
         self.assertEqual(context['shifts'][0]['totals'], dict(PlanQty=800, CounterQty=910, CuringQty=890))
         self.assertEqual(context['shifts'][1]['totals'], dict(PlanQty=2800, CounterQty=2900, CuringQty=2799))
         self.assertEqual(context['daily_totals'], dict(PlanQty=3600, CounterQty=3810, CuringQty=3689))
+        plan_query = next(call for call in cursor.execute.call_args_list
+                  if 'dbo.P_ActivePlan' in call.args[0])
+        self.assertIn('dbo.P_ActivePlan', plan_query.args[0])
+        self.assertIn('ORDER BY VersionNo DESC, Shift', plan_query.args[0])
+        self.assertEqual(plan_query.args[1:], ('CRTC', '30A1', 'SB2-3', DAY))
         sqls = [call.args[0] for call in cursor.execute.call_args_list]
         self.assertTrue(sqls)
         self.assertTrue(all('UPDATE' not in sql.upper() for sql in sqls))
