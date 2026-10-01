@@ -128,6 +128,15 @@ Immediately before sending any final response, verify:
 7.  Technical examples are plain blockquote text.
 8.  There is no separate code/code-copy box.
 
+## LOGGER work guidance
+
+Whenever working on LOGGER, including `logger.py`, `logger_page.py`,
+`logger.html`, LOGGER JavaScript, Cause / Sub-Rel-MC cascade logic, or
+LOGGER tests, the agent MUST read and follow:
+
+- `skill/FittingMES_LOGGER_Bidirectional_SKILL.md`
+- `skill/FittingMES_LOGGER_Design_Context.md`
+
 If any check fails, correct the response before sending it.
 
 ## Scope boundary
