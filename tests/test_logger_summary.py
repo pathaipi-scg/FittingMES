@@ -2,7 +2,7 @@ import inspect
 import unittest
 from datetime import date, datetime
 
-from app.logger_summary import read_logger_time_summary
+from app.logger_summary import read_logger_time_summary, read_logger_press_guide
 from app.main import app
 
 
@@ -38,6 +38,28 @@ class SummaryCursor:
 
 
 class LoggerSummaryTests(unittest.TestCase):
+    def test_f_machine_mapping_uses_matching_instance_and_active_master_count(self):
+        for equipment_code, instance_no in (('F1', 1), ('F2', 2)):
+            cursor = GuideCursor()
+            result = read_logger_press_guide(cursor, date(2026, 10, 1), equipment_code)
+            self.assertTrue(result['HasSetup'])
+            guide_query = next(query for query, _ in cursor.calls if 'FROM dbo.LoggerEvent' in query)
+            self.assertIn('event.McId=? AND event.McInstanceNo=?', guide_query)
+            self.assertEqual(cursor.guide_params[10:13], (date(2026, 10, 1), 7, instance_no))
+
+    def test_f_machine_mapping_rejects_instance_above_active_master_count(self):
+        cursor = GuideCursor(instance_count=2)
+        result = read_logger_press_guide(cursor, date(2026, 10, 1), 'F3')
+        self.assertFalse(result['HasSetup'])
+        self.assertFalse(any('FROM dbo.LoggerEvent' in query for query, _ in cursor.calls))
+
+    def test_guide_query_keeps_primary_machine_ownership_for_related_events(self):
+        cursor = GuideCursor()
+        read_logger_press_guide(cursor, date(2026, 10, 1), 'F1')
+        guide_query = next(query for query, _ in cursor.calls if 'FROM dbo.LoggerEvent' in query)
+        self.assertIn('event.McId=?', guide_query)
+        self.assertNotIn('RelatedMachineSnapshot', guide_query)
+
     def test_summary_uses_saved_stop_ids_and_keeps_instances_separate(self):
         cursor = SummaryCursor([
             (7, 1, 'F', 10, 5, 12, 20, 5),
@@ -73,6 +95,35 @@ class LoggerSummaryTests(unittest.TestCase):
         self.assertFalse(any(word in source for word in ('INSERT ', 'UPDATE ', 'DELETE ', 'MERGE ')))
         paths = {(route.path, tuple(route.methods or ())) for route in app.routes if hasattr(route, 'methods')}
         self.assertIn(('/logger/summary', ('GET',)), paths)
+
+
+class GuideCursor:
+    def __init__(self, instance_count=14):
+        self.instance_count = instance_count
+        self.calls = []
+        self.result = []
+        self.guide_params = ()
+
+    def execute(self, query, *params):
+        self.calls.append((query, params))
+        if 'FROM dbo.Fitting_MainMachine' in query:
+            self.result = [(7, self.instance_count)]
+        elif 'FROM dbo.Fitting_StopType' in query:
+            self.result = [(2, 'SETUP'), (3, 'CHGOVER'), (5, 'CLEAN'),
+                           (6, 'SMDT'), (7, 'BD')]
+        elif 'FROM dbo.LoggerEvent' in query:
+            self.guide_params = params
+            self.result = [(10, 5, 8, 370, 16, 1, 1, 1, 1, 1)]
+        else:
+            raise AssertionError(query)
+
+    def fetchall(self):
+        result, self.result = self.result, []
+        return result
+
+    def fetchone(self):
+        result, self.result = (self.result[0] if self.result else None), []
+        return result
 
 
 if __name__ == '__main__':

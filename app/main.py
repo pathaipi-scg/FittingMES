@@ -51,7 +51,8 @@ from app.logger_page import (cause_suggestion, logger_form_input,
                              logger_page_context, normalize_form_selection)
 
 from app.logger_master import read_logger_master_review
-from app.logger_summary import read_logger_time_summary
+from app.logger_summary import read_logger_time_summary, read_logger_press_guide
+
 app = FastAPI(title="FittingMES", version="0.1.0")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
@@ -515,6 +516,32 @@ async def undo_release_press_production_route(request: Request, production_id: i
 async def update_press_production_route(request: Request, production_id: int,
                                         press_production_id: int):
     return await save_press_production_route_action(request, production_id, press_production_id)
+
+
+@app.get('/lots/{production_id}/press-production/{press_production_id}/logger-guide')
+def read_press_logger_guide(production_id: int, press_production_id: int):
+    with closing(get_connection()) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''SELECT lot.ProdDate, press.MachineCode
+            FROM dbo.PressProduction AS press
+            JOIN dbo.ProductionLot AS lot ON lot.ProductionID=press.ProductionID
+            WHERE press.ProductionID=? AND press.PressProductionID=? AND lot.IsActive=1''',
+            production_id, press_production_id)
+        found = cursor.fetchone()
+        if not found:
+            return JSONResponse({'error': 'Press Production row not found.'}, status_code=404)
+        guide = read_logger_press_guide(cursor, found[0], found[1])
+    return JSONResponse({
+        'production_date': str(found[0]),
+        'equipment_code': found[1],
+        'categories': {
+            'SETUP': {'present': guide['HasSetup'], 'minutes': guide['SetupMinutes']},
+            'CHGOVER': {'present': guide['HasChgOver'], 'minutes': guide['ChgOverMinutes']},
+            'CLEAN': {'present': guide['HasCleaning'], 'minutes': guide['CleaningMinutes']},
+            'BD': {'present': guide['HasBreakdown'], 'minutes': guide['BreakdownMinutes']},
+            'SMDT': {'present': guide['HasSmdt'], 'minutes': guide['SmdtMinutes']},
+        },
+    }, headers={'Cache-Control': 'no-store'})
 
 
 def save_wet_reject_change(production_id, data, wet_reject_id=None):

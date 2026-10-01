@@ -188,6 +188,23 @@ class ReadCursor:
 
 
 class PressProductionTests(unittest.TestCase):
+    def test_smdt_calculation_does_not_use_logger_guide(self):
+        self.assertEqual(calculate_smdt(datetime(2026, 9, 26, 8),
+                        datetime(2026, 9, 26, 16),
+                        {'SETUP': Decimal('10'), 'CHANGEOVER': Decimal('5'),
+                         'CLEAN': Decimal('8'), 'BREAKDOWN': Decimal('20')}), Decimal('437'))
+
+    def test_production_template_keeps_log_smdt_read_only_and_out_of_form(self):
+        from pathlib import Path
+        template = Path('app/templates/production.html').read_text(encoding='utf-8')
+        self.assertIn('>Log SMDT</th>', template)
+        self.assertIn('class="logger-smdt-guide"', template)
+        self.assertIn('>LOG CAL</button>', template)
+        self.assertIn('<th>Release</th><th>Press</th>', template)
+        self.assertLess(template.rindex('>LOG CAL</button>'), template.rindex('>Save</button>'))
+        self.assertNotIn('SuggestedSetupMinutes', template)
+        self.assertNotIn('name="logger_smdt"', template)
+
     def test_undo_release_restores_same_row_without_changing_history(self):
         conn = PressProductionConnection()
         conn.press_rows[30] = dict(PressProductionID=30, ProductionID=7, MachineCode='F2',

@@ -61,16 +61,18 @@ h2{font-size:10.5px;font-weight:600;line-height:1.2;letter-spacing:0;margin:3px 
 .lot-table td:nth-child(15) button{padding-left:4px;padding-right:4px}
 .lot-table input[name="remark"]{width:100%;min-width:90px}
 .press-production-table{table-layout:fixed}
-.press-production-table th:nth-child(1),.press-production-table td:nth-child(1){width:42px}
-.press-production-table th:nth-child(2),.press-production-table td:nth-child(2){width:165px}
+.press-production-table th:nth-child(1),.press-production-table td:nth-child(1){width:72px}
+.press-production-table th:nth-child(2),.press-production-table td:nth-child(2){width:42px}
 .press-production-table th:nth-child(3),.press-production-table td:nth-child(3),.press-production-table th:nth-child(4),.press-production-table td:nth-child(4),.press-production-table th:nth-child(5),.press-production-table td:nth-child(5){width:58px}
 .press-production-table th:nth-child(6),.press-production-table td:nth-child(6),.press-production-table th:nth-child(7),.press-production-table td:nth-child(7){width:68px}
 .press-production-table th:nth-child(8),.press-production-table td:nth-child(8),.press-production-table th:nth-child(9),.press-production-table td:nth-child(9),.press-production-table th:nth-child(10),.press-production-table td:nth-child(10),.press-production-table th:nth-child(11),.press-production-table td:nth-child(11),.press-production-table th:nth-child(12),.press-production-table td:nth-child(12){width:62px}
-.press-production-table th:nth-child(13),.press-production-table td:nth-child(13){width:120px}
+.press-production-table th:nth-child(14),.press-production-table td:nth-child(14){width:58px}
+.press-production-table th:nth-child(15),.press-production-table td:nth-child(15){width:58px}
+.press-production-table th:nth-child(16),.press-production-table td:nth-child(16){width:58px}
 .press-production-table td:nth-child(1),.press-production-table td:nth-child(2),.press-production-table td:nth-child(8){vertical-align:middle}
 .press-production-table td:nth-child(3) input,.press-production-table td:nth-child(4) input,.press-production-table td:nth-child(5) input{text-align:right}
 .press-production-table td:nth-child(8) input{width:100%;min-width:0}
-.press-production-table td:nth-child(14) button{padding-left:4px;padding-right:4px}
+.press-production-table td:nth-child(16) button{padding-left:4px;padding-right:4px}
 .press-add-fitting-table{width:370px;min-width:0}
 .press-add-fitting-table th:nth-child(1),.press-add-fitting-table td:nth-child(1){width:105px}
 .press-add-fitting-table th:nth-child(2),.press-add-fitting-table td:nth-child(2){width:165px}
@@ -206,8 +208,8 @@ main>header,main>.panel,main>.error{flex-shrink:0}
 <td title="{{ item.MaterialName }}">{{ item.MaterialName }}</td>
 <td>{{ '{:,.0f}'.format(item.PlanQty or 0) }}</td>
 <td class="editable"><input form="production-input-{{ item.ProductionID }}" name="shift" maxlength="10" value="{{ item.Shift or '' }}" required aria-label="Shift {{ item.LotNo }}"></td>
-<td class="editable"><input class="clock-input" form="production-input-{{ item.ProductionID }}" name="start_time" inputmode="numeric" pattern="[0-2][0-9]:[0-5][0-9]" placeholder="HH:mm" maxlength="5" value="{{ row_data.get('ProductionStartTime').strftime('%H:%M') if row_data.get('ProductionStartTime') else '' }}" required aria-label="Start {{ item.LotNo }}"></td>
-<td class="editable"><input class="clock-input" form="production-input-{{ item.ProductionID }}" name="end_time" inputmode="numeric" pattern="[0-2][0-9]:[0-5][0-9]" placeholder="HH:mm" maxlength="5" value="{{ row_data.get('ProductionEndTime').strftime('%H:%M') if row_data.get('ProductionEndTime') else '' }}" required aria-label="End {{ item.LotNo }}"></td>
+<td class="editable"><input class="clock-input" form="production-input-{{ item.ProductionID }}" name="start_time" inputmode="numeric" pattern="(?:[0-9]|[01][0-9]|2[0-3]):[0-5][0-9]" placeholder="HH:mm" maxlength="5" value="{{ row_data.get('ProductionStartTime').strftime('%H:%M') if row_data.get('ProductionStartTime') else '' }}" required aria-label="Start {{ item.LotNo }}"></td>
+<td class="editable"><input class="clock-input" form="production-input-{{ item.ProductionID }}" name="end_time" inputmode="numeric" pattern="(?:[0-9]|[01][0-9]|2[0-3]):[0-5][0-9]" placeholder="HH:mm" maxlength="5" value="{{ row_data.get('ProductionEndTime').strftime('%H:%M') if row_data.get('ProductionEndTime') else '' }}" required aria-label="End {{ item.LotNo }}"></td>
 <td class="editable"><input form="production-input-{{ item.ProductionID }}" name="counter" type="number" min="0" max="2147483647" step="1" value="{{ row_data.get('CounterQty', '') }}" required aria-label="Counter {{ item.LotNo }}"></td>
 <td class="editable"><input form="production-input-{{ item.ProductionID }}" name="curing" type="number" min="0" max="2147483647" step="1" value="{{ row_data.get('CuringQty', '') }}" required aria-label="Curing {{ item.LotNo }}"></td>
 <td class="wet-rej-cell">{% if row_calc.WetRejectQty is not none %}{{ row_calc.WetRejectQty }} / {{ '{:.2f} %'.format(row_calc.WetRejectPercent) }}{% endif %}</td>
@@ -242,26 +244,27 @@ main>header,main>.panel,main>.error{flex-shrink:0}
 <section class="panel" aria-label="Press Production">
 <div class="lot-input-heading"><h2>PRESS PRODUCTION</h2><span class="muted">Per-Press records for {{ current.LotNo }}</span></div>
 {% for pp in press_production %}<form id="press-production-{{ pp.PressProductionID }}" method="post" action="/lots/{{ current.ProductionID }}/press-production/{{ pp.PressProductionID }}"><input type="hidden" name="production_date" value="{{ current.ProdDate }}"></form>{% endfor %}
-<div class="table-scroll"><table class="depallet-grid press-production-table" data-production-date="{{ current.ProdDate }}" data-day-start-time="{{ day_start_time.strftime('%H:%M') if day_start_time else '' }}"><thead><tr><th>Press</th><th>Mould</th><th>Dispatch</th><th>Counter</th><th>Curing</th><th>Start</th><th>End</th><th class="press-time-header">Setup</th><th class="press-time-header">ChgOver</th><th class="press-time-header">Idle</th><th class="press-time-header">Cleaning</th><th class="press-time-header">Breakdown</th><th class="press-time-header">SMDT</th><th>Save</th></tr></thead><tbody>
+<div class="table-scroll"><table class="depallet-grid press-production-table" data-production-date="{{ current.ProdDate }}" data-day-start-time="{{ day_start_time.strftime('%H:%M') if day_start_time else '' }}"><thead><tr><th>Release</th><th>Press</th><th>Mould</th><th>Dispatch</th><th>Counter</th><th>Curing</th><th>Start</th><th>End</th><th class="press-time-header">Setup</th><th class="press-time-header">ChgOver</th><th class="press-time-header">Idle</th><th class="press-time-header">Cleaning</th><th class="press-time-header">Breakdown</th><th class="press-time-header">SMDT</th><th class="press-time-header">Log SMDT</th><th>LOG CAL</th><th>Save</th></tr></thead><tbody>
 {% for pp in press_production %}
 {% set assignment_locked = (pp.UsageCycles is not none) or ((pp.CounterQty or 0) > 0) or pp.ReleasedAt %}
-<tr{% if pp.ReleasedAt %} class="press-production-released"{% endif %}>
+<tr data-guide-url="/lots/{{ current.ProductionID }}/press-production/{{ pp.PressProductionID }}/logger-guide"{% if pp.ReleasedAt %} class="press-production-released"{% endif %}>
+<td>{% if pp.ReleasedAt %}<strong>RELEASED</strong><button form="undo-release-{{ pp.PressProductionID }}" type="submit" {% if pp.LaterMouldAssignmentPress %}disabled title="Mould has already been assigned to {{ pp.LaterMouldAssignmentPress }}. Undo Release is not allowed."{% endif %} onclick="return confirm('Restore this Mould assignment to this Press?')">UNDO RELEASE</button><form id="undo-release-{{ pp.PressProductionID }}" method="post" action="/lots/{{ current.ProductionID }}/press-production/{{ pp.PressProductionID }}/undo-release"></form>{% else %}<button class="release-mould-button" form="release-{{ pp.PressProductionID }}" type="submit" onclick="return confirm('Release this Mould from the Press?')">RELEASE MOULD</button><form id="release-{{ pp.PressProductionID }}" method="post" action="/lots/{{ current.ProductionID }}/press-production/{{ pp.PressProductionID }}/release"></form>{% endif %}</td>
 <td>{{ pp.MachineCode }}<input form="press-production-{{ pp.PressProductionID }}" type="hidden" name="machine_code" value="{{ pp.MachineCode }}"></td>
 <td class="editable">{% if assignment_locked %}{{ pp.MouldNo or 'Unknown Mould' }} / {{ pp.MouldName or '' }}<input form="press-production-{{ pp.PressProductionID }}" type="hidden" name="mould_id" value="{{ pp.MouldID }}">{% else %}<select form="press-production-{{ pp.PressProductionID }}" class="mould-choice" name="mould_id" aria-label="Mould for {{ pp.MachineCode }}"><option value="">No Mould / Select Mould</option>{% for mould in eligible_moulds %}<option value="{{ mould.MouldID }}" {% if pp.MouldID == mould.MouldID %}selected{% endif %}>{{ mould.MouldNo }} / {{ mould.MouldName }}</option>{% endfor %}{% if pp.MouldID and pp.MouldNo and pp.MouldID not in eligible_moulds|map(attribute='MouldID')|list %}<option value="{{ pp.MouldID }}" selected>{{ pp.MouldNo }} / {{ pp.MouldName }} (not eligible)</option>{% endif %}</select>{% endif %}</td>
 <td class="editable"><input form="press-production-{{ pp.PressProductionID }}" name="dispatch_qty" type="number" min="0" step="1" value="{{ pp.DispatchQty if pp.DispatchQty is not none else '' }}" aria-label="Dispatch {{ pp.MachineCode }}"></td>
 <td class="editable"><input form="press-production-{{ pp.PressProductionID }}" name="counter_qty" type="number" min="0" max="2147483647" step="1" value="{{ pp.CounterQty if pp.CounterQty is not none else '' }}" required aria-label="Counter {{ pp.MachineCode }}"></td>
 <td class="editable"><input form="press-production-{{ pp.PressProductionID }}" name="curing_qty" type="number" min="0" max="2147483647" step="1" value="{{ pp.CuringQty if pp.CuringQty is not none else '' }}" aria-label="Curing {{ pp.MachineCode }}"></td>
-<td class="editable"><input class="clock-input" form="press-production-{{ pp.PressProductionID }}" name="production_start_time" inputmode="numeric" pattern="[0-2][0-9]:[0-5][0-9]" placeholder="HH:mm" maxlength="5" value="{{ pp.ProductionStartTime.strftime('%H:%M') if pp.ProductionStartTime else '' }}" aria-label="Start {{ pp.MachineCode }}"></td>
-<td class="editable"><input class="clock-input" form="press-production-{{ pp.PressProductionID }}" name="production_end_time" inputmode="numeric" pattern="[0-2][0-9]:[0-5][0-9]" placeholder="HH:mm" maxlength="5" value="{{ pp.ProductionEndTime.strftime('%H:%M') if pp.ProductionEndTime else '' }}" aria-label="End {{ pp.MachineCode }}"></td>
+<td class="editable"><input class="clock-input" form="press-production-{{ pp.PressProductionID }}" name="production_start_time" inputmode="numeric" pattern="(?:[0-9]|[01][0-9]|2[0-3]):[0-5][0-9]" placeholder="HH:mm" maxlength="5" value="{{ pp.ProductionStartTime.strftime('%H:%M') if pp.ProductionStartTime else '' }}" aria-label="Start {{ pp.MachineCode }}"></td>
+<td class="editable"><input class="clock-input" form="press-production-{{ pp.PressProductionID }}" name="production_end_time" inputmode="numeric" pattern="(?:[0-9]|[01][0-9]|2[0-3]):[0-5][0-9]" placeholder="HH:mm" maxlength="5" value="{{ pp.ProductionEndTime.strftime('%H:%M') if pp.ProductionEndTime else '' }}" aria-label="End {{ pp.MachineCode }}"></td>
 <td class="editable press-time-input"><input form="press-production-{{ pp.PressProductionID }}" name="setup_minutes" type="number" min="0" step="0.01" value="{{ '{:.1f}'.format(pp.SetupMinutes or 0) }}" aria-label="Setup minutes {{ pp.MachineCode }}"></td>
 <td class="editable press-time-input"><input form="press-production-{{ pp.PressProductionID }}" name="chgover_minutes" type="number" min="0" step="0.01" value="{{ '{:.1f}'.format(pp.ChgOverMinutes or 0) }}" aria-label="ChgOver minutes {{ pp.MachineCode }}"></td>
 <td class="editable press-time-input"><input form="press-production-{{ pp.PressProductionID }}" name="idle_minutes" type="number" min="0" step="0.01" value="{{ '{:.1f}'.format(pp.IdleMinutes or 0) }}" aria-label="Idle minutes {{ pp.MachineCode }}"></td>
 <td class="editable press-time-input"><input form="press-production-{{ pp.PressProductionID }}" name="cleaning_minutes" type="number" min="0" step="0.01" value="{{ '{:.1f}'.format(pp.CleaningMinutes or 0) }}" aria-label="Cleaning minutes {{ pp.MachineCode }}"></td>
 <td class="editable press-time-input"><input form="press-production-{{ pp.PressProductionID }}" name="breakdown_minutes" type="number" min="0" step="0.01" value="{{ '{:.1f}'.format(pp.BreakdownMinutes or 0) }}" aria-label="Breakdown minutes {{ pp.MachineCode }}"></td>
-<td class="smdt-display" data-smdt="{{ pp.SMDTMinutes }}">{{ '{:.1f}'.format(pp.SMDTMinutes or 0) }}</td>
-<td>{% if pp.ReleasedAt %}<strong>RELEASED</strong><button form="undo-release-{{ pp.PressProductionID }}" type="submit" {% if pp.LaterMouldAssignmentPress %}disabled title="Mould has already been assigned to {{ pp.LaterMouldAssignmentPress }}. Undo Release is not allowed."{% endif %} onclick="return confirm('Restore this Mould assignment to this Press?')">UNDO RELEASE</button><form id="undo-release-{{ pp.PressProductionID }}" method="post" action="/lots/{{ current.ProductionID }}/press-production/{{ pp.PressProductionID }}/undo-release"></form>{% else %}<button form="press-production-{{ pp.PressProductionID }}" type="submit">Save</button><button class="release-mould-button" form="release-{{ pp.PressProductionID }}" type="submit" onclick="return confirm('Release this Mould from the Press?')">RELEASE MOULD</button><form id="release-{{ pp.PressProductionID }}" method="post" action="/lots/{{ current.ProductionID }}/press-production/{{ pp.PressProductionID }}/release"></form>{% endif %}</td>
+<td class="smdt-display" data-smdt="{{ pp.SMDTMinutes }}">{{ '{:.1f}'.format(pp.SMDTMinutes or 0) }}</td><td class="logger-smdt-guide" title="LOGGER guide, read-only">-</td>
+<td><button class="log-cal-button" type="button">LOG CAL</button></td><td>{% if not pp.ReleasedAt %}<button form="press-production-{{ pp.PressProductionID }}" type="submit">Save</button>{% endif %}</td>
 </tr>
-{% else %}<tr><td colspan="14" class="muted">No Press Production rows for this Lot.</td></tr>{% endfor %}
+{% else %}<tr><td colspan="17" class="muted">No Press Production rows for this Lot.</td></tr>{% endfor %}
 </tbody></table></div>
 </section>
 <section class="panel" aria-label="Wet Reject">
@@ -286,6 +289,7 @@ main>header,main>.panel,main>.error{flex-shrink:0}
   if (!table) return;
   const dayStart = table.dataset.dayStartTime;
   const productionDate = table.dataset.productionDate;
+  table.querySelectorAll('[name="production_start_time"],[name="production_end_time"]').forEach(window.FittingMES.attachManualHHmm);
   function resolvedMinutes(value) {
     if (!value || !/^\d{2}:\d{2}$/.test(value)) return null;
     const [hours, minutes] = value.split(':').map(Number);
@@ -311,6 +315,31 @@ main>header,main>.panel,main>.error{flex-shrink:0}
     row.querySelectorAll('input').forEach(input => input.addEventListener('input', () => update(row)));
     update(row);
   });
+  table.querySelectorAll('.log-cal-button').forEach(button => button.addEventListener('click', async () => {
+    const row = button.closest('tr');
+    button.disabled = true;
+    try {
+      const response = await fetch(row.dataset.guideUrl, {headers: {'Accept': 'application/json'}});
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Unable to load LOGGER Guide.');
+      const categoryInputs = {
+        SETUP: 'setup_minutes', CHGOVER: 'chgover_minutes',
+        CLEAN: 'cleaning_minutes', BD: 'breakdown_minutes'
+      };
+      Object.entries(categoryInputs).forEach(([category, name]) => {
+        const source = result.categories[category];
+        if (source && source.present) row.querySelector(`[name="${name}"]`).value = source.minutes;
+      });
+      const logSmdt = row.querySelector('.logger-smdt-guide');
+      const smdt = result.categories.SMDT;
+      logSmdt.textContent = smdt && smdt.present ? Number(smdt.minutes).toFixed(1) : '-';
+      logSmdt.title = smdt && smdt.present ? 'LOGGER guide, read-only' : 'No LOGGER source event';
+    } catch (error) {
+      window.alert(error.message);
+    } finally {
+      button.disabled = false;
+    }
+  }));
 })();
 </script>
 <script>

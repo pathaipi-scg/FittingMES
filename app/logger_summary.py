@@ -1,5 +1,7 @@
 """Read-only LOGGER time summary queries."""
 
+import re
+
 
 SUMMARY_TYPES = {
     "SETUP": "SetupMin",
@@ -9,9 +11,66 @@ SUMMARY_TYPES = {
     "CLEAN": "CleanMin",
 }
 
+GUIDE_TIME_FIELDS = {
+    "SETUP": "SetupMinutes",
+    "CHGOVER": "ChgOverMinutes",
+    "CLEAN": "CleaningMinutes",
+    "BD": "BreakdownMinutes",
+}
+
 
 def _rows(cursor, keys):
     return [dict(zip(keys, row)) for row in cursor.fetchall()]
+
+
+def read_logger_press_guide(cursor, production_date, equipment_code):
+    """Read the daily LOGGER guide for one explicitly mapped F press."""
+    match = re.fullmatch(r"F([1-9][0-9]*)", str(equipment_code or ""))
+    empty = dict(SetupMinutes=None, ChgOverMinutes=None, CleaningMinutes=None,
+                 BreakdownMinutes=None, SmdtMinutes=None,
+                 HasSetup=False, HasChgOver=False, HasCleaning=False,
+                 HasBreakdown=False, HasSmdt=False)
+    if not match:
+        return empty
+
+    instance_no = int(match.group(1))
+    cursor.execute("""
+        SELECT McId, No
+        FROM dbo.Fitting_MainMachine
+        WHERE Machine=? AND IsActive=1
+    """, "F")
+    machines = cursor.fetchall()
+    if len(machines) != 1 or instance_no > int(machines[0][1] or 0):
+        return empty
+
+    stop_ids = _summary_stop_ids(cursor)
+    category_ids = tuple(stop_ids[name] for name in SUMMARY_TYPES)
+    cursor.execute("""
+        SELECT
+            SUM(CASE WHEN event.StopId=? THEN event.DurationMin ELSE 0 END),
+            SUM(CASE WHEN event.StopId=? THEN event.DurationMin ELSE 0 END),
+            SUM(CASE WHEN event.StopId=? THEN event.DurationMin ELSE 0 END),
+            SUM(CASE WHEN event.StopId=? THEN event.DurationMin ELSE 0 END),
+            SUM(CASE WHEN event.StopId=? THEN event.DurationMin ELSE 0 END),
+            SUM(CASE WHEN event.StopId=? THEN 1 ELSE 0 END),
+            SUM(CASE WHEN event.StopId=? THEN 1 ELSE 0 END),
+            SUM(CASE WHEN event.StopId=? THEN 1 ELSE 0 END),
+            SUM(CASE WHEN event.StopId=? THEN 1 ELSE 0 END),
+            SUM(CASE WHEN event.StopId=? THEN 1 ELSE 0 END)
+        FROM dbo.LoggerEvent AS event
+        WHERE event.ProductionDate=? AND event.McId=? AND event.McInstanceNo=?
+          AND event.StopId IN (?,?,?,?,?)
+    """, *(category_ids + category_ids + (production_date, machines[0][0], instance_no) + category_ids))
+    result = cursor.fetchone()
+    if not result or all(value is None or value == 0 for value in result):
+        return empty
+    values = [int(value or 0) for value in result[:5]]
+    presence = [bool(value) for value in result[5:]]
+    return dict(SetupMinutes=values[0], ChgOverMinutes=values[1],
+                CleaningMinutes=values[4], BreakdownMinutes=values[3],
+                SmdtMinutes=values[2], HasSetup=presence[0],
+                HasChgOver=presence[1], HasCleaning=presence[4],
+                HasBreakdown=presence[3], HasSmdt=presence[2])
 
 
 def _summary_stop_ids(cursor):
