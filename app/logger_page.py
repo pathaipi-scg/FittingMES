@@ -3,8 +3,9 @@ import json
 from datetime import date
 
 from app.logger import (LoggerMasters, LoggerSaveInput, expand_main_machine,
-                        expand_sub_related_options, normalize_sub_related_selection,
-                        suggest_cause)
+                        expand_sub_related_options, main_machine_categories,
+                        normalize_sub_related_selection, suggest_cause,
+                        sub_related_options_for_instance)
 
 
 def _json(value):
@@ -13,18 +14,29 @@ def _json(value):
 
 def logger_page_context(masters: LoggerMasters, production_date, logger_events=None,
                         saved=False, error=None, form=None):
+    main_categories = main_machine_categories(masters.main_machines)
     main_instances = [instance for machine in masters.main_machines
                       for instance in expand_main_machine(machine)]
     sub_related_options = expand_sub_related_options(
         masters.main_machines, masters.sub_machines)
+    instance_options = {}
+    for machine in masters.main_machines:
+        for instance in expand_main_machine(machine):
+            key = f'{instance["mc_id"]}:{instance["mc_instance_no"]}'
+            instance_options[key] = sub_related_options_for_instance(
+                masters.main_machines, masters.sub_machines,
+                instance["mc_id"], instance["mc_instance_no"])
     form = dict(form or {})
     return dict(
         page_title="LOGGER", active_tab="logger", production_date=production_date,
         saved=saved, error=error, form=form, logger_events=list(logger_events or []),
-        main_instances=main_instances, sub_related_options=sub_related_options,
+        main_categories=main_categories, main_instances=main_instances,
+        sub_related_options=sub_related_options,
         stop_types=masters.stop_types, sub_stop_types=masters.sub_stop_types,
         causes=masters.causes,
+        main_categories_json=_json(main_categories),
         main_instances_json=_json(main_instances),
+        instance_options_json=_json(instance_options),
         sub_related_options_json=_json(sub_related_options),
         stop_types_json=_json(masters.stop_types),
         sub_stop_types_json=_json(masters.sub_stop_types),

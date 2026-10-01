@@ -422,6 +422,45 @@ def expand_main_machine(machine):
     ]
 
 
+def main_machine_categories(main_machines):
+    """Return distinct broad machine categories from active master rows."""
+    categories = []
+    seen = set()
+    for machine in main_machines:
+        name = machine["Machine"]
+        if name in seen:
+            continue
+        seen.add(name)
+        categories.append({"mc_id": machine["McId"], "machine": name})
+    return categories
+
+
+def sub_related_options_for_instance(main_machines, sub_machines, mc_id, instance_no):
+    """Expand configured physical equipment for one Main Machine instance."""
+    machine = _master_by_id(main_machines, "McId", mc_id)
+    if machine is None or not 1 <= int(instance_no) <= int(machine["No"]):
+        return []
+    options = []
+    for sub_machine in sub_machines:
+        if bool(sub_machine["IsRelated"]) or sub_machine["McId"] != mc_id:
+            continue
+        for sub_instance_no in range(1, int(sub_machine["No"]) + 1):
+            label = f'{sub_machine["SubMachine"]}{sub_instance_no}'
+            options.append({
+                "kind": DIRECT_SUB,
+                "owner_mc_id": mc_id,
+                "owner_mc_instance_no": int(instance_no),
+                "related_mc_id": None,
+                "related_mc_instance_no": None,
+                "sub_mc_id": sub_machine["SubMcId"],
+                "sub_mc_instance_no": sub_instance_no,
+                "display_label": label,
+                "related_machine_snapshot": None,
+                "sub_machine_snapshot": label,
+            })
+    return options
+
+
 def expand_sub_related_options(main_machines, sub_machines):
     main_by_id = {machine["McId"]: machine for machine in main_machines}
     options = []

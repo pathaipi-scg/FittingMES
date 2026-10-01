@@ -61,6 +61,16 @@ class LoggerPageTests(unittest.TestCase):
         self.assertEqual(options[-1]["kind"], "RELATED_MAIN")
         self.assertEqual(context["active_tab"], "logger")
 
+    def test_context_exposes_categories_and_instance_scoped_options(self):
+        context = logger_page_context(self.masters, date(2026, 10, 1), logger_events=[])
+        self.assertEqual(context["main_categories"], [
+            {"mc_id": 7, "machine": "F"},
+            {"mc_id": 4, "machine": "Robot"},
+        ])
+        instance_options = json.loads(context["instance_options_json"])
+        self.assertEqual([item["display_label"] for item in instance_options["7:1"]], ["Mould1"])
+        self.assertEqual(instance_options["4:1"], [])
+
     def test_form_input_keeps_nullable_values_and_created_by_null(self):
         data, selection = logger_form_input(self.form(related_mc_id="", sub_mc_id=""))
         self.assertEqual(data.created_by, None)
@@ -116,6 +126,8 @@ class LoggerPageTests(unittest.TestCase):
         body = response.body.decode()
         self.assertEqual(response.status_code, 200)
         self.assertIn('value="2026-10-01"', body)
+        self.assertEqual(body.count('type="date"'), 1)
+        self.assertIn('name="production_date" value="2026-10-01"', body)
         self.assertIn('LOGGER', body)
         self.assertIn('href="/logger?production_date=2026-10-01" aria-current="page"', body)
         self.assertIn('F1', body)

@@ -9,11 +9,13 @@ from app.logger import (
     LoggerValidationError,
     expand_main_machine,
     expand_sub_related_options,
+    main_machine_categories,
     normalize_sub_related_selection,
     read_logger_events,
     read_logger_masters,
     save_logger_event,
     suggest_cause,
+    sub_related_options_for_instance,
 )
 
 
@@ -118,6 +120,25 @@ class LoggerResolverTests(unittest.TestCase):
         self.assertEqual(len(instances), 14)
         self.assertEqual(instances[0]["display_label"], "F1")
         self.assertEqual(instances[-1]["display_label"], "F14")
+
+    def test_main_machine_categories_are_broad_master_names(self):
+        categories = main_machine_categories(self.main_machines)
+        self.assertEqual([item["machine"] for item in categories], ["F", "Robot", "LINE"])
+        self.assertEqual([item["mc_id"] for item in categories], [7, 4, 5])
+
+    def test_instance_options_are_scoped_to_selected_machine_instance(self):
+        line_one = sub_related_options_for_instance(
+            self.main_machines, self.sub_machines, 5, 1)
+        line_two = sub_related_options_for_instance(
+            self.main_machines, self.sub_machines, 5, 2)
+        self.assertEqual([item["display_label"] for item in line_one],
+                         ["Conv1", "Conv2", "Conv3", "Conv4", "Conv5"])
+        self.assertEqual([item["display_label"] for item in line_two],
+                         ["Conv1", "Conv2", "Conv3", "Conv4", "Conv5"])
+        self.assertTrue(all(item["owner_mc_id"] == 5 for item in line_one))
+        self.assertTrue(all(item["owner_mc_instance_no"] == 1 for item in line_one))
+        self.assertEqual(sub_related_options_for_instance(
+            self.main_machines, self.sub_machines, 4, 1), [])
 
     def test_physical_submachine_instance_expansion(self):
         options = expand_sub_related_options(self.main_machines, self.sub_machines[1:2])
@@ -289,6 +310,12 @@ class LoggerResolverTests(unittest.TestCase):
         manual = SaveConnection()
         save_logger_event(manual, self.save_input(cause_id=1, classification_edited=True), self.masters())
         self.assertEqual(manual.cursor_instance.executed[0][1][22], "MANUAL")
+
+        manual_smdt_subtype = SaveConnection()
+        save_logger_event(manual_smdt_subtype, self.save_input(
+            cause_id=2, stop_id=6, sub_stop_id=20, classification_edited=True,
+            stop="08:00", start="08:09"), self.masters())
+        self.assertEqual(manual_smdt_subtype.cursor_instance.executed[0][1][10:13], (6, 20, 2))
 
         no_cause = SaveConnection()
         save_logger_event(no_cause, self.save_input(cause_id=None), self.masters())
