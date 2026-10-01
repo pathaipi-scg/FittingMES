@@ -1,10 +1,11 @@
 import asyncio
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, time
 from unittest.mock import patch
 
 from app.main import app, print_prod_pdf_page
+from app.print_prod import read_print_prod_context
 from test_prod_api import get_page
 
 
@@ -22,6 +23,9 @@ REPORT = dict(records=[dict(ProdDate=DAY, Shift='1', LotNo='I01690901', ProductC
 
 
 class PrintProdTests(unittest.TestCase):
+    RULES = [dict(EffectiveFromDate=DAY, ShiftID=1, StartTime=time(6, 0)),
+             dict(EffectiveFromDate=DAY, ShiftID=2, StartTime=time(20, 0))]
+
     def page(self, path, query=''):
         with patch('app.main.get_connection') as connection, \
              patch('app.main.read_print_prod_context', return_value=REPORT):
@@ -72,3 +76,47 @@ class PrintProdTests(unittest.TestCase):
         status, _, connection = self.page('/print-prod', 'production_date=2026-09-22')
         self.assertEqual(status, 200)
         connection.assert_called_once()
+
+    def test_context_groups_by_effective_shift_without_writing(self):
+        records = [
+            dict(ProductionID=1, ProdDate=DAY, Shift='1', ProductionStartTime=time(8, 10),
+                 ProductFamily='F', ProductCode='01', PlanQty=800, CounterQty=910, CuringQty=890),
+            dict(ProductionID=2, ProdDate=DAY, Shift='1', ProductionStartTime=time(21, 0),
+                 ProductFamily='F', ProductCode='02', PlanQty=1400, CounterQty=1410, CuringQty=1390),
+            dict(ProductionID=3, ProdDate=DAY, Shift='2', ProductionStartTime=time(22, 0),
+                 ProductFamily='F', ProductCode='03', PlanQty=1400, CounterQty=1490, CuringQty=1409),
+        ]
+        usage = dict(shifts=[dict(shift='1', materials=[]), dict(shift='2', materials=[])], daily=[])
+        cursor = unittest.mock.MagicMock()
+        with patch('app.print_prod.read_prod_records', return_value=records), \
+             patch('app.print_prod.read_shift_rules', return_value=self.RULES) as read_rules, \
+             patch('app.print_prod.read_usage_context', return_value=usage), \
+             patch('app.print_prod.rows', return_value=[]):
+            context = read_print_prod_context(cursor, DAY)
+
+        read_rules.assert_called_once_with(cursor, DAY)
+        self.assertEqual([row['Shift'] for row in context['records']], ['1', '2', '2'])
+        self.assertEqual([row['ProductionID'] for row in context['shifts'][0]['records']], [1])
+        self.assertEqual([row['ProductionID'] for row in context['shifts'][1]['records']], [2, 3])
+        self.assertEqual(context['shifts'][0]['totals'], dict(PlanQty=800, CounterQty=910, CuringQty=890))
+        self.assertEqual(context['shifts'][1]['totals'], dict(PlanQty=2800, CounterQty=2900, CuringQty=2799))
+        self.assertEqual(context['daily_totals'], dict(PlanQty=3600, CounterQty=3810, CuringQty=3689))
+        sqls = [call.args[0] for call in cursor.execute.call_args_list]
+        self.assertTrue(sqls)
+        self.assertTrue(all('UPDATE' not in sql.upper() for sql in sqls))
+        self.assertTrue(all('INSERT' not in sql.upper() for sql in sqls))
+
+    def test_context_preserves_stored_shift_without_valid_start(self):
+        records = [
+            dict(ProductionID=1, ProdDate=DAY, Shift='2', ProductionStartTime=None,
+                 ProductFamily='F', ProductCode='01', PlanQty=1, CounterQty=1, CuringQty=1),
+            dict(ProductionID=2, ProdDate=DAY, Shift='1', ProductionStartTime='not-a-time',
+                 ProductFamily='F', ProductCode='02', PlanQty=1, CounterQty=1, CuringQty=1),
+        ]
+        usage = dict(shifts=[dict(shift='1', materials=[]), dict(shift='2', materials=[])], daily=[])
+        with patch('app.print_prod.read_prod_records', return_value=records), \
+             patch('app.print_prod.read_shift_rules', return_value=self.RULES), \
+             patch('app.print_prod.read_usage_context', return_value=usage), \
+             patch('app.print_prod.rows', return_value=[]):
+            context = read_print_prod_context(unittest.mock.MagicMock(), DAY)
+        self.assertEqual([row['Shift'] for row in context['records']], ['2', '1'])

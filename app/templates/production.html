@@ -302,6 +302,7 @@ main>header,main>.panel,main>.error{flex-shrink:0}
     const updateShift = () => { shift.value = resolveShift(start.value, shift.value); };
     start.addEventListener('input', updateShift);
     start.addEventListener('change', updateShift);
+    updateShift();
   });
 
   const table = document.querySelector('.press-production-table');

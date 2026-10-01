@@ -42,7 +42,7 @@ class ProductionTests(unittest.TestCase):
         return response,conn
 
     def test_browse_information_and_disabled_plan(self):
-        response,_=self.render(production_id=7)
+        response, conn=self.render(production_id=7)
         self.assertEqual(response.status_code,200)
         text=response.body.decode()
         for value in ['B006690901','Product brown','3,600','USED: B006690901','disabled','PRODUCTION LOT','VOID LOT','aria-current="true"']:
@@ -52,6 +52,10 @@ class ProductionTests(unittest.TestCase):
         self.assertNotIn('type="time"', text)
         self.assertNotIn('name="MaterialName"',text)
         self.assertNotIn('replacement_plan',text)
+        self.assertIn("start.addEventListener('input', updateShift);", text)
+        self.assertIn("start.addEventListener('change', updateShift);", text)
+        self.assertIn('    updateShift();', text)
+        conn.commit.assert_not_called()
 
     def test_edit_original_date_and_current_selectable(self):
         response,_=self.render(production_id=7,edit=True,production_date=DAY)

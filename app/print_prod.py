@@ -1,11 +1,19 @@
 """Read-only daily production report data assembled from existing sources."""
 from app.lots import rows
 from app.prod_api import read_prod_records
+from app.production_data import read_shift_rules, resolve_shift
 from app.usage import read_usage_context
 
 
 def read_print_prod_context(cursor, production_date):
     records = read_prod_records(cursor, production_date)
+    shift_rules = read_shift_rules(cursor, production_date)
+    for record in records:
+        try:
+            record["Shift"] = resolve_shift(production_date, record.get("ProductionStartTime"),
+                                             record.get("Shift"), shift_rules)
+        except (TypeError, ValueError):
+            pass
     cursor.execute("""SELECT ProductFamily,ProductCode,ProductName
         FROM dbo.ProductCodeMaster WHERE IsActive=1""")
     product_names = {(row[0], row[1]): row[2] for row in cursor.fetchall()}
