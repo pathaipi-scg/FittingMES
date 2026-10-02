@@ -815,13 +815,21 @@ class DepalletTests(unittest.TestCase):
         text=response.body.decode()
         grid=re.search(r'<table[^>]*id="depallet-lots".*?</table>',text,re.S)[0]
         self.assertEqual(re.findall(r'<th scope="col">(.*?)</th>',grid),
-                         ['Select','Move','Order','Lot No.','Product','Shift','Start','End','Produced Qty','Already Depalleted','Remaining Curing','Depallet Qty','Good Qty','Remark'])
+                         ['Select','Move','Order','Lot No.','Product','Shift','Start','End','Produced','Depalleted','Remaining','Depallet','Good','Remark'])
         self.assertIn('data-selected="true"',grid)
         self.assertIn('data-production-qty="10000"',grid)
         self.assertIn('Qty/Day',text)
         self.assertIn('data-daily-total',text)
         self.assertIn('data-reject-code',text)
         self.assertIn('rejects.replaceChildren()',text)
+
+    def test_depallet_product_uses_production_lot_display_fields(self):
+        conn=MemoryConnection(existing=True)
+        conn.work['lots'][0].update(PlanName='Prestige Common', MaterialName='13 / Angle HIP')
+        conn.work['depallets'][0]['DepalletDate']=conn.work['lots'][0]['ProdDate']
+        response=self.render_lot(conn,conn.work['lots'][0])
+        grid=re.search(r'<table[^>]*id="depallet-lots".*?</table>',response.body.decode(),re.S)[0]
+        self.assertIn('>Prestige Common 13 / Angle HIP<',grid)
 
     def test_saved_run_move_buttons_respect_sequence_boundaries(self):
         conn=MemoryConnection()

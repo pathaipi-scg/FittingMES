@@ -212,7 +212,7 @@ def production_page(request, plan_id=None, product_code=None, confirm=False, map
                     create=False, running_no=None, production_date=None, production_id=None, edit=False, save=False, void=False, production_input=None, data_saved=False, product_family=None, product_choices=None, press_message=None, press_message_type=None, wet_reject_message=None, wet_reject_message_type=None):
     requested_date = production_date
     production_date = production_date or date.today()
-    context = dict(families=FAMILIES, product_family=None, product_previews={}, production_data={}, calculated=calculate(None, None), data_saved=data_saved, production_date=production_date, lots=[], lots_for_date=[], production_data_by_lot={}, calculated_by_lot={}, current=None, edit=edit, edit_plans=[], plans=[], selected=None, products=[], material_prefix=None,
+    context = dict(families=FAMILIES, product_family=None, product_name=None, product_previews={}, production_data={}, calculated=calculate(None, None), data_saved=data_saved, production_date=production_date, lots=[], lots_for_date=[], production_data_by_lot={}, calculated_by_lot={}, current=None, edit=edit, edit_plans=[], plans=[], selected=None, products=[], material_prefix=None,
                    product_code=None, lot=None, error=None, lots_load_failed=False, running_no=None, created_lot=None,
                    press_production=[], day_start_time=None, eligible_presses=[], eligible_moulds=[], press_product_error=None,
                    press_message=press_message, press_message_type=press_message_type,
@@ -330,6 +330,13 @@ def production_page(request, plan_id=None, product_code=None, confirm=False, map
                         context["mapping_edit"] = True
                     else:
                         context["product_family"], context["product_code"] = mapped
+                        try:
+                            master_product = next((product for product in read_products(cursor)
+                                                   if product["ProductFamily"] == mapped[0]
+                                                   and product["ProductCode"] == mapped[1]), None)
+                            context["product_name"] = master_product["ProductName"] if master_product else None
+                        except Exception:
+                            context["product_name"] = None
                         context["lot"] = lot_prefix(mapped[0], mapped[1], selected["StartTime"])
                         context["running_no"] = next_running_no(cursor, context["lot"],
                             mapped[0], mapped[1], selected["StartTime"])

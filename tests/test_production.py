@@ -84,6 +84,31 @@ class ProductionTests(unittest.TestCase):
         self.assertIn('production_id=8',response.headers['location'])
         self.assertEqual(insert.call_args.args[2:5],('06','B066909',1))
 
+    def test_mapped_product_header_includes_authoritative_product_name(self):
+        conn = MagicMock()
+        master_products = [dict(ProductFamily='Prestige Common', ProductCode='13', ProductName='Angle HIP')]
+        with patch('app.main.get_connection', return_value=conn), \
+             patch('app.main.read_lots', return_value=[]), \
+             patch('app.main.read_plans', return_value=[dict(PLAN)]), \
+             patch('app.main.read_mapping', return_value=('Prestige Common', '13')), \
+             patch('app.main.read_products', return_value=master_products), \
+             patch('app.main.next_running_no', return_value=1), \
+             patch('app.main.lot_prefix', return_value='P013'):
+            response = production_page(request(), 'p1', production_date=DAY)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('Prestige Common / 13 / Angle HIP', response.body.decode())
+
+    def test_workflow_product_does_not_push_lot_controls_right(self):
+        response, _ = self.render(production_id=7)
+        text = response.body.decode()
+        self.assertIn('.workflow .product-display{flex:0 1 auto;', text)
+        self.assertNotIn('.workflow .product-display{flex:1 1 auto;', text)
+
+    def test_plan_trigger_allows_long_desktop_description(self):
+        response, _ = self.render(production_id=7)
+        text = response.body.decode()
+        self.assertIn('.plan-trigger{display:inline-flex;width:max-content;max-width:min(460px,100%);', text)
+
     def test_mapping_confirmation(self):
         conn=MagicMock(); cursor=conn.cursor.return_value
         cursor.fetchone.side_effect=[(0,),('06',),None,('NeuFit / NeuStile','06'),(1,)]

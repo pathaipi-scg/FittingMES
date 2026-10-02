@@ -72,7 +72,8 @@ def read_daily_work(cursor, production_date, lots):
         saved_for_lot = [entry for entry in saved if entry['ProductionID'] == lot['ProductionID']]
         for entry in saved_for_lot:
             entry.update(LotNo=lot['LotNo'],ProductCode=lot['ProductCode'],
-                         ProductFamily=lot.get('ProductFamily'),ProductName=lot.get('ProductName'))
+                         ProductFamily=lot.get('ProductFamily'),ProductName=lot.get('ProductName'),
+                         PlanName=lot.get('PlanName'),MaterialName=lot.get('MaterialName'))
             rejects = rejects_by_depallet.get(entry['DepalletID'], {})
             entry.update(summary(entry['DepalletQty'], entry['GoodQty'], rejects))
             already = int(entry.get('AlreadyDepalletedBeforeRun') or 0)
