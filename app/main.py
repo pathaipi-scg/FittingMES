@@ -13,6 +13,7 @@ from app.lots import rows, day, read_lots, update_lot, insert_lot, next_running_
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from app.database import get_connection
 from app.pis_config import PISConfig
@@ -44,17 +45,18 @@ from app.press_production import (build_press_production_context,
                                   save_press_production as save_press_production_row)
 from app.wet_reject import build_wet_reject_context, save_wet_reject, save_wet_reject_batch
 from app.print_prod import read_print_prod_context
+from app.print_oee import read_print_oee_context
 from app.browser_pdf import (PdfGenerationError, generate_print_prod_pdf,
                              finish_pdf_process)
 from app.logger import (LoggerValidationError, read_logger_events,
                         read_logger_masters, save_logger_event)
 from app.logger_page import (cause_suggestion, logger_form_input,
                              logger_page_context, normalize_form_selection)
-
 from app.logger_master import read_logger_master_review
 from app.logger_summary import read_logger_time_summary, read_logger_press_guide
 
 app = FastAPI(title="FittingMES", version="0.1.0")
+app.mount('/static', StaticFiles(directory=Path(__file__).parent / 'static'), name='static')
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 
@@ -111,6 +113,7 @@ def logger_master_page(request: Request, production_date: date | None = None):
                                           context=context, status_code=503,
                                           headers={'Cache-Control': 'no-store'})
 
+
 @app.get('/logger/summary', response_class=HTMLResponse)
 def logger_summary_page(request: Request, production_date: date | None = None):
     production_date = production_date or date.today()
@@ -130,7 +133,6 @@ def logger_summary_page(request: Request, production_date: date | None = None):
         return templates.TemplateResponse(request=request, name='logger_summary.html',
                                           context=context, status_code=503,
                                           headers={'Cache-Control': 'no-store'})
-
 
 
 def save_logger_form(form):
@@ -1308,9 +1310,24 @@ def print_prod_pdf_page(production_date: date | None = None):
 
 @app.get('/print-oee', response_class=HTMLResponse)
 def print_oee_page(request: Request, production_date: date | None = None):
+    production_date = production_date or date.today()
+    context = dict(page_title='PRINT OEE', active_tab='print-oee',
+                   production_date=production_date, rows=[], excluded=[],
+                   summaries={'1': {}, '2': {}, 'ALL DAY': {}},
+                   shifts=('1', '2'), plan_week=None, error=None)
+    status = 200
+    try:
+        with closing(get_connection()) as conn:
+            context.update(read_print_oee_context(conn.cursor(), production_date))
+    except ValueError as exc:
+        context['error'] = str(exc)
+        status = 200
+    except Exception:
+        context['error'] = 'Unable to load the OEE report. Please retry.'
+        status = 503
     return templates.TemplateResponse(request=request, name='print_oee.html',
-                                      context=dict(page_title='PRINT OEE', active_tab='print-oee',
-                                                    production_date=production_date or date.today()))
+                                      context=context, status_code=status,
+                                      headers={'Cache-Control': 'no-store'})
 
 
 @app.post('/usage/{shift}', response_class=HTMLResponse)

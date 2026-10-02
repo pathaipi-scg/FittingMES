@@ -73,10 +73,13 @@ class PrintProdTests(unittest.TestCase):
         self.assertNotIn('800.0', body)
         self.assertIn('/print-prod/pdf?production_date=2026-09-22', body)
 
-    def test_print_oee_placeholder_route_preserves_date(self):
-        status, body, _ = self.page('/print-oee', 'production_date=2026-09-22')
+    def test_print_oee_route_preserves_date(self):
+        with patch('app.main.read_print_oee_context', return_value={
+                'rows': [], 'excluded': [], 'summaries': {'1': {}, '2': {}, 'ALL DAY': {}},
+                'shifts': ('1', '2')}):
+            status, body, _ = self.page('/print-oee', 'production_date=2026-09-22')
         self.assertEqual(status, 200)
-        self.assertIn('Coming next', body)
+        self.assertIn('รายงานประสิทธิภาพการผลิต / OEE', body)
         self.assertIn('value="2026-09-22"', body)
 
     def test_pdf_route_returns_date_based_attachment(self):

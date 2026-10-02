@@ -5,6 +5,16 @@ from app.production_data import read_shift_rules, resolve_shift
 from app.usage import read_usage_context
 
 
+def read_plan_week(cursor, production_date):
+    cursor.execute("""SELECT TOP (1) PlanWeek
+        FROM dbo.P_ActivePlan
+        WHERE Company=? AND Plant=? AND Machine=? AND StartTime=?
+          AND PlanWeek IS NOT NULL
+                ORDER BY VersionNo DESC, Shift""", 'CRTC', '30A1', 'SB2-3', production_date)
+    plan_row = cursor.fetchone()
+    return plan_row[0] if plan_row and plan_row[0] is not None else None
+
+
 def read_print_prod_context(cursor, production_date):
     records = read_prod_records(cursor, production_date)
     shift_rules = read_shift_rules(cursor, production_date)
@@ -14,13 +24,7 @@ def read_print_prod_context(cursor, production_date):
                                              record.get("Shift"), shift_rules)
         except (TypeError, ValueError):
             pass
-    cursor.execute("""SELECT TOP (1) PlanWeek
-        FROM dbo.P_ActivePlan
-        WHERE Company=? AND Plant=? AND Machine=? AND StartTime=?
-          AND PlanWeek IS NOT NULL
-                ORDER BY VersionNo DESC, Shift""", 'CRTC', '30A1', 'SB2-3', production_date)
-    plan_row = cursor.fetchone()
-    plan_week = plan_row[0] if plan_row and plan_row[0] is not None else None
+    plan_week = read_plan_week(cursor, production_date)
     cursor.execute("""SELECT ProductFamily,ProductCode,ProductName
         FROM dbo.ProductCodeMaster WHERE IsActive=1""")
     product_names = {(row[0], row[1]): row[2] for row in cursor.fetchall()}
