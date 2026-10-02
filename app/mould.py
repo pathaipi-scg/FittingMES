@@ -27,8 +27,9 @@ def read_products(cursor):
             for row in cursor.fetchall()]
 
 
-def read_mould_list(cursor, search='', product='', status=''):
+def read_mould_list(cursor, search='', family='', product='', status=''):
     search = str(search or '').strip()
+    family = str(family or '').strip()
     product = str(product or '').strip()
     status = str(status or '').strip().upper()
     if status and status not in ('ACTIVE', 'RECONDITION', 'RETIRED', 'DENIED'):
@@ -44,10 +45,12 @@ def read_mould_list(cursor, search='', product='', status=''):
             UsageRecordCount, LastUsageDateTime, Remark, CreatedAt, UpdatedAt
         FROM dbo.vw_MouldList
         WHERE (? = '' OR MouldNo LIKE ? OR MouldName LIKE ?)
+                    AND (? = '' OR ProductFamily=?)
           AND (? IS NULL OR (ProductFamily=? AND ProductCode=?))
           AND (? = '' OR Status=?)
         ORDER BY MouldNo''',
         search, '%' + search + '%', '%' + search + '%',
+        family, family,
         product_family, product_family, product_code, status, status)
     return _rows(cursor)
 
@@ -86,14 +89,15 @@ def read_mould_detail(cursor, mould_id):
                 recondition_history=recondition_history, usage_history=usage_history)
 
 
-def page_context(cursor, search='', product='', status='', mould_id=None):
+def page_context(cursor, search='', family='', product='', status='', mould_id=None):
     products = read_products(cursor)
-    moulds = read_mould_list(cursor, search, product, status)
+    moulds = read_mould_list(cursor, search, family, product, status)
     selected = None
     detail = None
     if mould_id is not None:
         detail = read_mould_detail(cursor, mould_id)
-        selected = detail['mould']
+        if any(row['MouldID'] == mould_id for row in moulds):
+            selected = detail['mould']
     return dict(products=products, moulds=moulds, selected=selected,
                 status_history=(detail or {}).get('status_history', []),
                 recondition_history=(detail or {}).get('recondition_history', []),

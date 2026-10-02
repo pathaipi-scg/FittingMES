@@ -1158,17 +1158,18 @@ async def press_mc_capability_route(press_code: str, request: Request):
 
 @app.get('/mould', response_class=HTMLResponse)
 def mould_page(request: Request, production_date: date | None = None, q: str = '',
-               product: str = '', status: str = '', mould_id: int | None = None,
+               family: str = '', product: str = '', status: str = '', mould_id: int | None = None,
                message: str | None = None, message_type: str | None = None):
     production_date = production_date or date.today()
     context = dict(page_title='Mould', active_tab='mould', production_date=production_date,
-                   search=q, product_filter=product, status_filter=status, moulds=[], products=[],
+                   search=q, family_filter=family, product_filter=product, status_filter=status,
+                   moulds=[], products=[],
                    selected=None, status_history=[], recondition_history=[], usage_history=[],
                    message=message, message_type=message_type, error=None)
     response_status = 200
     try:
         with closing(get_connection()) as conn:
-            context.update(mould_context(conn.cursor(), q, product, status, mould_id))
+            context.update(mould_context(conn.cursor(), q, family, product, status, mould_id))
     except ValueError as exc:
         context['error'] = str(exc)
         response_status = 400

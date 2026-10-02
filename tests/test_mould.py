@@ -48,10 +48,12 @@ class FakeCursor:
                 self._set([self.conn.mould] if args[0] == self.conn.mould['MouldID'] else [])
             else:
                 rows = [self.conn.mould]
-                search, _, _, family, _, code, status, _ = args
+                search, _, _, family, _, product_family, _, code, status, _ = args
                 if search and search.casefold() not in (self.conn.mould['MouldNo'] + self.conn.mould['MouldName']).casefold():
                     rows = []
-                if family and (self.conn.mould['ProductFamily'] != family or self.conn.mould['ProductCode'] != code):
+                if family and self.conn.mould['ProductFamily'] != family:
+                    rows = []
+                if product_family and (self.conn.mould['ProductFamily'] != product_family or self.conn.mould['ProductCode'] != code):
                     rows = []
                 if status and self.conn.mould['Status'] != status:
                     rows = []
@@ -120,11 +122,11 @@ class MouldTests(unittest.TestCase):
 
     def test_list_reads_authoritative_view_and_applies_search_product_status_filters(self):
         conn = FakeConnection()
-        rows = read_mould_list(conn.cursor(), 'M000001', 'Family A|01', 'ACTIVE')
+        rows = read_mould_list(conn.cursor(), 'M000001', 'Family A', 'Family A|01', 'ACTIVE')
         self.assertEqual(rows[0]['CurrentAge'], 70)
         sql, args = conn.sql[-1]
         self.assertIn('FROM dbo.vw_MouldList', sql)
-        self.assertEqual(args, ('M000001', '%M000001%', '%M000001%', 'Family A', 'Family A', '01', 'ACTIVE', 'ACTIVE'))
+        self.assertEqual(args, ('M000001', '%M000001%', '%M000001%', 'Family A', 'Family A', 'Family A', 'Family A', '01', 'ACTIVE', 'ACTIVE'))
         self.assertEqual(read_mould_list(conn.cursor(), 'absent'), [])
         with self.assertRaisesRegex(ValueError, 'valid Mould status'):
             read_mould_list(conn.cursor(), status='UNKNOWN')
@@ -156,6 +158,18 @@ class MouldTests(unittest.TestCase):
         self.assertEqual(len(context['products']), 2)
         self.assertEqual(context['selected']['MouldNo'], 'M000001')
         self.assertEqual(len(context['usage_history']), 1)
+
+    def test_family_filter_preserves_composite_product_identity(self):
+        conn = FakeConnection()
+        rows = read_mould_list(conn.cursor(), family='Family A', product='Family A|01')
+        self.assertEqual([row['ProductFamily'] for row in rows], ['Family A'])
+        self.assertEqual(conn.sql[-1][1][3:8], ('Family A', 'Family A', 'Family A', 'Family A', '01'))
+
+    def test_selected_mould_is_hidden_when_filtered_out(self):
+        conn = FakeConnection()
+        context = page_context(conn.cursor(), family='Family B', mould_id=4)
+        self.assertEqual(context['moulds'], [])
+        self.assertIsNone(context['selected'])
 
     def test_register_calls_database_numbering_procedure_and_reloads_view(self):
         conn = FakeConnection()
@@ -225,13 +239,18 @@ class MouldTests(unittest.TestCase):
     def test_page_renders_filters_authoritative_age_actions_and_histories(self):
         conn = FakeConnection()
         with patch('app.main.get_connection', return_value=conn):
-            response = mould_page(request(), production_date=date(2026, 9, 27), mould_id=4)
+            response = mould_page(request(), production_date=date(2026, 9, 27), family='Family A',
+                                  product='Family A|01', status='ACTIVE', q='M000001', mould_id=4)
         self.assertEqual(response.status_code, 200)
         page = response.body.decode()
         for text in ('M000001', 'Mould One', 'Product One', 'Lifetime Age', 'Status History',
                      'Recondition History', 'Usage / Production History', 'I0260901',
-                     'Send to Recondition', 'DENIED', 'RETIRED'):
+                     'Send to Recondition', 'DENIED', 'RETIRED', 'Product Family',
+                     'FittingMES:mould-filters'):
             self.assertIn(text, page)
+        self.assertIn('name="family"', page)
+        self.assertIn('family=Family', page)
+        self.assertIn('product=Family', page)
         self.assertNotIn('name="mould_no"', page)
         self.assertIn('FROM dbo.vw_MouldList', '\n'.join(sql for sql, _ in conn.sql))
         self.assertEqual(conn.commits, 0)

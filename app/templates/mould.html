@@ -31,17 +31,18 @@
   <form class="mould-toolbar" method="get" action="/mould">
     <input type="hidden" name="production_date" value="{{ production_date }}">
     <label for="mould-search">Mould No. / Name<input id="mould-search" type="search" name="q" value="{{ search }}" placeholder="Search Mould"></label>
-    <label for="mould-product-filter">Product<select id="mould-product-filter" name="product"><option value="">All products</option>{% for item in products %}<option value="{{ item.ProductFamily }}|{{ item.ProductCode }}" {% if product_filter == item.ProductFamily ~ '|' ~ item.ProductCode %}selected{% endif %}>{{ item.ProductFamily }} / {{ item.ProductCode }} / {{ item.ProductName }}</option>{% endfor %}</select></label>
+    <label for="mould-family-filter">Product Family<select id="mould-family-filter" name="family"><option value="">All families</option>{% for family in products|map(attribute='ProductFamily')|unique %}<option value="{{ family }}" {% if family_filter == family %}selected{% endif %}>{{ family }}</option>{% endfor %}</select></label>
+    <label for="mould-product-filter">Product<select id="mould-product-filter" name="product"><option value="">All products</option>{% for item in products %}<option value="{{ item.ProductFamily }}|{{ item.ProductCode }}" data-family="{{ item.ProductFamily }}" {% if product_filter == item.ProductFamily ~ '|' ~ item.ProductCode %}selected{% endif %}>{{ item.ProductFamily }} / {{ item.ProductCode }} / {{ item.ProductName }}</option>{% endfor %}</select></label>
     <label for="mould-status-filter">Status<select id="mould-status-filter" name="status"><option value="">All statuses</option>{% for state in ['ACTIVE','RECONDITION','RETIRED','DENIED'] %}<option value="{{ state }}" {% if status_filter == state %}selected{% endif %}>{{ state }}</option>{% endfor %}</select></label>
-    <button class="primary" type="submit">Filter</button><a href="/mould?production_date={{ production_date }}">Clear</a>
+    <button class="primary" type="submit">Filter</button><a id="mould-clear" href="/mould?production_date={{ production_date }}&amp;clear=1">Clear</a>
   </form>
   <div class="table-scroll"><table class="mould-table"><thead><tr>
     <th>Mould No.</th><th>Mould Name</th><th>Product Family</th><th>Code</th><th>Product</th><th>Status</th>
     <th>Recondition #</th><th>Current Age</th><th>Lifetime Age</th><th>Usage Records</th><th>Last Usage</th><th>Remark</th>
   </tr></thead><tbody>
   {% for row in moulds %}<tr aria-selected="{{ 'true' if selected and selected.MouldID == row.MouldID else 'false' }}">
-    <td><a href="/mould?production_date={{ production_date }}&amp;mould_id={{ row.MouldID }}">{{ row.MouldNo }}</a></td>
-    <td><a href="/mould?production_date={{ production_date }}&amp;mould_id={{ row.MouldID }}">{{ row.MouldName }}</a></td>
+    <td><a class="mould-select" href="/mould?production_date={{ production_date }}&amp;family={{ family_filter|urlencode }}&amp;product={{ product_filter|urlencode }}&amp;status={{ status_filter|urlencode }}&amp;q={{ search|urlencode }}&amp;mould_id={{ row.MouldID }}">{{ row.MouldNo }}</a></td>
+    <td><a class="mould-select" href="/mould?production_date={{ production_date }}&amp;family={{ family_filter|urlencode }}&amp;product={{ product_filter|urlencode }}&amp;status={{ status_filter|urlencode }}&amp;q={{ search|urlencode }}&amp;mould_id={{ row.MouldID }}">{{ row.MouldName }}</a></td>
     <td>{{ row.ProductFamily }}</td><td>{{ row.ProductCode }}</td><td>{{ row.ProductName or '' }}</td>
     <td class="mould-state" data-state="{{ row.Status }}">{{ row.Status }}</td><td>{{ row.CurrentReconditionNo }}</td>
     <td>{{ row.CurrentAge if row.CurrentAge is not none else 0 }}</td><td>{{ row.LifetimeAge if row.LifetimeAge is not none else 0 }}</td>
@@ -133,6 +134,51 @@
 
 <script>
 (() => {
+  const filterForm = document.querySelector('.mould-toolbar');
+  const familyFilter = document.getElementById('mould-family-filter');
+  const productFilter = document.getElementById('mould-product-filter');
+  const storageKey = 'FittingMES:mould-filters';
+  const query = new URLSearchParams(window.location.search);
+  const explicitFilters = ['q', 'family', 'product', 'status'].some(key => query.has(key));
+  const filterState = () => ({q: filterForm.q.value, family: familyFilter.value,
+    product: productFilter.value, status: filterForm.status.value});
+  const saveFilters = () => sessionStorage.setItem(storageKey, JSON.stringify(filterState()));
+  if (query.has('clear')) {
+    sessionStorage.removeItem(storageKey);
+    query.delete('clear');
+    history.replaceState(null, '', `${window.location.pathname}?${query}`);
+  } else if (!explicitFilters) {
+    try {
+      const stored = JSON.parse(sessionStorage.getItem(storageKey) || 'null');
+      if (stored) {
+        const restored = new URLSearchParams({production_date: query.get('production_date') || '', ...stored});
+        if (!restored.get('product') || restored.get('product').startsWith(`${restored.get('family')}|`)) {
+          window.location.replace(`${window.location.pathname}?${restored}`);
+          return;
+        }
+        stored.product = '';
+        sessionStorage.setItem(storageKey, JSON.stringify(stored));
+        window.location.replace(`${window.location.pathname}?${new URLSearchParams({production_date: query.get('production_date') || '', ...stored})}`);
+        return;
+      }
+    } catch (error) { sessionStorage.removeItem(storageKey); }
+  }
+  const restrictProducts = () => {
+    for (const option of productFilter.options) {
+      option.hidden = Boolean(option.dataset.family && familyFilter.value && option.dataset.family !== familyFilter.value);
+    }
+    if (productFilter.value && familyFilter.value && !productFilter.value.startsWith(`${familyFilter.value}|`)) {
+      productFilter.value = '';
+    }
+  };
+  restrictProducts();
+  familyFilter.addEventListener('change', () => {
+    restrictProducts();
+    saveFilters();
+    filterForm.submit();
+  });
+  filterForm.addEventListener('submit', saveFilters);
+  document.getElementById('mould-clear').addEventListener('click', () => sessionStorage.removeItem(storageKey));
   const product = document.getElementById('new-mould-product');
   const family = document.getElementById('new-mould-family');
   const code = document.getElementById('new-mould-code');
