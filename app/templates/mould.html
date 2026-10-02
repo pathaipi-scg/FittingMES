@@ -1,12 +1,16 @@
 {% extends 'api_base.html' %}
 {% block content %}
+{% macro mould_navigation_fields() -%}
+<input type="hidden" name="q" value="{{ search }}"><input type="hidden" name="family" value="{{ family_filter }}"><input type="hidden" name="product" value="{{ product_filter }}"><input type="hidden" name="status" value="{{ status_filter }}">{% if production_date %}<input type="hidden" name="production_date" value="{{ production_date }}">{% endif %}
+{%- endmacro %}
+{% set mould_date_query = '&production_date=' ~ production_date if production_date else '' %}
 <style>
-.mould-toolbar{display:flex;gap:5px;align-items:end;flex-wrap:wrap;margin:3px 0}
+.mould-toolbar{display:flex;gap:5px;align-items:end;flex-wrap:nowrap;margin:3px 0}
 .mould-toolbar label,.mould-form label{display:flex;flex-direction:column;gap:2px}
 .mould-toolbar input,.mould-toolbar select,.mould-form input,.mould-form select,.mould-form textarea{font:inherit;border:1px solid #c7d2df;border-radius:2px;padding:3px 5px;background:white;color:inherit;min-height:24px}
-.mould-toolbar input[type=search]{width:190px}.mould-toolbar select{min-width:145px}
-.mould-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:6px;align-items:start}
-.mould-table{min-width:1080px}.mould-table td,.mould-table th{padding:3px 5px}
+.mould-toolbar input[type=search]{width:140px}.mould-toolbar select{min-width:0}.mould-toolbar #mould-family-filter{width:145px}.mould-toolbar #mould-product-filter{width:180px}.mould-toolbar #mould-status-filter{width:110px}.mould-toolbar button,.mould-toolbar a{flex:0 0 auto}.mould-toolbar .button{font:400 9.75px/1.2 system-ui,sans-serif;height:22.5px;border:0.75px solid #c7d2df;border-radius:2.25px;padding:1.5px 4.5px;background:white;color:inherit;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;white-space:nowrap}
+.mould-workspace{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:6px;align-items:start}.mould-list{min-width:0}.mould-side{display:grid;gap:6px;min-width:0}
+.mould-table{width:100%;table-layout:fixed}.mould-table td,.mould-table th{padding:3px 5px}.mould-table td{overflow-wrap:anywhere}
 .mould-table tr[aria-selected=true] td{background:#eaf4ff;border-top:1px solid #1765ad;border-bottom:1px solid #1765ad}
 .mould-table a{color:inherit;text-decoration:none}.mould-table a:hover{text-decoration:underline}
 .mould-state{font-weight:600}.mould-state[data-state=ACTIVE]{color:#25643b}.mould-state[data-state=RECONDITION]{color:#875d16}.mould-state[data-state=RETIRED],.mould-state[data-state=DENIED]{color:#9d2525}
@@ -16,8 +20,8 @@
 .mould-actions{display:block;min-width:0}.mould-actions form{display:flex;gap:4px;align-items:center;flex-wrap:nowrap;margin:0;min-width:0}.mould-actions form label{display:grid;grid-template-columns:52px minmax(0,1fr);gap:3px;align-items:center;white-space:nowrap;min-width:0}.mould-actions form input{width:100%;max-width:none;min-width:0;min-height:22px;padding:2px 4px}.mould-actions .mould-edit-form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px 4px;width:100%}.mould-actions .mould-edit-form label{min-width:0;gap:3px}.mould-actions .mould-edit-form label:first-child{grid-column:1/-1}.mould-actions .mould-edit-form label:nth-child(2){grid-column:1}.mould-actions .mould-edit-form input{width:100%;max-width:none}.mould-actions .mould-edit-form button{grid-column:2;grid-row:2;white-space:nowrap}.mould-actions form[data-confirm]{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:3px;align-items:center;width:100%}.mould-actions form[data-confirm] button{white-space:nowrap}.mould-actions form[data-confirm] input{width:100%;max-width:none}.mould-actions button{height:22px;padding:1px 5px}
 .mould-lifecycle{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px 5px;align-items:center}.mould-actions .mould-lifecycle form[data-confirm]{grid-template-columns:max-content minmax(0,1fr);width:100%;gap:3px}.mould-actions .mould-lifecycle form[data-confirm] input{width:100%;max-width:none}.mould-actions .mould-lifecycle button{min-width:0}.mould-actions .mould-lifecycle form:first-child{grid-column:1/-1;grid-row:1}.mould-actions .mould-lifecycle form:nth-child(2){grid-column:1;grid-row:2}.mould-actions .mould-lifecycle form:nth-child(3){grid-column:2;grid-row:2}
 .mould-history{max-height:190px;overflow:auto}.mould-history table{min-width:640px}.mould-message{margin:4px 0;color:#25643b}.mould-message.error{color:#9d2525}
-.mould-register{margin-top:6px;padding:4px}.mould-register h2{margin:2px 0 4px}.mould-register .mould-form{align-items:end}.mould-register textarea{min-width:230px}.mould-register p{margin:3px 0 0;font-size:9px}
-@media(max-width:820px){.mould-grid{grid-template-columns:1fr}.mould-facts{grid-template-columns:repeat(2,minmax(110px,1fr))}.mould-toolbar input[type=search]{width:min(100%,260px)}}
+.mould-register{padding:4px}.mould-register h2{margin:2px 0 4px}.mould-register .mould-form{align-items:end}.mould-register textarea{min-width:0}.mould-register p{margin:3px 0 0;font-size:9px}
+@media(max-width:820px){.mould-workspace{grid-template-columns:1fr}.mould-facts{grid-template-columns:repeat(2,minmax(110px,1fr))}.mould-toolbar{flex-wrap:wrap}.mould-toolbar input[type=search]{width:min(100%,260px)}.mould-toolbar select{min-width:145px;width:auto}}
 @media(max-width:820px){.mould-facts{grid-template-columns:minmax(180px,2fr) repeat(2,minmax(0,1fr))}.mould-facts-secondary{grid-template-columns:minmax(150px,1fr) minmax(0,1.5fr)}}
 @media(max-width:600px){.mould-detail-lower{grid-template-columns:1fr}.mould-facts{grid-template-columns:minmax(180px,2fr) repeat(2,minmax(0,1fr))}.mould-facts-secondary{grid-template-columns:1fr}.mould-facts-secondary div{white-space:normal}.mould-actions .mould-lifecycle{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:520px){.mould-actions .mould-lifecycle{grid-template-columns:minmax(0,1fr)}.mould-actions .mould-lifecycle form:first-child,.mould-actions .mould-lifecycle form:nth-child(2),.mould-actions .mould-lifecycle form:nth-child(3){grid-column:1;grid-row:auto}}
@@ -26,36 +30,33 @@
 {% if error %}<div class="error" role="alert">{{ error }}</div>{% endif %}
 {% if message %}<div class="mould-message{% if message_type == 'error' %} error{% endif %}" role="status">{{ message }}</div>{% endif %}
 
-<section class="panel">
+<div class="mould-workspace">
+<section class="panel mould-list">
   <h2>Moulds <span class="muted">{{ moulds|length }}</span></h2>
   <form class="mould-toolbar" method="get" action="/mould">
-    <input type="hidden" name="production_date" value="{{ production_date }}">
+    {% if production_date %}<input type="hidden" name="production_date" value="{{ production_date }}">{% endif %}
     <label for="mould-search">Mould No. / Name<input id="mould-search" type="search" name="q" value="{{ search }}" placeholder="Search Mould"></label>
     <label for="mould-family-filter">Product Family<select id="mould-family-filter" name="family"><option value="">All families</option>{% for family in products|map(attribute='ProductFamily')|unique %}<option value="{{ family }}" {% if family_filter == family %}selected{% endif %}>{{ family }}</option>{% endfor %}</select></label>
-    <label for="mould-product-filter">Product<select id="mould-product-filter" name="product"><option value="">All products</option>{% for item in products %}<option value="{{ item.ProductFamily }}|{{ item.ProductCode }}" data-family="{{ item.ProductFamily }}" {% if product_filter == item.ProductFamily ~ '|' ~ item.ProductCode %}selected{% endif %}>{{ item.ProductFamily }} / {{ item.ProductCode }} / {{ item.ProductName }}</option>{% endfor %}</select></label>
+    <label for="mould-product-filter">Product<select id="mould-product-filter" name="product"><option value="">All products</option>{% for item in products %}<option value="{{ item.ProductFamily }}|{{ item.ProductCode }}" data-family="{{ item.ProductFamily }}" {% if product_filter == item.ProductFamily ~ '|' ~ item.ProductCode %}selected{% endif %}>{{ item.ProductCode }} / {{ item.ProductName }}</option>{% endfor %}</select></label>
     <label for="mould-status-filter">Status<select id="mould-status-filter" name="status"><option value="">All statuses</option>{% for state in ['ACTIVE','RECONDITION','RETIRED','DENIED'] %}<option value="{{ state }}" {% if status_filter == state %}selected{% endif %}>{{ state }}</option>{% endfor %}</select></label>
-    <button class="primary" type="submit">Filter</button><a id="mould-clear" href="/mould?production_date={{ production_date }}&amp;clear=1">Clear</a>
+    <button class="primary" type="submit">Filter</button><a id="mould-clear" class="button" href="/mould?clear=1{{ mould_date_query }}">Clear</a>
   </form>
   <div class="table-scroll"><table class="mould-table"><thead><tr>
-    <th>Mould No.</th><th>Mould Name</th><th>Product Family</th><th>Code</th><th>Product</th><th>Status</th>
-    <th>Recondition #</th><th>Current Age</th><th>Lifetime Age</th><th>Usage Records</th><th>Last Usage</th><th>Remark</th>
+    <th>Mould No.</th><th>Mould Name</th><th>Product</th><th>Status</th><th>Current Age</th><th>Lifetime Age</th>
   </tr></thead><tbody>
-  {% for row in moulds %}<tr aria-selected="{{ 'true' if selected and selected.MouldID == row.MouldID else 'false' }}">
-    <td><a class="mould-select" href="/mould?production_date={{ production_date }}&amp;family={{ family_filter|urlencode }}&amp;product={{ product_filter|urlencode }}&amp;status={{ status_filter|urlencode }}&amp;q={{ search|urlencode }}&amp;mould_id={{ row.MouldID }}">{{ row.MouldNo }}</a></td>
-    <td><a class="mould-select" href="/mould?production_date={{ production_date }}&amp;family={{ family_filter|urlencode }}&amp;product={{ product_filter|urlencode }}&amp;status={{ status_filter|urlencode }}&amp;q={{ search|urlencode }}&amp;mould_id={{ row.MouldID }}">{{ row.MouldName }}</a></td>
-    <td>{{ row.ProductFamily }}</td><td>{{ row.ProductCode }}</td><td>{{ row.ProductName or '' }}</td>
-    <td class="mould-state" data-state="{{ row.Status }}">{{ row.Status }}</td><td>{{ row.CurrentReconditionNo }}</td>
+  {% for row in moulds %}<tr aria-selected="{{ 'true' if selected and selected.MouldID == row.MouldID else 'false' }}" data-family="{{ row.ProductFamily }}" data-product="{{ row.ProductFamily }}|{{ row.ProductCode }}">
+    <td><a class="mould-select" href="/mould?family={{ family_filter|urlencode }}&amp;product={{ product_filter|urlencode }}&amp;status={{ status_filter|urlencode }}&amp;q={{ search|urlencode }}&amp;mould_id={{ row.MouldID }}{{ mould_date_query }}">{{ row.MouldNo }}</a></td>
+    <td><a class="mould-select" href="/mould?family={{ family_filter|urlencode }}&amp;product={{ product_filter|urlencode }}&amp;status={{ status_filter|urlencode }}&amp;q={{ search|urlencode }}&amp;mould_id={{ row.MouldID }}{{ mould_date_query }}">{{ row.MouldName }}</a></td>
+    <td>{{ row.ProductName or '' }}</td><td class="mould-state" data-state="{{ row.Status }}">{{ row.Status }}</td>
     <td>{{ row.CurrentAge if row.CurrentAge is not none else 0 }}</td><td>{{ row.LifetimeAge if row.LifetimeAge is not none else 0 }}</td>
-    <td>{{ row.UsageRecordCount if row.UsageRecordCount is not none else 0 }}</td><td>{{ row.LastUsageDateTime or '' }}</td>
-    <td class="remark">{{ row.Remark or '' }}</td>
-  </tr>{% else %}<tr><td colspan="12" class="muted">No Moulds match these filters.</td></tr>{% endfor %}
+  </tr>{% else %}<tr><td colspan="6" class="muted">No Moulds match these filters.</td></tr>{% endfor %}
   </tbody></table></div>
 </section>
 
-<div class="mould-grid">
+<div class="mould-side">
 <section class="panel mould-register">
   <h2>Register New Mould</h2>
-  <form method="post" action="/mould/register" class="mould-form mould-register-form">
+  <form method="post" action="/mould/register" class="mould-form mould-register-form">{{ mould_navigation_fields() }}
     <label for="new-mould-name">Mould Name<input id="new-mould-name" name="mould_name" maxlength="200" required></label>
     <label for="new-mould-product">Product Family / Product<select id="new-mould-product" required><option value="">Choose product</option>{% for item in products %}<option value="{{ item.ProductFamily }}|{{ item.ProductCode }}">{{ item.ProductFamily }} / {{ item.ProductCode }} / {{ item.ProductName }}</option>{% endfor %}</select></label>
     <input type="hidden" name="product_family" id="new-mould-family"><input type="hidden" name="product_code" id="new-mould-code">
@@ -65,8 +66,8 @@
   <p class="muted">Mould No. is generated by the database during registration.</p>
 </section>
 
-{% if selected %}
 <section class="panel mould-detail" aria-label="Mould detail">
+{% if selected %}
   <h2>{{ selected.MouldNo }} / {{ selected.MouldName }}</h2>
   <dl class="mould-facts">
     <div class="mould-product"><dt>Product:</dt><dd>{{ selected.ProductFamily }} / {{ selected.ProductCode }} / {{ selected.ProductName or '' }}</dd></div>
@@ -81,35 +82,39 @@
   </dl>
   <div class="mould-detail-lower">
   <div class="mould-actions">
-    <form method="post" action="/mould/{{ selected.MouldID }}/edit" class="mould-edit-form">
+    <form method="post" action="/mould/{{ selected.MouldID }}/edit" class="mould-edit-form">{{ mould_navigation_fields() }}
       <label for="edit-mould-name">Mould Name<input id="edit-mould-name" name="mould_name" value="{{ selected.MouldName }}" maxlength="200" required></label>
       <label for="edit-mould-remark">Remark<input id="edit-mould-remark" name="remark" value="{{ selected.Remark or '' }}" maxlength="2000"></label>
-      <button type="submit">Save Info</button>
+      <button class="primary" type="submit">Save Info</button>
     </form>
   </div>
   <div class="mould-actions">
     <div class="mould-lifecycle">
     {% if selected.Status == 'ACTIVE' %}
-    <form method="post" action="/mould/{{ selected.MouldID }}/recondition/start" data-confirm="Send {{ selected.MouldNo }} to recondition?">
+    <form method="post" action="/mould/{{ selected.MouldID }}/recondition/start" data-confirm="Send {{ selected.MouldNo }} to recondition?">{{ mould_navigation_fields() }}
       <button type="submit">Send to Recondition</button><input id="send-remark" name="remark" maxlength="2000" aria-label="Remark for sending to recondition">
     </form>
-    {% for state in ['RETIRED','DENIED'] %}<form method="post" action="/mould/{{ selected.MouldID }}/status" data-confirm="Change {{ selected.MouldNo }} to {{ state }}?">
+    {% for state in ['RETIRED','DENIED'] %}<form method="post" action="/mould/{{ selected.MouldID }}/status" data-confirm="Change {{ selected.MouldNo }} to {{ state }}?">{{ mould_navigation_fields() }}
       <input type="hidden" name="new_status" value="{{ state }}"><button type="submit">{{ state|title }}</button><input id="remark-{{ state|lower }}" name="remark" maxlength="2000" aria-label="Remark for {{ state|lower }} status">
     </form>{% endfor %}
     </div>
     {% elif selected.Status == 'RECONDITION' %}
-    <form method="post" action="/mould/{{ selected.MouldID }}/return" data-confirm="Return {{ selected.MouldNo }} from recondition to ACTIVE?">
+    <form method="post" action="/mould/{{ selected.MouldID }}/return" data-confirm="Return {{ selected.MouldNo }} from recondition to ACTIVE?">{{ mould_navigation_fields() }}
       <button class="primary" type="submit">Return from Recondition</button><input id="return-remark" name="remark" maxlength="2000" aria-label="Remark for return from recondition">
     </form>
     {% else %}
-    <form method="post" action="/mould/{{ selected.MouldID }}/status" data-confirm="Reactivate {{ selected.MouldNo }}?">
+    <form method="post" action="/mould/{{ selected.MouldID }}/status" data-confirm="Reactivate {{ selected.MouldNo }}?">{{ mould_navigation_fields() }}
       <input type="hidden" name="new_status" value="ACTIVE"><button type="submit">Reactivate</button><input id="reactivate-remark" name="remark" maxlength="2000" aria-label="Remark for reactivation">
     </form>
     {% endif %}
     </div>
   </div>
   </div>
+{% else %}
+  <p class="muted">Select a Mould to view/edit its current details.</p>
+{% endif %}
 </section>
+</div>
 </div>
 
 <section class="panel"><h2>Status History</h2>
@@ -127,10 +132,6 @@
   {% for row in usage_history %}<tr><td>{{ row.LotNo }}</td><td>{{ row.ProductionID }}</td><td>{{ row.ProdDate }}</td><td>{{ row.MachineCode }}</td><td>{{ row.ReconditionNo }}</td><td>{{ row.UsageCycles }}</td><td>{{ row.UsageDateTime }}</td><td>{{ row.ProductionStartTime or '' }}</td><td>{{ row.ProductionEndTime or '' }}</td></tr>{% endfor %}
   </tbody></table></div>{% else %}<span class="muted">No production usage recorded.</span>{% endif %}
 </section>
-{% else %}
-</div>
-<section class="panel"><p class="muted">Select a Mould to view its current details and history.</p></section>
-{% endif %}
 
 <script>
 (() => {
@@ -143,22 +144,30 @@
   const filterState = () => ({q: filterForm.q.value, family: familyFilter.value,
     product: productFilter.value, status: filterForm.status.value});
   const saveFilters = () => sessionStorage.setItem(storageKey, JSON.stringify(filterState()));
+  const restoreUrl = stored => {
+    const params = new URLSearchParams(stored);
+    const navigationDate = query.get('production_date');
+    if (navigationDate) params.set('production_date', navigationDate);
+    return `${window.location.pathname}?${params}`;
+  };
   if (query.has('clear')) {
     sessionStorage.removeItem(storageKey);
     query.delete('clear');
+    if (!query.get('production_date')) query.delete('production_date');
     history.replaceState(null, '', `${window.location.pathname}?${query}`);
   } else if (!explicitFilters) {
     try {
       const stored = JSON.parse(sessionStorage.getItem(storageKey) || 'null');
       if (stored) {
-        const restored = new URLSearchParams({production_date: query.get('production_date') || '', ...stored});
+        const restored = new URLSearchParams(stored);
+        if (query.get('production_date')) restored.set('production_date', query.get('production_date'));
         if (!restored.get('product') || restored.get('product').startsWith(`${restored.get('family')}|`)) {
-          window.location.replace(`${window.location.pathname}?${restored}`);
+          window.location.replace(restoreUrl(stored));
           return;
         }
         stored.product = '';
         sessionStorage.setItem(storageKey, JSON.stringify(stored));
-        window.location.replace(`${window.location.pathname}?${new URLSearchParams({production_date: query.get('production_date') || '', ...stored})}`);
+        window.location.replace(restoreUrl(stored));
         return;
       }
     } catch (error) { sessionStorage.removeItem(storageKey); }
@@ -171,14 +180,32 @@
       productFilter.value = '';
     }
   };
+  const applyFilters = () => {
+    saveFilters();
+    filterForm.submit();
+  };
   restrictProducts();
   familyFilter.addEventListener('change', () => {
     restrictProducts();
-    saveFilters();
-    filterForm.submit();
+    applyFilters();
   });
+  productFilter.addEventListener('change', applyFilters);
+  filterForm.status.addEventListener('change', applyFilters);
   filterForm.addEventListener('submit', saveFilters);
   document.getElementById('mould-clear').addEventListener('click', () => sessionStorage.removeItem(storageKey));
+  for (const link of document.querySelectorAll('.mould-select')) {
+    link.addEventListener('click', event => {
+      event.preventDefault();
+      const row = link.closest('tr');
+      const target = new URL(link.href, window.location.href);
+      familyFilter.value = row.dataset.family;
+      productFilter.value = row.dataset.product;
+      target.searchParams.set('family', familyFilter.value);
+      target.searchParams.set('product', productFilter.value);
+      saveFilters();
+      window.location.href = target.href;
+    });
+  }
   const product = document.getElementById('new-mould-product');
   const family = document.getElementById('new-mould-family');
   const code = document.getElementById('new-mould-code');

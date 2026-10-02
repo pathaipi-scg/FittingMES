@@ -7,6 +7,7 @@
 .shared-production-date{display:flex;align-items:center;gap:4.5px;flex-wrap:wrap;flex-shrink:0;margin:0}
 </style>
 {% set tab_date = production_date %}
+{% set tab_date_query = '?production_date=' ~ tab_date if tab_date else '' %}
 {% set tab = active_tab|default('production') %}
 {% set current_path = '/depallet' if tab == 'depallet' else '/logger' if tab == 'logger' else '/usage' if tab == 'usage' else '/prod-api' if tab == 'prod-api' else '/reject-api' if tab == 'reject-api' else '/press-mc' if tab == 'press-mc' else '/mould' if tab == 'mould' else '/print-prod' if tab == 'print-prod' else '/print-oee' if tab == 'print-oee' else '/' %}
 <div class="shared-header-row">
@@ -17,7 +18,7 @@
 </form>
 <nav class="page-tabs" aria-label="Main navigation">
 {% for key, label, path in [('production','PRODUCTION','/'),('logger','LOGGER','/logger'),('usage','USAGE','/usage'),('depallet','DEPALLET','/depallet'),('prod-api','PROD API','/prod-api'),('reject-api','REJECT API','/reject-api'),('press-mc','PressMc','/press-mc'),('mould','Mould','/mould'),('print-prod','PRINT PROD','/print-prod'),('print-oee','PRINT OEE','/print-oee')] %}
-<a href="{{ path }}?production_date={{ tab_date }}{% if key == 'production' and current is defined and current and current.ProdDate == production_date %}&amp;production_id={{ current.ProductionID }}{% endif %}" {% if active_tab|default('production') == key %}aria-current="page"{% endif %}>{{ label }}</a>
+<a href="{{ path }}{{ tab_date_query }}{% if key == 'production' and current is defined and current and current.ProdDate == production_date %}{% if tab_date %}&amp;{% else %}?{% endif %}production_id={{ current.ProductionID }}{% endif %}" {% if active_tab|default('production') == key %}aria-current="page"{% endif %}>{{ label }}</a>
 {% endfor %}
 </nav>
 </div>

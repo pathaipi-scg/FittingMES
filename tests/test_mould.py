@@ -3,7 +3,7 @@ from datetime import date
 from unittest.mock import patch
 
 from test_production import request
-from app.main import mould_page
+from app.main import mould_page, mould_redirect
 from app.mould import (page_context, read_mould_detail, read_mould_list, read_products,
                        register_mould, return_from_recondition, send_to_recondition,
                        set_mould_status, update_mould_info)
@@ -113,6 +113,30 @@ class FakeConnection:
 
 
 class MouldTests(unittest.TestCase):
+    def test_mould_page_accepts_missing_empty_and_valid_navigation_date(self):
+        for navigation_date in (None, '', date(2026, 10, 1)):
+            with self.subTest(navigation_date=navigation_date):
+                conn = FakeConnection()
+                with patch('app.main.get_connection', return_value=conn):
+                    response = mould_page(request(), production_date=navigation_date)
+                self.assertEqual(response.status_code, 200)
+                page = response.body.decode()
+                if navigation_date:
+                    self.assertIn('production_date=2026-10-01', page)
+                else:
+                    self.assertNotIn('production_date=', page)
+
+    def test_mould_redirect_preserves_filters_and_omits_invalid_or_empty_date(self):
+        navigation = {'q': 'M000001', 'family': 'Family A', 'product': 'Family A|01', 'status': 'ACTIVE'}
+        without_date = mould_redirect(4, 'Saved', navigation=navigation)
+        self.assertEqual(without_date.headers['location'], '/mould?q=M000001&family=Family+A&product=Family+A%7C01&status=ACTIVE&mould_id=4&message=Saved&message_type=success')
+        with_date = mould_redirect(4, 'Saved', navigation={**navigation, 'production_date': '2026-10-01'})
+        self.assertIn('production_date=2026-10-01', with_date.headers['location'])
+        empty_date = mould_redirect(4, 'Saved', navigation={**navigation, 'production_date': ''})
+        invalid_date = mould_redirect(4, 'Saved', navigation={**navigation, 'production_date': 'bad-date'})
+        self.assertNotIn('production_date=', empty_date.headers['location'])
+        self.assertNotIn('production_date=', invalid_date.headers['location'])
+
     def test_product_choices_come_from_active_product_master(self):
         conn = FakeConnection()
         products = read_products(conn.cursor())
@@ -252,6 +276,24 @@ class MouldTests(unittest.TestCase):
         self.assertIn('family=Family', page)
         self.assertIn('product=Family', page)
         self.assertNotIn('name="mould_no"', page)
+        self.assertIn('<button class="primary" type="submit">Save Info</button>', page)
+        self.assertIn('<a id="mould-clear" class="button" href="/mould?clear=1&amp;production_date=2026-09-27">Clear</a>', page)
+        filter_product = page.split('id="mould-product-filter"', 1)[1].split('</select>', 1)[0]
+        self.assertIn('value="Family A|01"', filter_product)
+        self.assertIn('>01 / Product One</option>', filter_product)
+        self.assertNotIn('>Family A / 01 / Product One</option>', filter_product)
+        register_product = page.split('id="new-mould-product"', 1)[1].split('</select>', 1)[0]
+        self.assertIn('>Family A / 01 / Product One</option>', register_product)
+        self.assertIn('data-family="Family A" data-product="Family A|01"', page)
+        list_table = page.split('<table class="mould-table">', 1)[1].split('</table>', 1)[0]
+        for heading in ('Mould No.', 'Mould Name', 'Product', 'Status', 'Current Age', 'Lifetime Age'):
+            self.assertIn(f'<th>{heading}</th>', list_table)
+        for heading in ('Product Family', 'Code', 'Recondition #', 'Usage Records', 'Last Usage', 'Remark'):
+            self.assertNotIn(f'<th>{heading}</th>', list_table)
+        self.assertLess(page.index('Register New Mould'), page.index('aria-label="Mould detail"'))
+        self.assertIn('class="mould-workspace"', page)
+        self.assertIn('class="mould-side"', page)
+        self.assertIn('.mould-toolbar{display:flex;gap:5px;align-items:end;flex-wrap:nowrap', page)
         self.assertIn('FROM dbo.vw_MouldList', '\n'.join(sql for sql, _ in conn.sql))
         self.assertEqual(conn.commits, 0)
 

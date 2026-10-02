@@ -1158,11 +1158,17 @@ async def press_mc_capability_route(press_code: str, request: Request):
 
 
 @app.get('/mould', response_class=HTMLResponse)
-def mould_page(request: Request, production_date: date | None = None, q: str = '',
+def mould_page(request: Request, production_date: str | None = None, q: str = '',
                family: str = '', product: str = '', status: str = '', mould_id: int | None = None,
                message: str | None = None, message_type: str | None = None):
-    production_date = production_date or date.today()
-    context = dict(page_title='Mould', active_tab='mould', production_date=production_date,
+    if isinstance(production_date, date):
+        navigation_date = production_date
+    else:
+        try:
+            navigation_date = date.fromisoformat(production_date) if production_date else None
+        except (TypeError, ValueError):
+            navigation_date = None
+    context = dict(page_title='Mould', active_tab='mould', production_date=navigation_date,
                    search=q, family_filter=family, product_filter=product, status_filter=status,
                    moulds=[], products=[],
                    selected=None, status_history=[], recondition_history=[], usage_history=[],
@@ -1182,8 +1188,18 @@ def mould_page(request: Request, production_date: date | None = None, q: str = '
                                       headers={'Cache-Control': 'no-store'})
 
 
-def mould_redirect(mould_id=None, message=None, message_type='success'):
+def mould_redirect(mould_id=None, message=None, message_type='success', navigation=None):
     params = {}
+    for key in ('q', 'family', 'product', 'status'):
+        value = str((navigation or {}).get(key) or '').strip()
+        if value:
+            params[key] = value
+    navigation_date = str((navigation or {}).get('production_date') or '').strip()
+    try:
+        if navigation_date:
+            params['production_date'] = date.fromisoformat(navigation_date).isoformat()
+    except ValueError:
+        pass
     if mould_id:
         params['mould_id'] = mould_id
     if message:
@@ -1204,22 +1220,22 @@ async def mould_register_route(request: Request):
         mould = await run_in_threadpool(run_mould_change, register_mould, form.get('mould_name'),
                                         form.get('product_family'), form.get('product_code'),
                                         form.get('remark'))
-        return mould_redirect(mould['MouldID'], f"Registered {mould['MouldNo']}.")
+        return mould_redirect(mould['MouldID'], f"Registered {mould['MouldNo']}.", navigation=form)
     except ValueError as exc:
-        return mould_redirect(message=str(exc), message_type='error')
+        return mould_redirect(message=str(exc), message_type='error', navigation=form)
     except Exception:
-        return mould_redirect(message='Unable to register Mould. Please retry.', message_type='error')
+        return mould_redirect(message='Unable to register Mould. Please retry.', message_type='error', navigation=form)
 
 
 async def mould_mutation_route(request: Request, mould_id: int, operation, success_message):
     form = await request.form()
     try:
         mould = await run_in_threadpool(run_mould_change, operation, mould_id, form.get('remark', ''))
-        return mould_redirect(mould['MouldID'], success_message)
+        return mould_redirect(mould['MouldID'], success_message, navigation=form)
     except ValueError as exc:
-        return mould_redirect(mould_id, str(exc), 'error')
+        return mould_redirect(mould_id, str(exc), 'error', navigation=form)
     except Exception:
-        return mould_redirect(mould_id, 'Unable to update Mould. Please retry.', 'error')
+        return mould_redirect(mould_id, 'Unable to update Mould. Please retry.', 'error', navigation=form)
 
 
 @app.post('/mould/{mould_id}/edit')
@@ -1228,11 +1244,11 @@ async def mould_edit_route(request: Request, mould_id: int):
     try:
         mould = await run_in_threadpool(run_mould_change, update_mould_info, mould_id,
                                         form.get('mould_name'), form.get('remark'))
-        return mould_redirect(mould['MouldID'], 'Mould information saved.')
+        return mould_redirect(mould['MouldID'], 'Mould information saved.', navigation=form)
     except ValueError as exc:
-        return mould_redirect(mould_id, str(exc), 'error')
+        return mould_redirect(mould_id, str(exc), 'error', navigation=form)
     except Exception:
-        return mould_redirect(mould_id, 'Unable to update Mould information. Please retry.', 'error')
+        return mould_redirect(mould_id, 'Unable to update Mould information. Please retry.', 'error', navigation=form)
 
 
 @app.post('/mould/{mould_id}/recondition/start')
@@ -1253,11 +1269,11 @@ async def mould_status_route(request: Request, mould_id: int):
     try:
         mould = await run_in_threadpool(run_mould_change, set_mould_status, mould_id,
                                         form.get('new_status'), form.get('remark', ''))
-        return mould_redirect(mould['MouldID'], f"Mould status changed to {mould['Status']}.")
+        return mould_redirect(mould['MouldID'], f"Mould status changed to {mould['Status']}.", navigation=form)
     except ValueError as exc:
-        return mould_redirect(mould_id, str(exc), 'error')
+        return mould_redirect(mould_id, str(exc), 'error', navigation=form)
     except Exception:
-        return mould_redirect(mould_id, 'Unable to change Mould status. Please retry.', 'error')
+        return mould_redirect(mould_id, 'Unable to change Mould status. Please retry.', 'error', navigation=form)
 
 
 @app.get('/usage', response_class=HTMLResponse)
