@@ -47,7 +47,7 @@ def cleanup_pdf_artifacts(root):
 
 def generate_print_prod_pdf(production_date, chrome_executable=CHROME_EXECUTABLE,
                             base_url=REPORT_BASE_URL, timeout=PDF_TIMEOUT_SECONDS,
-                            poll_interval=PDF_POLL_SECONDS):
+                            poll_interval=PDF_POLL_SECONDS, report_path='/print-prod'):
     if not isinstance(production_date, date):
         raise ValueError("production_date must be a date")
     if not chrome_executable.is_file():
@@ -56,7 +56,7 @@ def generate_print_prod_pdf(production_date, chrome_executable=CHROME_EXECUTABLE
     root = Path(tempfile.mkdtemp(prefix="fittingmes-pdf-"))
     profile = root / "profile"
     output = root / "report.pdf"
-    url = f"{base_url}/print-prod?production_date={production_date.isoformat()}"
+    url = f"{base_url}{report_path}?production_date={production_date.isoformat()}"
     arguments = [str(chrome_executable),
         "--headless=new", "--disable-gpu", "--no-first-run",
         "--no-default-browser-check", "--no-pdf-header-footer", "--no-proxy-server",
@@ -90,6 +90,13 @@ def generate_print_prod_pdf(production_date, chrome_executable=CHROME_EXECUTABLE
             terminate_process_tree(process)
         cleanup_pdf_artifacts(root)
         raise
+
+
+def generate_print_oee_pdf(production_date, chrome_executable=CHROME_EXECUTABLE,
+                           base_url=REPORT_BASE_URL, timeout=PDF_TIMEOUT_SECONDS,
+                           poll_interval=PDF_POLL_SECONDS):
+    return generate_print_prod_pdf(production_date, chrome_executable, base_url,
+                                   timeout, poll_interval, report_path='/print-oee')
 
 
 def finish_pdf_process(root, output, process):

@@ -1,7 +1,10 @@
+import tempfile
 import unittest
 from datetime import date, time
 from decimal import Decimal
+from unittest.mock import patch
 
+from app.main import print_oee_pdf_page
 from app.print_oee import calculate_oee_row, summarize
 
 
@@ -83,6 +86,17 @@ class PrintOeeCalculationTests(unittest.TestCase):
         self.assertEqual(shift_one['TotalCount'], eligible['Counter'])
         self.assertEqual(all_day['TotalCount'], eligible['Counter'] * 2)
         self.assertEqual(all_day['EligibleCount'], 2)
+
+    def test_pdf_route_preserves_date_and_filename(self):
+        output = tempfile.NamedTemporaryFile(suffix='.pdf', delete=False)
+        output.write(b'%PDF-1.7\nvalid')
+        output.close()
+        root = tempfile.mkdtemp()
+        process = object()
+        with patch('app.main.generate_print_oee_pdf', return_value=(root, output.name, process)):
+            response = print_oee_pdf_page(date(2026, 9, 26))
+        self.assertEqual(response.media_type, 'application/pdf')
+        self.assertIn('PRINT_OEE_2026-09-26.pdf', response.headers['content-disposition'])
 
 
 if __name__ == '__main__':

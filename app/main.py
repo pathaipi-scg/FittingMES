@@ -46,7 +46,8 @@ from app.press_production import (build_press_production_context,
 from app.wet_reject import build_wet_reject_context, save_wet_reject, save_wet_reject_batch
 from app.print_prod import read_print_prod_context
 from app.print_oee import read_print_oee_context
-from app.browser_pdf import (PdfGenerationError, generate_print_prod_pdf,
+from app.browser_pdf import (PdfGenerationError, generate_print_oee_pdf,
+                             generate_print_prod_pdf,
                              finish_pdf_process)
 from app.logger import (LoggerValidationError, read_logger_events,
                         read_logger_masters, save_logger_event)
@@ -1329,6 +1330,18 @@ def print_oee_page(request: Request, production_date: date | None = None):
     return templates.TemplateResponse(request=request, name='print_oee.html',
                                       context=context, status_code=status,
                                       headers={'Cache-Control': 'no-store'})
+
+
+@app.get('/print-oee/pdf')
+def print_oee_pdf_page(production_date: date | None = None):
+    production_date = production_date or date.today()
+    try:
+        root, output, process = generate_print_oee_pdf(production_date)
+    except (PdfGenerationError, ValueError) as exc:
+        return PlainTextResponse(f'Unable to generate PDF: {exc}', status_code=503)
+    filename = f'PRINT_OEE_{production_date.isoformat()}.pdf'
+    return FileResponse(output, media_type='application/pdf', filename=filename,
+                        background=BackgroundTask(finish_pdf_process, root, output, process))
 
 
 @app.post('/usage/{shift}', response_class=HTMLResponse)
