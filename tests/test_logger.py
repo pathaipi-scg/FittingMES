@@ -17,6 +17,7 @@ from app.logger import (
     save_logger_event,
     suggest_cause,
     sub_related_options_for_instance,
+    _validate_logger_masters,
 )
 
 
@@ -141,6 +142,31 @@ class LoggerResolverTests(unittest.TestCase):
         self.assertEqual(len(instances), 14)
         self.assertEqual(instances[0]["display_label"], "F1")
         self.assertEqual(instances[-1]["display_label"], "F14")
+
+    def test_manual_duration_accepts_decimal_and_null_timestamps(self):
+        values = _validate_logger_masters(
+            self.save_input(stop="", start="", duration_min="2.5"), self.masters())
+        self.assertIsNone(values["stop_datetime"])
+        self.assertIsNone(values["start_datetime"])
+        self.assertEqual(values["duration_min"], 2.5)
+
+    def test_manual_duration_rejects_invalid_values_and_partial_timestamps(self):
+        for duration in ("1.25", "0", "-1", "abc", ""):
+            with self.subTest(duration=duration):
+                with self.assertRaises(LoggerValidationError):
+                    _validate_logger_masters(
+                        self.save_input(stop="", start="", duration_min=duration), self.masters())
+        for stop, start in (("10:00", ""), ("", "10:15")):
+            with self.subTest(stop=stop, start=start):
+                with self.assertRaises(LoggerValidationError):
+                    _validate_logger_masters(
+                        self.save_input(stop=stop, start=start, duration_min="5"), self.masters())
+
+    def test_timestamp_mode_derives_duration_and_cross_midnight(self):
+        values = _validate_logger_masters(
+            self.save_input(stop="23:55", start="00:05", duration_min="99"), self.masters())
+        self.assertEqual(values["duration_min"], 10)
+        self.assertEqual(values["start_datetime"].date().isoformat(), "2026-10-02")
 
     def test_main_machine_categories_are_broad_master_names(self):
         categories = main_machine_categories([self.main_machines[1], self.main_machines[0], self.main_machines[2]])

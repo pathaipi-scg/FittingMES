@@ -11,6 +11,7 @@ const source = timeInputSource + '\n' + scripts[0].replace('{{ form|tojson }}', 
   ' causeCandidates, causeCandidatesForOptions, compatibleOptionsForCause,' +
   ' causeMatchesOption, causeMEO, durationDefaultStopId,' +
   ' classificationAfterCause, classificationAfterManualChange, durationDisplay,' +
+  ' causeRelates, reverseCauseCandidates, defaultCauseTarget,' +
   ' subTypeCandidates, previewDuration };';
 new vm.Script(source);
 for (const text of [
@@ -19,15 +20,24 @@ for (const text of [
 ]) assert.match(html, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 assert.match(html, /duration/);
 assert.match(source, /related_mc_id/);
-assert.ok(html.indexOf('id="logger-sub-related"') < html.indexOf('id="logger-stop-type"'));
-assert.ok(html.indexOf('id="logger-stop-type"') < html.indexOf('id="logger-cause"'));
-assert.ok(html.indexOf('id="logger-cause"') < html.indexOf('id="logger-sub-stop-type"'));
+assert.ok(html.indexOf('id="logger-duration"') < html.indexOf('id="logger-machine"'));
+assert.ok(html.indexOf('id="logger-machine"') < html.indexOf('id="logger-machine-instance"'));
+assert.ok(html.indexOf('id="logger-machine-instance"') < html.indexOf('id="logger-cause"'));
+assert.ok(html.indexOf('id="logger-cause"') < html.indexOf('id="logger-stop-type"'));
+assert.ok(html.indexOf('id="logger-stop-type"') < html.indexOf('id="logger-sub-stop-type"'));
+assert.ok(html.indexOf('id="logger-sub-stop-type"') < html.indexOf('id="logger-sub-related"'));
+assert.ok(html.indexOf('id="logger-sub-related"') < html.indexOf('<select name="meo"'));
+assert.ok(html.indexOf('<select name="meo"') < html.indexOf('id="logger-stop"'));
+assert.ok(html.indexOf('id="logger-stop"') < html.indexOf('id="logger-start"'));
 assert.match(source, /causeCandidates\(causes, selectedOption, subMachines, stopId, subStopId, isSmdt\(stopId\)\)/);
 assert.match(source, /rebuildCauses\(selected, type\.value, subType\.value, selectedCauseId,\s*selected \? null : options\)/);
 assert.match(source, /type\.addEventListener\('change'/);
 assert.match(source, /subType\.addEventListener\('change'/);
 assert.doesNotMatch(source, /type\.value = selectedCause\.StopId/);
 assert.match(source, /manualStopTypeOverride/);
+assert.match(source, /duration\.value = String\(preview\.minutes\)/);
+assert.match(source, /cause\.addEventListener\('change', \(\) => applyCause\(true\)\)/);
+assert.match(source, /if \(forceResolve \|\| !subRelated\.value\)/);
 assert.match(source, /clearCause\(\);/);
 assert.match(source, /form\.elements\.meo\.value = ''/);
 assert.ok(source.indexOf('rebuildSubTypes(selectedForm.sub_stop_id || null)')
@@ -38,11 +48,40 @@ vm.runInNewContext(source, context);
 const { chooseUniqueCandidate, causeSubRelatedCandidates, classificationAfterCause,
   causeCandidates, causeCandidatesForOptions, compatibleOptionsForCause,
   causeMatchesOption, causeMEO, durationDefaultStopId, classificationAfterManualChange,
-  subTypeCandidates, previewDuration, durationDisplay } = context.loggerTest;
+  subTypeCandidates, previewDuration, durationDisplay, causeRelates,
+  reverseCauseCandidates, defaultCauseTarget } = context.loggerTest;
 const machineOptions = [{ value: '7', dataset: { instance: '1' } },
   { value: '7', dataset: { instance: '2' } }];
 assert.equal(chooseUniqueCandidate(machineOptions), null);
 assert.equal(chooseUniqueCandidate([machineOptions[0]]), machineOptions[0]);
+const mainMachines = [{ McId: 7, Relate: 0 }, { McId: 5, Relate: 1 }];
+const relationSubMachines = [{ SubMcId: 2, McId: 7 }, { SubMcId: 14, McId: 5 }];
+const instanceTarget = { display_label: 'F3 / เรือ1', sub_mc_id: 2, related_mc_instance_no: 3 };
+const otherInstanceTarget = { display_label: 'F4 / เรือ1', sub_mc_id: 2, related_mc_instance_no: 4 };
+const relatedTargets = [
+  { display_label: 'LINE1 / ชุดวาง Product1', sub_mc_id: 14, related_mc_id: 5 },
+  { display_label: 'LINE2 / ชุดวาง Product1', sub_mc_id: 14, related_mc_id: 5 },
+];
+const instanceCause = { McId: 7, SubMcId: 2 };
+const relatedCause = { McId: 7, SubMcId: 14 };
+assert.equal(causeRelates(instanceCause, relationSubMachines, mainMachines), false);
+assert.equal(causeRelates(relatedCause, relationSubMachines, mainMachines), true);
+assert.deepEqual(reverseCauseCandidates([
+  { display_label: 'F1 / เรือ1', sub_mc_id: 2, related_mc_instance_no: 1 },
+  instanceTarget,
+  otherInstanceTarget,
+], instanceCause, 7, 3, relationSubMachines, mainMachines), [instanceTarget]);
+assert.equal(defaultCauseTarget([instanceTarget], instanceCause, 7, 3, relationSubMachines, mainMachines), instanceTarget);
+assert.equal(defaultCauseTarget([otherInstanceTarget], instanceCause, 7, 4, relationSubMachines, mainMachines), otherInstanceTarget);
+assert.equal(defaultCauseTarget(relatedTargets, relatedCause, 7, 3, relationSubMachines, mainMachines), relatedTargets[0]);
+assert.equal(defaultCauseTarget([], relatedCause, 7, 3, relationSubMachines, mainMachines), null);
+const causeA = { McId: 7, SubMcId: 2 };
+const causeB = { McId: 7, SubMcId: 14 };
+const causeC = { McId: 7, SubMcId: 2 };
+assert.equal(defaultCauseTarget([instanceTarget], causeA, 7, 3, relationSubMachines, mainMachines), instanceTarget);
+assert.equal(defaultCauseTarget(relatedTargets, causeB, 7, 3, relationSubMachines, mainMachines), relatedTargets[0]);
+assert.equal(defaultCauseTarget([otherInstanceTarget], causeC, 7, 4, relationSubMachines, mainMachines), otherInstanceTarget);
+assert.equal(defaultCauseTarget([instanceTarget], causeA, 7, 3, relationSubMachines, mainMachines), instanceTarget);
 const relatedOptions = [
   { related_mc_id: 5, sub_mc_id: null, display_label: 'LINE1' },
   { related_mc_id: 5, sub_mc_id: null, display_label: 'LINE2' },
@@ -126,7 +165,7 @@ assert.equal(durationDisplay('07:10', '07:19'), '9');
 assert.equal(durationDisplay('07:10', '07:20'), '10');
 assert.equal(durationDisplay('07:41', '07:42'), '1');
 assert.equal(durationDisplay('07:10', ''), '-');
-assert.match(source, /duration\.textContent = durationDisplay\(stop, start\)/);
+assert.match(source, /duration\.value = String\(preview\.minutes\)/);
 assert.match(source, /if \(\/\^\\d\{1,2\}:\\d\{2\}\$\/\.test\(input\.value\)\) timeNormalizers\.get\(input\)\(\)/);
 assert.match(source, /input\.addEventListener\('change', updateDuration\)/);
 console.log('LOGGER inline JavaScript syntax and operator-form contracts passed.');

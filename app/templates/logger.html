@@ -3,7 +3,8 @@
 <style>
 .logger-form{display:flex;flex-wrap:wrap;gap:6px;align-items:end;max-width:100%}
 .logger-form label{display:grid;gap:2px;min-width:0;font-weight:600;flex:0 0 auto}.logger-form input,.logger-form select{box-sizing:border-box;min-width:0;height:24px;max-width:100%}
-.logger-form label:has(#logger-stop),.logger-form label:has(#logger-start){width:4.5rem}
+.logger-form label:has(#logger-duration){width:4.5rem}
+.logger-form label:has(#logger-duration) input{width:4.5rem}
 .logger-form label:has(#logger-stop) input,.logger-form label:has(#logger-start) input{width:4.5rem}
 .logger-form label:has(#logger-machine){width:7rem}.logger-form label:has(#logger-machine) select{width:7rem}
 .logger-form label:has(#logger-machine-instance){width:5rem}.logger-form label:has(#logger-machine-instance) select{width:5rem}
@@ -16,7 +17,7 @@
 .logger-actions{display:flex;gap:6px;align-items:center;flex:0 0 auto}.logger-duration-field{display:grid;gap:2px;width:3rem;flex:0 0 auto}.logger-duration-field output{box-sizing:border-box;width:3rem;height:24px;padding:1.5px 4.5px;border:0.75px solid #c7d2df;border-radius:2.25px;background:white;font-variant-numeric:tabular-nums;font-weight:600}.logger-help{margin:4px 0;color:#718096}
 .logger-error{background:#fff0ef;color:#9d2525;padding:4px;margin-bottom:5px;white-space:pre-line}.logger-success{background:#e7f4eb;color:#25643b;padding:4px;margin-bottom:5px}
 .logger-history{margin-top:8px}.logger-history table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}.logger-history th,.logger-history td{padding:3px 4px;border:1px solid #c7d2df;text-align:left;vertical-align:top}.logger-history th{background:#eaf0f6}.logger-history td:nth-child(7),.logger-history td:nth-child(8),.logger-history td:nth-child(9){white-space:nowrap}
-@media(max-width:430px){.logger-form label,.logger-form label:has(#logger-stop),.logger-form label:has(#logger-start),.logger-form label:has(#logger-machine),.logger-form label:has(#logger-machine-instance),.logger-form label:has(#logger-sub-related),.logger-form label:has(#logger-stop-type),.logger-form label:has(#logger-cause),.logger-form label:has(#logger-sub-stop-type),.logger-form label:has(select[name="meo"]),.logger-form label.logger-note{width:100%}.logger-actions:first-of-type{width:100%}}
+@media(max-width:430px){.logger-form label,.logger-form label:has(#logger-duration),.logger-form label:has(#logger-stop),.logger-form label:has(#logger-start),.logger-form label:has(#logger-machine),.logger-form label:has(#logger-machine-instance),.logger-form label:has(#logger-sub-related),.logger-form label:has(#logger-stop-type),.logger-form label:has(#logger-cause),.logger-form label:has(#logger-sub-stop-type),.logger-form label:has(select[name="meo"]),.logger-form label.logger-note{width:100%}.logger-actions:first-of-type{width:100%}}
 </style>
 <h1>LOGGER</h1>
 <p><a href="/logger/summary?production_date={{ production_date }}">LOGGER TIME SUMMARY</a> | <a href="/logger/master?production_date={{ production_date }}">LOGGER MASTER</a></p>
@@ -25,19 +26,19 @@
 <section class="panel" aria-label="LOGGER entry">
 <form id="logger-form" class="logger-form" method="post" action="/logger/save">
 <input type="hidden" name="production_date" value="{{ production_date }}">
-<label>Stop<input name="stop" id="logger-stop" inputmode="numeric" pattern="(?:[0-9]|[01][0-9]|2[0-3]):[0-5][0-9]" placeholder="HH:mm" maxlength="5" value="{{ form.get('stop', '') }}" required></label>
-<label>Start<input name="start" id="logger-start" inputmode="numeric" pattern="(?:[0-9]|[01][0-9]|2[0-3]):[0-5][0-9]" placeholder="HH:mm" maxlength="5" value="{{ form.get('start', '') }}" required></label>
-<div class="logger-duration-field"><label for="logger-duration">Min</label><output id="logger-duration" aria-label="Calculated minutes">-</output><span id="logger-time-message" class="logger-error" role="alert" hidden></span></div>
+<label>Min<input name="duration_min" id="logger-duration" inputmode="decimal" pattern="(?:[1-9]\d*)(?:\.\d)?" min="0.1" step="0.1" value="{{ form.get('duration_min', '') }}"><span id="logger-time-message" class="logger-error" role="alert" hidden></span></label>
 <label>Main Machine<select id="logger-machine" name="mc_id" required><option value="">Select machine</option>{% for item in main_categories %}<option value="{{ item.mc_id }}" {% if form.get('mc_id')|string == item.mc_id|string %}selected{% endif %}>{{ item.machine }}</option>{% endfor %}</select></label>
 <label>Instance<select id="logger-machine-instance" name="mc_instance_no" required><option value="">Select instance</option></select></label>
+<label class="logger-wide">Cause<select id="logger-cause" name="cause_id"><option value="">No Cause</option></select></label>
+<label>Type<select id="logger-stop-type" name="stop_id" required><option value="">Select Type</option>{% for item in stop_types %}<option value="{{ item.StopId }}" {% if form.get('stop_id')|string == item.StopId|string %}selected{% endif %}>{{ item.StopType }}</option>{% endfor %}</select></label>
+<label>Sub Type<select id="logger-sub-stop-type" name="sub_stop_id"><option value="">No Sub Type</option></select></label>
 <label class="logger-wide">Sub / Rel M/C<select id="logger-sub-related" required><option value="">Select Sub / Rel M/C</option></select></label>
+<label>M/E/O<select name="meo"><option value="">-</option>{% for value in ('M','E','O') %}<option value="{{ value }}" {% if form.get('meo') == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label>
+<label>Stop<input name="stop" id="logger-stop" inputmode="numeric" pattern="(?:[0-9]|[01][0-9]|2[0-3]):[0-5][0-9]" placeholder="HH:mm" maxlength="5" value="{{ form.get('stop', '') }}"></label>
+<label>Start<input name="start" id="logger-start" inputmode="numeric" pattern="(?:[0-9]|[01][0-9]|2[0-3]):[0-5][0-9]" placeholder="HH:mm" maxlength="5" value="{{ form.get('start', '') }}"></label>
 <input type="hidden" id="logger-sub-selection" name="sub_related_selection" value="{{ form.get('sub_related_selection', '') }}">
 <input type="hidden" name="related_mc_id" id="logger-related-id"><input type="hidden" name="related_mc_instance_no" id="logger-related-instance">
 <input type="hidden" name="sub_mc_id" id="logger-sub-id"><input type="hidden" name="sub_mc_instance_no" id="logger-sub-instance">
-<label>Type<select id="logger-stop-type" name="stop_id" required><option value="">Select Type</option>{% for item in stop_types %}<option value="{{ item.StopId }}" {% if form.get('stop_id')|string == item.StopId|string %}selected{% endif %}>{{ item.StopType }}</option>{% endfor %}</select></label>
-<label class="logger-wide">Cause<select id="logger-cause" name="cause_id"><option value="">No Cause</option></select></label>
-<label>Sub Type<select id="logger-sub-stop-type" name="sub_stop_id"><option value="">No Sub Type</option></select></label>
-<label>M/E/O<select name="meo"><option value="">-</option>{% for value in ('M','E','O') %}<option value="{{ value }}" {% if form.get('meo') == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label>
 <label class="logger-note">Note<input name="note" maxlength="1000" value="{{ form.get('note', '') }}"></label>
 <input type="hidden" id="logger-classification-edited" name="classification_edited" value="{{ form.get('classification_edited', 'false') }}">
 <div class="logger-actions logger-wide"><button class="primary" id="logger-save" type="submit">SAVE</button><span id="logger-status" role="status" aria-live="polite"></span></div>
@@ -50,12 +51,13 @@
 <div class="table-scroll"><table><thead><tr><th>Machine</th><th>Sub / Related M/C</th><th>Cause</th><th>Type</th><th>Sub Type</th><th>M/E/O</th><th>Stop</th><th>Start</th><th>Duration</th><th>Note</th></tr></thead><tbody>
 {% for event in logger_events %}
 {% set hierarchy = event.RelatedMachineSnapshot ~ ' / ' ~ event.SubMachineSnapshot if event.RelatedMachineSnapshot and event.SubMachineSnapshot else event.RelatedMachineSnapshot if event.RelatedMachineSnapshot else event.SubMachineSnapshot if event.SubMachineSnapshot else '-' %}
-<tr><td>{{ event.MachineNameSnapshot or '-' }}</td><td>{{ hierarchy }}</td><td>{{ event.CauseSnapshot or '-' }}</td><td>{{ event.StopTypeSnapshot or '-' }}</td><td>{{ event.SubStopTypeSnapshot or '-' }}</td><td>{{ event.MEO or '-' }}</td><td>{{ event.StopDateTime.strftime('%Y-%m-%d %H:%M') if event.StopDateTime else '-' }}</td><td>{% if event.StartDateTime %}{{ event.StartDateTime.strftime('%Y-%m-%d %H:%M') }}{% else %}-{% endif %}</td><td>{{ event.DurationMin if event.DurationMin is not none else '-' }}{% if event.DurationMin is not none %} min{% endif %}</td><td>{{ event.Note or '-' }}</td></tr>
+<tr><td>{{ event.MachineNameSnapshot or '-' }}</td><td>{{ hierarchy }}</td><td>{{ event.CauseSnapshot or '-' }}</td><td>{{ event.StopTypeSnapshot or '-' }}</td><td>{{ event.SubStopTypeSnapshot or '-' }}</td><td>{{ event.MEO or '-' }}</td><td>{{ event.StopDateTime.strftime('%Y-%m-%d %H:%M') if event.StopDateTime else '-' }}</td><td>{% if event.StartDateTime %}{{ event.StartDateTime.strftime('%Y-%m-%d %H:%M') }}{% else %}-{% endif %}</td><td>{% if event.DurationMin is not none %}{{ '%g'|format(event.DurationMin) }} min{% else %}-{% endif %}</td><td>{{ event.Note or '-' }}</td></tr>
 {% endfor %}
 </tbody></table></div>
 {% else %}<p>No LOGGER entries for this Production Date.</p>{% endif %}
 </section>
 <script type="application/json" id="logger-main-data">{{ main_instances_json|safe }}</script>
+<script type="application/json" id="logger-main-machine-data">{{ main_machines_json|safe }}</script>
 <script type="application/json" id="logger-category-data">{{ main_categories_json|safe }}</script>
 <script type="application/json" id="logger-instance-options-data">{{ instance_options_json|safe }}</script>
 <script type="application/json" id="logger-options-data">{{ sub_related_options_json|safe }}</script>
@@ -127,6 +129,32 @@ function durationDisplay(stop, start) {
   const preview = previewDuration(stop, start);
   return !preview || preview.equal ? '-' : String(preview.minutes);
 }
+function causeRelates(selectedCause, subMachines, mainMachines) {
+  const mappedSubMachine = selectedCause.SubMcId == null ? null
+    : subMachines.find(item => item.SubMcId === selectedCause.SubMcId);
+  const ownerMcId = mappedSubMachine?.McId ?? selectedCause.McId;
+  return Boolean(mainMachines.find(item => String(item.McId) === String(ownerMcId))?.Relate);
+}
+function reverseCauseCandidates(compatible, selectedCause, machineId, instanceNo,
+                                subMachines, mainMachines) {
+  if (causeRelates(selectedCause, subMachines, mainMachines)) return compatible;
+  const relatedInstance = compatible.filter(item =>
+    item.related_mc_instance_no != null
+    && String(item.related_mc_instance_no) === String(instanceNo));
+  if (relatedInstance.length) return relatedInstance;
+  return compatible.filter(item =>
+    item.owner_mc_id != null
+    && String(item.owner_mc_id) === String(machineId)
+    && String(item.owner_mc_instance_no) === String(instanceNo));
+}
+function defaultCauseTarget(compatible, selectedCause, machineId, instanceNo,
+                            subMachines, mainMachines) {
+  const candidates = reverseCauseCandidates(
+    compatible, selectedCause, machineId, instanceNo, subMachines, mainMachines);
+  return candidates.length > 0
+    && (candidates.length === 1 || causeRelates(selectedCause, subMachines, mainMachines))
+    ? candidates[0] : null;
+}
 
 (() => {
   const form = document.getElementById('logger-form');
@@ -142,6 +170,7 @@ function durationDisplay(stop, start) {
   const startInput = document.getElementById('logger-start');
   const classificationEdited = document.getElementById('logger-classification-edited');
   const instances = JSON.parse(document.getElementById('logger-main-data').textContent);
+  const mainMachines = JSON.parse(document.getElementById('logger-main-machine-data').textContent);
   const instanceOptions = JSON.parse(document.getElementById('logger-instance-options-data').textContent);
   const subMachines = JSON.parse(document.getElementById('logger-sub-machine-data').textContent);
   const stopTypes = JSON.parse(document.getElementById('logger-stop-data').textContent);
@@ -218,34 +247,49 @@ function durationDisplay(stop, start) {
     classificationEdited.value = classificationAfterManualChange();
   }
   function setClassificationEdited() { classificationEdited.value = 'true'; }
-  function applyCause() {
+  function applyCause(forceResolve = false) {
+    if (forceResolve) {
+      applySelection(null);
+      subRelated.value = '';
+      causeDrivenTargetFilter = false;
+    }
     const selectedCause = causes.find(item => String(item.CauseId) === String(cause.value));
-    if (!selectedCause) { form.elements.meo.value = ''; return; }
+    if (!selectedCause) {
+      form.elements.meo.value = '';
+      if (forceResolve) renderOptions(availableOptions(), null);
+      return;
+    }
     classificationEdited.value = classificationAfterCause();
     if (selectedCause.SubStopId != null) {
       rebuildSubTypes(selectedCause.SubStopId);
     }
     const meo = form.elements.meo; if (meo) meo.value = causeMEO(causes, selectedCause.CauseId);
-    if (!subRelated.value) {
+    if (forceResolve || !subRelated.value) {
       const compatible = compatibleOptionsForCause(
         causes, availableOptions(), subMachines, selectedCause.CauseId,
         type.value, subType.value, isSmdt(type.value));
       causeDrivenTargetFilter = true;
-      if (compatible.length === 1) {
-        renderOptions(compatible, compatible[0]);
-        applySelection(compatible[0]);
-      } else {
-        renderOptions(compatible, null);
-        applySelection(null);
-      }
+      const candidates = reverseCauseCandidates(
+        compatible, selectedCause, machine.value, machineInstance.value, subMachines, mainMachines);
+      const defaultTarget = defaultCauseTarget(
+        compatible, selectedCause, machine.value, machineInstance.value, subMachines, mainMachines);
+      renderOptions(candidates, defaultTarget);
+      applySelection(defaultTarget);
     }
   }
   function updateDuration() {
     const stop = stopInput.value, start = startInput.value;
-    timeMessage.hidden = true; duration.textContent = durationDisplay(stop, start);
+    timeMessage.hidden = true;
+    if (!stop && !start) return;
+    if (Boolean(stop) !== Boolean(start)) {
+      timeMessage.textContent = 'Enter both Stop and Start, or leave both blank and enter Min.';
+      timeMessage.hidden = false;
+      return;
+    }
     const preview = previewDuration(stop, start);
     if (!preview) return;
     if (preview.equal) { timeMessage.textContent = 'Stop and Start times must differ.'; timeMessage.hidden = false; return; }
+    duration.value = String(preview.minutes);
     applyDurationDefault(preview.minutes);
   }
   machine.addEventListener('change', () => {
@@ -272,7 +316,7 @@ function durationDisplay(stop, start) {
     causeDrivenTargetFilter = false;
     clearCause(); rebuildCauses(selected, type.value, subType.value);
   });
-  cause.addEventListener('change', applyCause);
+  cause.addEventListener('change', () => applyCause(true));
   type.addEventListener('change', () => {
     manualStopTypeOverride = true;
     rebuildSubTypes(); clearCause(); causeDrivenTargetFilter = false;
@@ -295,6 +339,7 @@ function durationDisplay(stop, start) {
     });
     input.addEventListener('change', updateDuration);
   });
+  duration.addEventListener('input', () => { timeMessage.hidden = true; });
   form.addEventListener('submit', event => {
     form.querySelectorAll('#logger-stop,#logger-start').forEach(input => input.dispatchEvent(new Event('change')));
     updateDuration();

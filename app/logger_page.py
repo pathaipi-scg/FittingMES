@@ -35,6 +35,7 @@ def logger_page_context(masters: LoggerMasters, production_date, logger_events=N
         stop_types=masters.stop_types, sub_stop_types=masters.sub_stop_types,
         causes=masters.causes,
         main_categories_json=_json(main_categories),
+        main_machines_json=_json(masters.main_machines),
         main_instances_json=_json(main_instances),
         instance_options_json=_json(instance_options),
         sub_related_options_json=_json(sub_related_options),
@@ -69,6 +70,7 @@ def logger_form_input(form):
     return LoggerSaveInput(
         production_date=production_date,
         stop=form.get("stop", ""), start=form.get("start", ""),
+        duration_min=form.get("duration_min", ""),
         mc_id=machine_id, mc_instance_no=machine_instance_no,
         related_mc_id=optional_int("related_mc_id"),
         related_mc_instance_no=optional_int("related_mc_instance_no"),

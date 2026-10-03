@@ -1,6 +1,8 @@
 """Read-only LOGGER Master loading and hierarchy normalization helpers."""
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+from decimal import Decimal, InvalidOperation
+import re
 from typing import Any
 
 DIRECT_SUB = "DIRECT_SUB"
@@ -36,6 +38,7 @@ class LoggerSaveInput:
     start: Any
     mc_id: Any
     mc_instance_no: Any
+    duration_min: Any = None
     related_mc_id: Any = None
     related_mc_instance_no: Any = None
     sub_mc_id: Any = None
@@ -62,6 +65,7 @@ def _as_save_input(value):
         "production_date": "ProductionDate",
         "stop": "Stop",
         "start": "Start",
+        "duration_min": "DurationMin",
         "mc_id": "McId",
         "mc_instance_no": "McInstanceNo",
         "related_mc_id": "RelatedMcId",
@@ -119,6 +123,23 @@ def _parse_hhmm(value, code, label):
     return parsed.time()
 
 
+def _parse_duration_min(value):
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        _validation_error("INVALID_DURATION", "Min must be greater than 0 and use at most one decimal place.")
+    text = str(value).strip()
+    if not re.fullmatch(r"(?:0|[1-9]\d*)(?:\.\d)?", text):
+        _validation_error("INVALID_DURATION", "Min must be greater than 0 and use at most one decimal place.")
+    try:
+        duration = Decimal(text)
+    except InvalidOperation:
+        _validation_error("INVALID_DURATION", "Min must be greater than 0 and use at most one decimal place.")
+    if duration <= 0:
+        _validation_error("INVALID_DURATION", "Min must be greater than 0 and use at most one decimal place.")
+    return duration
+
+
 def _master_by_id(rows, key, value):
     return next((row for row in rows if row[key] == value), None)
 
@@ -130,10 +151,19 @@ def _validate_pair(first, second, code, label):
 
 def _validate_logger_masters(data, masters):
     production_date = _parse_production_date(data.production_date)
-    stop_time = _parse_hhmm(data.stop, "INVALID_STOP_TIME", "Stop")
-    start_time = _parse_hhmm(data.start, "INVALID_START_TIME", "Start")
-    if start_time == stop_time:
-        _validation_error("EQUAL_STOP_START", "Stop and Start times must differ.")
+    has_stop = data.stop not in (None, "")
+    has_start = data.start not in (None, "")
+    if has_stop != has_start:
+        _validation_error("INCOMPLETE_TIMESTAMPS", "Enter both Stop and Start, or leave both blank and enter Min.")
+    manual_duration = _parse_duration_min(data.duration_min)
+    timestamp_mode = has_stop and has_start
+    if timestamp_mode:
+        stop_time = _parse_hhmm(data.stop, "INVALID_STOP_TIME", "Stop")
+        start_time = _parse_hhmm(data.start, "INVALID_START_TIME", "Start")
+        if start_time == stop_time:
+            _validation_error("EQUAL_STOP_START", "Stop and Start times must differ.")
+    elif manual_duration is None:
+        _validation_error("INVALID_DURATION", "Min is required when Stop and Start are blank.")
 
     if not isinstance(data.classification_edited, bool):
         _validation_error("INVALID_CLASSIFICATION_PROVENANCE", "classification_edited must be boolean.")
@@ -234,7 +264,7 @@ def _validate_logger_masters(data, masters):
     else:
         classification_source = "CAUSE_SHORTCUT"
 
-    if stop_id == 6 and sub_stop_id == 20:
+    if timestamp_mode and stop_id == 6 and sub_stop_id == 20:
         start_date = production_date if start_time > stop_time else production_date + timedelta(days=1)
         stop_datetime = datetime.combine(production_date, stop_time)
         start_datetime = datetime.combine(start_date, start_time)
@@ -247,12 +277,17 @@ def _validate_logger_masters(data, masters):
             if stop_type is None or sub_stop_type is None or sub_stop_type["StopId"] != stop_id:
                 _validation_error("INVALID_STOP_SUBSTOP", "Configured BD classification is unavailable.")
             classification_source = "DURATION_RULE"
-    else:
+    elif timestamp_mode:
         stop_datetime = datetime.combine(production_date, stop_time)
         start_date = production_date if start_time > stop_time else production_date + timedelta(days=1)
         start_datetime = datetime.combine(start_date, start_time)
         duration_min = int((start_datetime - stop_datetime).total_seconds() // 60)
-    if duration_min <= 0 or start_datetime <= stop_datetime:
+    else:
+        stop_datetime = None
+        start_datetime = None
+        duration_min = manual_duration
+
+    if timestamp_mode and (duration_min <= 0 or start_datetime <= stop_datetime):
         _validation_error("INVALID_DURATION", "LOGGER duration must be positive.")
 
     if kind == DIRECT_SUB:
@@ -324,6 +359,8 @@ def _overlap_message(existing, values, snapshots):
 
 
 def _reject_overlapping_logger_event(cursor, values, snapshots):
+    if values["stop_datetime"] is None or values["start_datetime"] is None:
+        return
     cursor.execute("""
         SELECT TOP (1) LoggerEventID, MachineNameSnapshot, StopTypeSnapshot,
                CauseSnapshot, StopDateTime, StartDateTime, DurationMin
