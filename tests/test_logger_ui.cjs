@@ -9,7 +9,7 @@ assert.equal(scripts.length, 1);
 const source = timeInputSource + '\n' + scripts[0].replace('{{ form|tojson }}', '{}') +
   '\nglobalThis.loggerTest = { chooseUniqueCandidate, causeSubRelatedCandidates,' +
   ' causeCandidates, causeCandidatesForOptions, compatibleOptionsForCause,' +
-  ' causeMatchesOption, causeMEO, durationDefaultStopId,' +
+  ' causeMatchesOption, causeMEO, durationDefaultStopId, causeCatalogStopId,' +
   ' classificationAfterCause, classificationAfterManualChange, durationDisplay,' +
   ' causeRelates, reverseCauseCandidates, defaultCauseTarget,' +
   ' subTypeCandidates, previewDuration };';
@@ -29,6 +29,11 @@ assert.ok(html.indexOf('id="logger-sub-stop-type"') < html.indexOf('id="logger-s
 assert.ok(html.indexOf('id="logger-sub-related"') < html.indexOf('<select name="meo"'));
 assert.ok(html.indexOf('<select name="meo"') < html.indexOf('id="logger-stop"'));
 assert.ok(html.indexOf('id="logger-stop"') < html.indexOf('id="logger-start"'));
+assert.match(html, /name="logger-row-select"/);
+assert.match(html, /id="logger-cancel"/);
+assert.match(source, /logger-events-data/);
+assert.match(source, /saveButton\.textContent = 'SAVE EDIT'/);
+assert.match(source, /cancelButton\.addEventListener\('click'/);
 assert.match(source, /causeCandidates\(causes, selectedOption, subMachines, stopId, subStopId, isSmdt\(stopId\)\)/);
 assert.match(source, /rebuildCauses\(selected, type\.value, subType\.value, selectedCauseId,\s*selected \? null : options\)/);
 assert.match(source, /type\.addEventListener\('change'/);
@@ -36,8 +41,11 @@ assert.match(source, /subType\.addEventListener\('change'/);
 assert.doesNotMatch(source, /type\.value = selectedCause\.StopId/);
 assert.match(source, /manualStopTypeOverride/);
 assert.match(source, /duration\.value = String\(preview\.minutes\)/);
+assert.match(source, /duration\.addEventListener\('input'/);
+assert.match(source, /type\.dispatchEvent\(new Event\('change'\)\)/);
 assert.match(source, /cause\.addEventListener\('change', \(\) => applyCause\(true\)\)/);
 assert.match(source, /if \(forceResolve \|\| !subRelated\.value\)/);
+assert.match(source, /rebuildCauses\(null, type\.value, event\.SubStopId, event\.CauseId,\s*availableOptions\(\)\)/);
 assert.match(source, /clearCause\(\);/);
 assert.match(source, /form\.elements\.meo\.value = ''/);
 assert.ok(source.indexOf('rebuildSubTypes(selectedForm.sub_stop_id || null)')
@@ -47,7 +55,7 @@ const context = { document: { getElementById: () => null }, window: {} };
 vm.runInNewContext(source, context);
 const { chooseUniqueCandidate, causeSubRelatedCandidates, classificationAfterCause,
   causeCandidates, causeCandidatesForOptions, compatibleOptionsForCause,
-  causeMatchesOption, causeMEO, durationDefaultStopId, classificationAfterManualChange,
+  causeMatchesOption, causeMEO, durationDefaultStopId, causeCatalogStopId, classificationAfterManualChange,
   subTypeCandidates, previewDuration, durationDisplay, causeRelates,
   reverseCauseCandidates, defaultCauseTarget } = context.loggerTest;
 const machineOptions = [{ value: '7', dataset: { instance: '1' } },
@@ -117,20 +125,24 @@ const fOptions = [
   { sub_mc_id: null, related_mc_id: 3, display_label: 'CABLE CAR2' },
 ];
 const reverseCauses = [
-  { CauseId: 20, McId: 7, SubMcId: 3, StopId: 7, SubStopId: 21 },
-  { CauseId: 21, McId: 7, SubMcId: 5, StopId: 7, SubStopId: 21 },
+  { CauseId: 20, McId: 7, SubMcId: 3, StopId: 6, SubStopId: 20 },
+  { CauseId: 21, McId: 7, SubMcId: 5, StopId: 6, SubStopId: 20 },
   { CauseId: 11, McId: 3, SubMcId: 22, StopId: 6, SubStopId: 20 },
 ];
 assert.equal(causeMatchesOption(reverseCauses[0], fOptions[0], subMachines), true);
-assert.deepEqual(compatibleOptionsForCause(reverseCauses, fOptions, subMachines, 20, 7, 21, false), [fOptions[0]]);
+assert.deepEqual(compatibleOptionsForCause(reverseCauses, fOptions, subMachines, 20, 6, 20, false), [fOptions[0]]);
 assert.deepEqual(compatibleOptionsForCause(reverseCauses, fOptions, subMachines, 11, 6, 20, true), [fOptions[2], fOptions[3]]);
-assert.deepEqual(causeCandidatesForOptions(reverseCauses, fOptions.slice(0, 2), subMachines, 7, 21, false)
+assert.deepEqual(causeCandidatesForOptions(reverseCauses, fOptions.slice(0, 2), subMachines, 6, 20, false)
   .map(item => item.CauseId), [20, 21]);
 const stopTypes = [{ StopId: 6, StopType: 'SMDT' }, { StopId: 7, StopType: 'BD' }];
 assert.equal(durationDefaultStopId(stopTypes, 1), 6);
 assert.equal(durationDefaultStopId(stopTypes, 9), 6);
+assert.equal(durationDefaultStopId(stopTypes, 9.9), 6);
 assert.equal(durationDefaultStopId(stopTypes, 10), 7);
+assert.equal(durationDefaultStopId(stopTypes, 10.1), 7);
 assert.equal(durationDefaultStopId(stopTypes, 11), 7);
+assert.equal(causeCatalogStopId(6), 6);
+assert.equal(causeCatalogStopId(7), '6');
 const mappedCauses = [{ CauseId: 1, MEO: 'M' }, { CauseId: 2, MEO: 'E' }];
 assert.equal(causeMEO(mappedCauses, 1), 'M');
 assert.equal(causeMEO(mappedCauses, 2), 'E');

@@ -5,6 +5,7 @@
 .logger-form label{display:grid;gap:2px;min-width:0;font-weight:600;flex:0 0 auto}.logger-form input,.logger-form select{box-sizing:border-box;min-width:0;height:24px;max-width:100%}
 .logger-form label:has(#logger-duration){width:4.5rem}
 .logger-form label:has(#logger-duration) input{width:4.5rem}
+#logger-duration{font-size:1rem}
 .logger-form label:has(#logger-stop) input,.logger-form label:has(#logger-start) input{width:4.5rem}
 .logger-form label:has(#logger-machine){width:7rem}.logger-form label:has(#logger-machine) select{width:7rem}
 .logger-form label:has(#logger-machine-instance){width:5rem}.logger-form label:has(#logger-machine-instance) select{width:5rem}
@@ -26,6 +27,7 @@
 <section class="panel" aria-label="LOGGER entry">
 <form id="logger-form" class="logger-form" method="post" action="/logger/save">
 <input type="hidden" name="production_date" value="{{ production_date }}">
+<input type="hidden" name="logger_event_id" id="logger-event-id" value="{{ form.get('logger_event_id', '') }}">
 <label>Min<input name="duration_min" id="logger-duration" inputmode="decimal" pattern="(?:[1-9]\d*)(?:\.\d)?" min="0.1" step="0.1" value="{{ form.get('duration_min', '') }}"><span id="logger-time-message" class="logger-error" role="alert" hidden></span></label>
 <label>Main Machine<select id="logger-machine" name="mc_id" required><option value="">Select machine</option>{% for item in main_categories %}<option value="{{ item.mc_id }}" {% if form.get('mc_id')|string == item.mc_id|string %}selected{% endif %}>{{ item.machine }}</option>{% endfor %}</select></label>
 <label>Instance<select id="logger-machine-instance" name="mc_instance_no" required><option value="">Select instance</option></select></label>
@@ -41,17 +43,17 @@
 <input type="hidden" name="sub_mc_id" id="logger-sub-id"><input type="hidden" name="sub_mc_instance_no" id="logger-sub-instance">
 <label class="logger-note">Note<input name="note" maxlength="1000" value="{{ form.get('note', '') }}"></label>
 <input type="hidden" id="logger-classification-edited" name="classification_edited" value="{{ form.get('classification_edited', 'false') }}">
-<div class="logger-actions logger-wide"><button class="primary" id="logger-save" type="submit">SAVE</button><span id="logger-status" role="status" aria-live="polite"></span></div>
+<div class="logger-actions logger-wide"><button class="primary" id="logger-save" type="submit">SAVE</button><button id="logger-cancel" type="button" hidden>CANCEL</button><span id="logger-status" role="status" aria-live="polite"></span></div>
 </form>
 <p class="logger-help">Duration is informational. LOGGER calculates and validates the saved time and classification on the server.</p>
 </section>
 <section class="panel logger-history" aria-label="LOGGER saved entries">
 <h2>LOGGER ENTRIES</h2>
 {% if logger_events %}
-<div class="table-scroll"><table><thead><tr><th>Machine</th><th>Sub / Related M/C</th><th>Cause</th><th>Type</th><th>Sub Type</th><th>M/E/O</th><th>Stop</th><th>Start</th><th>Duration</th><th>Note</th></tr></thead><tbody>
+<div class="table-scroll"><table><thead><tr><th>Select</th><th>Machine</th><th>Sub / Related M/C</th><th>Cause</th><th>Type</th><th>Sub Type</th><th>M/E/O</th><th>Stop</th><th>Start</th><th>Duration</th><th>Note</th></tr></thead><tbody>
 {% for event in logger_events %}
 {% set hierarchy = event.RelatedMachineSnapshot ~ ' / ' ~ event.SubMachineSnapshot if event.RelatedMachineSnapshot and event.SubMachineSnapshot else event.RelatedMachineSnapshot if event.RelatedMachineSnapshot else event.SubMachineSnapshot if event.SubMachineSnapshot else '-' %}
-<tr><td>{{ event.MachineNameSnapshot or '-' }}</td><td>{{ hierarchy }}</td><td>{{ event.CauseSnapshot or '-' }}</td><td>{{ event.StopTypeSnapshot or '-' }}</td><td>{{ event.SubStopTypeSnapshot or '-' }}</td><td>{{ event.MEO or '-' }}</td><td>{{ event.StopDateTime.strftime('%Y-%m-%d %H:%M') if event.StopDateTime else '-' }}</td><td>{% if event.StartDateTime %}{{ event.StartDateTime.strftime('%Y-%m-%d %H:%M') }}{% else %}-{% endif %}</td><td>{% if event.DurationMin is not none %}{{ '%g'|format(event.DurationMin) }} min{% else %}-{% endif %}</td><td>{{ event.Note or '-' }}</td></tr>
+<tr><td><input type="radio" name="logger-row-select" value="{{ event.LoggerEventID }}" aria-label="Edit LOGGER entry {{ event.LoggerEventID }}"></td><td>{{ event.MachineNameSnapshot or '-' }}</td><td>{{ hierarchy }}</td><td>{{ event.CauseSnapshot or '-' }}</td><td>{{ event.StopTypeSnapshot or '-' }}</td><td>{{ event.SubStopTypeSnapshot or '-' }}</td><td>{{ event.MEO or '-' }}</td><td>{{ event.StopDateTime.strftime('%Y-%m-%d %H:%M') if event.StopDateTime else '-' }}</td><td>{% if event.StartDateTime %}{{ event.StartDateTime.strftime('%Y-%m-%d %H:%M') }}{% else %}-{% endif %}</td><td>{% if event.DurationMin is not none %}{{ '%g'|format(event.DurationMin) }} min{% else %}-{% endif %}</td><td>{{ event.Note or '-' }}</td></tr>
 {% endfor %}
 </tbody></table></div>
 {% else %}<p>No LOGGER entries for this Production Date.</p>{% endif %}
@@ -65,6 +67,7 @@
 <script type="application/json" id="logger-stop-data">{{ stop_types_json|safe }}</script>
 <script type="application/json" id="logger-sub-stop-data">{{ sub_stop_types_json|safe }}</script>
 <script type="application/json" id="logger-causes-data">{{ causes_json|safe }}</script>
+<script type="application/json" id="logger-events-data">{{ logger_events_json|safe }}</script>
 <script>
 function chooseUniqueCandidate(candidates) {
   return candidates.length === 1 ? candidates[0] : null;
@@ -86,6 +89,11 @@ function durationDefaultStopId(stopTypes, minutes) {
   const target = minutes < 10 ? 'SMDT' : 'BD';
   return stopTypes.find(item => item.StopType === target)?.StopId || '';
 }
+function causeCatalogStopId(eventStopId) {
+  const bdStopId = '7';
+  const smdtStopId = '6';
+  return String(eventStopId) === bdStopId ? smdtStopId : eventStopId;
+}
 function causeMEO(causes, causeId) {
   return causes.find(item => String(item.CauseId) === String(causeId))?.MEO || '';
 }
@@ -102,9 +110,11 @@ function causeMatchesOption(item, selectedOption, subMachines) {
 }
 function causeCandidates(causes, selectedOption, subMachines, stopId, subStopId, allowAnySubStop) {
   if (!selectedOption) return [];
+  const catalogStopId = causeCatalogStopId(stopId);
   return causes.filter(item => causeMatchesOption(item, selectedOption, subMachines)
-    && String(item.StopId) === String(stopId)
-    && (allowAnySubStop || String(item.SubStopId) === String(subStopId)));
+    && String(item.StopId) === String(catalogStopId)
+    && (allowAnySubStop || String(item.SubStopId) === String(subStopId)
+      || String(catalogStopId) !== String(stopId)));
 }
 function causeCandidatesForOptions(causes, options, subMachines, stopId, subStopId, allowAnySubStop) {
   const compatible = new Set(options.flatMap(option =>
@@ -176,6 +186,10 @@ function defaultCauseTarget(compatible, selectedCause, machineId, instanceNo,
   const stopTypes = JSON.parse(document.getElementById('logger-stop-data').textContent);
   const subTypes = JSON.parse(document.getElementById('logger-sub-stop-data').textContent);
   const causes = JSON.parse(document.getElementById('logger-causes-data').textContent);
+  const savedEvents = JSON.parse(document.getElementById('logger-events-data').textContent);
+  const eventId = document.getElementById('logger-event-id');
+  const saveButton = document.getElementById('logger-save');
+  const cancelButton = document.getElementById('logger-cancel');
   const duration = document.getElementById('logger-duration'), timeMessage = document.getElementById('logger-time-message');
   const timeNormalizers = new Map([...form.querySelectorAll('#logger-stop,#logger-start')]
     .map(input => [input, window.FittingMES.attachManualHHmm(input)]));
@@ -238,13 +252,11 @@ function defaultCauseTarget(compatible, selectedCause, machineId, instanceNo,
     else if (candidates.length === 1) subType.value = String(candidates[0].SubStopId);
   }
   function applyDurationDefault(minutes) {
-    if (manualStopTypeOverride) return;
     const defaultStopId = durationDefaultStopId(stopTypes, minutes);
     if (!defaultStopId || String(type.value) === String(defaultStopId)) return;
+    manualStopTypeOverride = false;
     type.value = String(defaultStopId);
-    rebuildSubTypes();
-    clearCause();
-    classificationEdited.value = classificationAfterManualChange();
+    type.dispatchEvent(new Event('change'));
   }
   function setClassificationEdited() { classificationEdited.value = 'true'; }
   function applyCause(forceResolve = false) {
@@ -292,6 +304,42 @@ function defaultCauseTarget(compatible, selectedCause, machineId, instanceNo,
     duration.value = String(preview.minutes);
     applyDurationDefault(preview.minutes);
   }
+  function editTime(value) {
+    if (!value) return '';
+    const match = String(value).match(/T(\d{2}:\d{2})/);
+    return match ? match[1] : String(value).slice(11, 16);
+  }
+  function enterEditMode(event) {
+    eventId.value = event.LoggerEventID;
+    saveButton.textContent = 'SAVE EDIT';
+    cancelButton.hidden = false;
+    machine.value = String(event.McId);
+    machine.dispatchEvent(new Event('change'));
+    machineInstance.value = String(event.McInstanceNo);
+    machineInstance.dispatchEvent(new Event('change'));
+    stopInput.value = editTime(event.StopDateTime);
+    startInput.value = editTime(event.StartDateTime);
+    duration.value = event.DurationMin == null ? '' : String(event.DurationMin);
+    if (stopInput.value && startInput.value) updateDuration();
+    else applyDurationDefault(Number(duration.value));
+    const target = availableOptions().find(item =>
+      String(item.related_mc_id ?? '') === String(event.RelatedMcId ?? '')
+      && String(item.related_mc_instance_no ?? '') === String(event.RelatedMcInstanceNo ?? '')
+      && String(item.sub_mc_id ?? '') === String(event.SubMcId ?? '')
+      && String(item.sub_mc_instance_no ?? '') === String(event.SubMcInstanceNo ?? ''));
+    rebuildCauses(null, type.value, event.SubStopId, event.CauseId,
+      availableOptions());
+    subRelated.value = '';
+    applySelection(null);
+    cause.value = event.CauseId == null ? '' : String(event.CauseId);
+    if (cause.value) cause.dispatchEvent(new Event('change'));
+    if (target) { subRelated.value = optionKey(target); applySelection(target); }
+    subType.value = event.SubStopId == null ? subType.value : String(event.SubStopId);
+    form.elements.meo.value = event.MEO || '';
+    form.elements.note.value = event.Note || '';
+    window.scrollTo({top: 0, behavior: 'smooth'});
+  }
+  cancelButton.addEventListener('click', () => window.location.reload());
   machine.addEventListener('change', () => {
     machineInstance.replaceChildren(new Option('Select instance',''));
     instances.filter(item => String(item.mc_id) === String(machine.value))
@@ -339,7 +387,11 @@ function defaultCauseTarget(compatible, selectedCause, machineId, instanceNo,
     });
     input.addEventListener('change', updateDuration);
   });
-  duration.addEventListener('input', () => { timeMessage.hidden = true; });
+  duration.addEventListener('input', () => {
+    timeMessage.hidden = true;
+    const value = duration.value.trim();
+    if (/^(?:[1-9]\d*)(?:\.\d)?$/.test(value)) applyDurationDefault(Number(value));
+  });
   form.addEventListener('submit', event => {
     form.querySelectorAll('#logger-stop,#logger-start').forEach(input => input.dispatchEvent(new Event('change')));
     updateDuration();
@@ -361,6 +413,16 @@ function defaultCauseTarget(compatible, selectedCause, machineId, instanceNo,
   if (selectedForm.cause_id) applyCause();
   updateTargetRequirement();
   updateDuration();
+  document.querySelectorAll('input[name="logger-row-select"]').forEach(input => {
+    input.addEventListener('change', () => {
+      const selected = savedEvents.find(item => String(item.LoggerEventID) === input.value);
+      if (selected) enterEditMode(selected);
+    });
+  });
+  if (selectedForm.logger_event_id) {
+    const selected = savedEvents.find(item => String(item.LoggerEventID) === String(selectedForm.logger_event_id));
+    if (selected) enterEditMode(selected);
+  }
 })();
 </script>
 {% endblock %}

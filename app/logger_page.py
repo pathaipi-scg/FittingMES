@@ -43,6 +43,7 @@ def logger_page_context(masters: LoggerMasters, production_date, logger_events=N
         stop_types_json=_json(masters.stop_types),
         sub_stop_types_json=_json(masters.sub_stop_types),
         causes_json=_json(masters.causes),
+        logger_events_json=_json(list(logger_events or [])),
     )
 
 

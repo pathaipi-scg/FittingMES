@@ -50,7 +50,8 @@ from app.browser_pdf import (PdfGenerationError, generate_print_oee_pdf,
                              generate_print_prod_pdf,
                              finish_pdf_process)
 from app.logger import (LoggerValidationError, read_logger_events,
-                        read_logger_masters, save_logger_event)
+                        read_logger_masters, save_logger_event,
+                        update_logger_event)
 from app.logger_page import (cause_suggestion, logger_form_input,
                              logger_page_context, normalize_form_selection)
 from app.logger_master import read_logger_master_review
@@ -151,12 +152,32 @@ def save_logger_form(form):
     return data.production_date
 
 
+def update_logger_form(form):
+    try:
+        event_id = int(form.get('logger_event_id', ''))
+    except (TypeError, ValueError):
+        raise LoggerValidationError('INVALID_EVENT_ID', 'Select a valid LOGGER entry.') from None
+    data, selection = logger_form_input(form)
+    with closing(get_connection()) as conn:
+        masters = read_logger_masters(conn.cursor())
+        normalized = normalize_form_selection(selection, masters)
+        data = data.__class__(
+            **{**data.__dict__,
+               'related_mc_id': normalized['related_mc_id'],
+               'related_mc_instance_no': normalized['related_mc_instance_no'],
+               'sub_mc_id': normalized['sub_mc_id'],
+               'sub_mc_instance_no': normalized['sub_mc_instance_no']})
+        update_logger_event(conn, event_id, data, masters)
+    return data.production_date
+
+
 @app.post('/logger/save', response_class=HTMLResponse)
 async def save_logger_route(request: Request):
     form = await request.form()
     form_values = dict(form)
     try:
-        production_date = await run_in_threadpool(save_logger_form, form_values)
+        handler = update_logger_form if form_values.get('logger_event_id') else save_logger_form
+        production_date = await run_in_threadpool(handler, form_values)
         return RedirectResponse(f'/logger?production_date={production_date}&saved=true',
                                 status_code=303)
     except LoggerValidationError as exc:

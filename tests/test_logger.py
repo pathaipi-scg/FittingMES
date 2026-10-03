@@ -15,6 +15,7 @@ from app.logger import (
     read_logger_events,
     read_logger_masters,
     save_logger_event,
+    update_logger_event,
     suggest_cause,
     sub_related_options_for_instance,
     _validate_logger_masters,
@@ -41,6 +42,7 @@ class SaveCursor:
         self.overlap_machine = overlap_machine
         self.executed = []
         self.inserted = []
+        self.rowcount = 1
 
     def execute(self, query, *params):
         if self.fail:
@@ -305,7 +307,7 @@ class LoggerResolverTests(unittest.TestCase):
     def test_read_logger_events_filters_and_orders_with_snapshots(self):
         cursor = QueueCursor([[
             (2, "2026-10-01", "stop", "start", 10, "F2", "LINE1", None,
-             "Cause", "RUN", None, "M", "note"),
+             "Cause", "RUN", None, "M", "note", 7, 2, 5, 1, 2, 1, 1, 1, 1),
         ]])
         events = read_logger_events(cursor, "2026-10-01")
         query, params = cursor.queries[0]
@@ -327,6 +329,16 @@ class LoggerResolverTests(unittest.TestCase):
         self.assertIn("?", query)
         self.assertNotIn("F1", query)
         self.assertEqual(params[14:20], ("F1", None, "Mould1", "RUN", "--", None))
+
+    def test_update_preserves_existing_identity_and_commits(self):
+        connection = SaveConnection(event_id=501)
+        event_id = update_logger_event(connection, 42, self.save_input(duration_min="2.5"), self.masters())
+        self.assertEqual(event_id, 42)
+        self.assertEqual(connection.commits, 1)
+        self.assertEqual(connection.rollbacks, 0)
+        query, params = connection.cursor_instance.executed[-1]
+        self.assertIn("UPDATE dbo.LoggerEvent", query)
+        self.assertEqual(params[-1], 42)
 
     def test_save_machine_level_types_without_target(self):
         for stop_id, stop_type in ((2, "SETUP"), (3, "CHGOVER"), (4, "CLEAN"), (5, "IDLE")):

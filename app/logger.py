@@ -8,6 +8,12 @@ from typing import Any
 DIRECT_SUB = "DIRECT_SUB"
 RELATED_MAIN = "RELATED_MAIN"
 RELATED_SUB = "RELATED_SUB"
+SMDT_STOP_ID = 6
+BD_STOP_ID = 7
+
+
+def cause_catalog_stop_id(event_stop_id):
+    return SMDT_STOP_ID if event_stop_id == BD_STOP_ID else event_stop_id
 
 
 @dataclass(frozen=True)
@@ -259,7 +265,8 @@ def _validate_logger_masters(data, masters):
         classification_source = "MANUAL"
     elif cause is None:
         classification_source = "MANUAL"
-    elif stop_id != cause.get("StopId") or sub_stop_id != cause.get("SubStopId"):
+    elif (cause_catalog_stop_id(stop_id) != cause.get("StopId")
+          or (stop_id != BD_STOP_ID and sub_stop_id != cause.get("SubStopId"))):
         _validation_error("INCONSISTENT_CLASSIFICATION", "Final classification does not match the selected Cause.")
     else:
         classification_source = "CAUSE_SHORTCUT"
@@ -418,6 +425,44 @@ def save_logger_event(conn, data, masters=None):
         raise LoggerValidationError("DATABASE_INSERT", "LOGGER transaction INSERT failed.") from exc
 
 
+def update_logger_event(conn, event_id, data, masters=None):
+    """Validate and update one final operator-confirmed LOGGER event."""
+    try:
+        cursor = conn.cursor()
+        if masters is None:
+            masters = read_logger_masters(cursor)
+        values = _validate_logger_masters(_as_save_input(data), masters)
+        snapshots = _build_logger_snapshots(values)
+        cursor.execute("""
+            UPDATE dbo.LoggerEvent
+            SET ProductionDate=?, StopDateTime=?, StartDateTime=?, DurationMin=?,
+                McId=?, McInstanceNo=?, RelatedMcId=?, RelatedMcInstanceNo=?,
+                SubMcId=?, SubMcInstanceNo=?, StopId=?, SubStopId=?, CauseId=?, MEO=?,
+                MachineNameSnapshot=?, RelatedMachineSnapshot=?, SubMachineSnapshot=?,
+                StopTypeSnapshot=?, SubStopTypeSnapshot=?, CauseSnapshot=?, Note=?,
+                ClassificationSource=?
+            WHERE LoggerEventID=?
+        """, values["production_date"], values["stop_datetime"], values["start_datetime"],
+            values["duration_min"], values["mc_id"], values["mc_instance_no"],
+            values["related_mc_id"], values["related_mc_instance_no"], values["sub_mc_id"],
+            values["sub_mc_instance_no"], values["stop_id"], values["sub_stop_id"],
+            values["cause_id"], values["meo"], snapshots["MachineNameSnapshot"],
+            snapshots["RelatedMachineSnapshot"], snapshots["SubMachineSnapshot"],
+            snapshots["StopTypeSnapshot"], snapshots["SubStopTypeSnapshot"],
+            snapshots["CauseSnapshot"], values["note"], values["classification_source"],
+            event_id)
+        if cursor.rowcount != 1:
+            _validation_error("LOGGER_EVENT_NOT_FOUND", "LOGGER entry no longer exists.")
+        conn.commit()
+        return event_id
+    except LoggerValidationError:
+        conn.rollback()
+        raise
+    except Exception as exc:
+        conn.rollback()
+        raise LoggerValidationError("DATABASE_UPDATE", "LOGGER transaction UPDATE failed.") from exc
+
+
 def _rows(cursor, keys):
     return [dict(zip(keys, row)) for row in cursor.fetchall()]
 
@@ -487,7 +532,9 @@ def read_logger_events(cursor, production_date):
         SELECT LoggerEventID, ProductionDate, StopDateTime, StartDateTime,
                DurationMin, MachineNameSnapshot, RelatedMachineSnapshot,
                SubMachineSnapshot, CauseSnapshot, StopTypeSnapshot,
-               SubStopTypeSnapshot, MEO, Note
+               SubStopTypeSnapshot, MEO, Note, McId, McInstanceNo,
+               RelatedMcId, RelatedMcInstanceNo, SubMcId, SubMcInstanceNo,
+               StopId, SubStopId, CauseId
         FROM dbo.LoggerEvent
         WHERE ProductionDate=?
         ORDER BY StopDateTime DESC, LoggerEventID DESC
@@ -497,6 +544,8 @@ def read_logger_events(cursor, production_date):
         "DurationMin", "MachineNameSnapshot", "RelatedMachineSnapshot",
         "SubMachineSnapshot", "CauseSnapshot", "StopTypeSnapshot",
         "SubStopTypeSnapshot", "MEO", "Note",
+        "McId", "McInstanceNo", "RelatedMcId", "RelatedMcInstanceNo",
+        "SubMcId", "SubMcInstanceNo", "StopId", "SubStopId", "CauseId",
     ))
 
 
