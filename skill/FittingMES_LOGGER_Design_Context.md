@@ -50,6 +50,13 @@ The LOGGER/Production Shift implementation is complete and pushed on
 API, spreadsheet, and `*_OLD.md` changes remain dirty and must stay outside
 future Shift commits.
 
+The current implementation is deployed and running on the production server.
+LOGGER UI and routes are operational, including Save/Edit/Cancel workflows
+and Shift behavior. The LOGGER Time Summary is operational and displays
+SHIFT 1, SHIFT 2, and TOTAL in the order
+`SETUP | CHG | IDLE | CLEAN | SMDT | BD`. SOURCE LOGGER EVENTS appears below
+the summary.
+
 Migrations 021 and 022 are already applied to SB23
 (`DCDLGYF3\SQLEXPRESS`). Do not rerun migrations or execute the 022 rollback.
 MANUAL EquipmentTimeEvent identity is
@@ -67,12 +74,15 @@ shifts, including zero values. It recalculates TOTAL, does not submit Save,
 and does not write either LOGGER or Production data. F7 and F10 are isolated.
 Missing or invalid guide values are handled explicitly. Normal refresh does
 not re-import LOGGER into saved Production values.
+Production LOG CAL reads the Press-specific LOGGER guide endpoint. F7/F10
+guide isolation and zero-overwrite behavior have been verified.
 
 Persisted LoggerEvent ShiftID takes priority; timestamped legacy events use
 historical `ProductionShiftRuleHistory`, including Production Day start 08:00,
 Shift 1 start 06:00, and Shift 2 start 19:00. Do not hard-code shift times.
 
-The next task is the first user-initiated real Production Save validation.
+The authoritative next task is the first user-initiated real Production Save
+validation, preferably ProductionID 13 / F7 / Production Date 2026-10-01.
 Copilot must not click Save autonomously; subsequent SB23 inspection must be
 read-only.
 
@@ -618,7 +628,10 @@ Example:
 
 is SETUP because it occurs before production starts. It does not become BD merely because its duration exceeds 10 minutes.
 
-The live Master IDs for the SMDT/BD pair must be verified and centrally resolved before implementation.
+The live Master IDs for the SMDT/BD pair are SMDT `StopId = 6`,
+`SubStopId = 20` and BD `StopId = 7`, `SubStopId = 21`. These IDs are
+centrally resolved for the implemented duration rule; verify live Master
+data again if the Master configuration changes.
 
 ---
 
@@ -1151,7 +1164,9 @@ hard-code SubMcId 20 through 26 into application resolver logic.
 - SMDT: `StopId = 6`, `SubStopId = 20`
 - BD: `StopId = 7`, `SubStopId = 21`
 
-The duration conversion rule has not been implemented in Phase 3A.
+At the Phase 3A checkpoint, the duration conversion rule had not yet been
+implemented. It was implemented in Phase 3B; see the Phase 3B completion
+record below.
 
 ## Test Status
 
@@ -1160,9 +1175,10 @@ The duration conversion rule has not been implemented in Phase 3A.
 - Pytest was unavailable in the environment and was not installed
 - No regression failures were found
 
-## Not Implemented Yet
+## Phase 3A Scope at That Checkpoint
 
-Phase 3A did not implement:
+The following items were outside Phase 3A scope and are recorded here as
+historical status, not as the current implementation state:
 
 - LOGGER UI
 - LOGGER page route
@@ -1177,7 +1193,8 @@ Phase 3A did not implement:
 
 No database data was modified during Phase 3A live validation.
 
-Phase 3B must not start without separate approval.
+Phase 3B subsequently received approval and was completed; Phase 3C UI and
+live end-to-end verification followed.
 
 ---
 
@@ -1278,15 +1295,18 @@ by an additional database constraint.
 
 # 29. Implementation Gate
 
-Phase 2 database execution is complete. LOGGER application
-implementation remains a separate approved phase.
+Historical gate after Phase 2: database execution was complete, while LOGGER
+application implementation still required separate approval. This gate was
+superseded by the Phase 3A, 3B, and 3C completion records below.
 
-When implementation is approved later, re-read this file first and
-follow it as the LOGGER design source of truth.
+The design constraints in this file remain authoritative for future LOGGER
+changes.
 
 # 30. Phase 3B Classification Provenance Contract
 
-Phase 3B design is approved, but implementation has not started.
+At the time this Phase 3B design contract was frozen, implementation had not
+started. Phase 3B was subsequently implemented and completed; see the Phase
+3B Completion Record below.
 
 ## Classification Provenance Input
 
@@ -1569,7 +1589,9 @@ Live validation confirmed:
 
 ## Phase 3B Exclusions
 
-Phase 3B did not implement:
+At the end of Phase 3B, before Phase 3C, the following items were outside
+scope. This is a historical phase boundary, not the current implementation
+state:
 
 - LOGGER HTML/UI
 - navigation
