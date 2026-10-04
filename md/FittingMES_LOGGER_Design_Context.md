@@ -1,10 +1,67 @@
 # FittingMES LOGGER --- Master & Transaction Design Context
 
-**Status:** Design agreed; live Master validation and implementation are
-still pending.\
+**Status:** LOGGER/Production Shift implementation is complete and checkpointed.\
+**Updated:** 2026-10-05\
 **Purpose:** Source of truth for future Copilot/Codex sessions so the
 LOGGER hierarchy, Cause shortcut behavior, and SMDT/BD rules are not
 reinterpreted.
+
+## Current implementation checkpoint
+
+The completed implementation is committed and pushed on `main`:
+
+- Commit: `5aea6f75be2a1363c12ec0b73c21d5f1f6a74704`
+- Message: `Implement shift-aware LOGGER and Production time tracking`
+- Unrelated API, spreadsheet, and `*_OLD.md` work remains dirty and must not
+  be included in future Shift feature commits.
+
+Migration 021 (`LoggerEvent.ShiftID`) and migration 022
+(`EquipmentTimeEvent.ShiftID`) are already applied to SB23 on
+`DCDLGYF3\SQLEXPRESS`. Do not rerun either migration or execute the 022
+rollback during normal continuation. MANUAL EquipmentTimeEvent identity is
+`ProductionID + EquipmentCode + ShiftID + TimeType + SourceType`; MANUAL
+rows use Shift 1 or 2, while legacy MANUAL rows were assigned Shift 1.
+
+The shared navigation now includes `Log Master` after `Mould`, linking to
+`/logger/master` with `active_tab="logger-master"`. The final Production
+Shift display order is:
+
+`SETUP | CHG | IDLE | CLEAN | SMDT | BD`
+
+Production shows six editable Shift 1 values, six editable Shift 2 values,
+and six read-only TOTAL values. TOTAL is calculated as Shift 1 plus Shift 2
+and is never persisted as an EquipmentTimeEvent row. There is no standalone
+Idle column. LOGGER TIME SUMMARY uses the same six-category order for Shift 1,
+Shift 2, and TOTAL. Backend `CHGOVER` maps to visible `CHG`.
+
+Each Press has a GET-only LOG CAL button. It copies all six LOGGER values for
+both shifts into that Press row, including valid zero values, then recalculates
+TOTAL. It is a full replacement, not a merge; missing or invalid guide data is
+handled explicitly. LOG CAL never submits Production Save, never writes
+LoggerEvent, and never writes EquipmentTimeEvent. F7 and F10 remain isolated.
+Normal refresh displays saved Production values and does not silently
+re-import LOGGER values.
+
+Current SMDT workflow is LOGGER operator entry -> per-Shift LOGGER summary ->
+explicit LOG CAL copy -> employee review/edit -> Production Save as MANUAL
+EquipmentTimeEvent by ShiftID. Production saved values are authoritative;
+OEE elapsed-time SMDT is not used for the visible Production SMDT.
+
+Historical LOGGER timestamped events resolve Shift using
+`ProductionShiftRuleHistory`; persisted ShiftID takes priority. Current rules
+include Production Day start 08:00, Shift 1 start 06:00, and Shift 2 start
+19:00. Do not hard-code shift times.
+
+Validation at this checkpoint includes 131 focused Python tests, the LOG CAL
+zero-overwrite regression, frontend JavaScript validation, Jinja validation,
+and `git diff --check`.
+
+The next controlled task is the first user-initiated real Production Save
+validation, preferably ProductionID 13 / F7 / Production Date 2026-10-01.
+Copilot must not click Save autonomously. After the user saves, perform only
+read-only SB23 verification and confirm Shift-specific MANUAL rows, no TOTAL
+row, no duplicate natural keys, unchanged LoggerEvent, unchanged F10, and
+refresh persistence without LOGGER re-import.
 
 ## 1. Objective
 
@@ -12,7 +69,7 @@ Add a `LOGGER` page to FittingMES for manual machine-stop event logging.
 
 Target navigation:
 
-`PRODUCTION | LOGGER | USAGE | DEPALLET | PROD API | REJECT API | PressMc | Mould | PRINT PROD | PRINT OEE`
+`PRODUCTION | LOGGER | USAGE | DEPALLET | PROD API | REJECT API | PressMc | Mould | Log Master | PRINT PROD | PRINT OEE`
 
 Operator entry:
 

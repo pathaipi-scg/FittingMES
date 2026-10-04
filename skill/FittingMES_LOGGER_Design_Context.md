@@ -1,7 +1,7 @@
 # FittingMES LOGGER — Master, Shortcut & Transaction Design Context
 
 **Status:** Design source of truth.  
-**Updated:** 2026-09-30  
+**Updated:** 2026-10-05
 **Purpose:** Prevent Copilot/Codex from reinterpreting LOGGER Master data, Cause shortcuts, machine hierarchy, and SMDT/BD behavior.
 
 ---
@@ -40,7 +40,41 @@ Add a manual machine-stop LOGGER page to FittingMES.
 
 Navigation:
 
-`PRODUCTION | LOGGER | USAGE | DEPALLET | PROD API | REJECT API | PressMc | Mould | PRINT PROD | PRINT OEE`
+`PRODUCTION | LOGGER | USAGE | DEPALLET | PROD API | REJECT API | PressMc | Mould | Log Master | PRINT PROD | PRINT OEE`
+
+## Current implementation checkpoint
+
+The LOGGER/Production Shift implementation is complete and pushed on
+`main` as commit `5aea6f75be2a1363c12ec0b73c21d5f1f6a74704`
+(`Implement shift-aware LOGGER and Production time tracking`). Unrelated
+API, spreadsheet, and `*_OLD.md` changes remain dirty and must stay outside
+future Shift commits.
+
+Migrations 021 and 022 are already applied to SB23
+(`DCDLGYF3\SQLEXPRESS`). Do not rerun migrations or execute the 022 rollback.
+MANUAL EquipmentTimeEvent identity is
+`ProductionID + EquipmentCode + ShiftID + TimeType + SourceType`; MANUAL rows
+use Shift 1 or 2 and legacy MANUAL rows were assigned Shift 1.
+
+Production and LOGGER TIME SUMMARY use the visible order
+`SETUP | CHG | IDLE | CLEAN | SMDT | BD`. Production has six editable values
+per Shift, six calculated read-only TOTAL values, and no standalone Idle
+column. TOTAL is Shift 1 plus Shift 2 and is never persisted as an
+EquipmentTimeEvent row. Backend `CHGOVER` is displayed as `CHG`.
+
+LOG CAL is a per-Press GET-only full replacement of all six categories in both
+shifts, including zero values. It recalculates TOTAL, does not submit Save,
+and does not write either LOGGER or Production data. F7 and F10 are isolated.
+Missing or invalid guide values are handled explicitly. Normal refresh does
+not re-import LOGGER into saved Production values.
+
+Persisted LoggerEvent ShiftID takes priority; timestamped legacy events use
+historical `ProductionShiftRuleHistory`, including Production Day start 08:00,
+Shift 1 start 06:00, and Shift 2 start 19:00. Do not hard-code shift times.
+
+The next task is the first user-initiated real Production Save validation.
+Copilot must not click Save autonomously; subsequent SB23 inspection must be
+read-only.
 
 Operator entry:
 
