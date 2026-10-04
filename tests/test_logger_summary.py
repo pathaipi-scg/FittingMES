@@ -3,7 +3,7 @@ import unittest
 from datetime import date, datetime
 
 from app.logger_summary import read_logger_time_summary, read_logger_press_guide
-from app.main import app
+from app.main import app, templates
 
 
 class SummaryCursor:
@@ -13,12 +13,18 @@ class SummaryCursor:
         self.overlap = overlap
         self.calls = []
         self.result = []
+        self.description = []
 
     def execute(self, query, *params):
         self.calls.append((query, params))
-        if 'FROM dbo.Fitting_StopType' in query:
-            self.result = [(2, 'SETUP'), (3, 'CHGOVER'), (5, 'CLEAN'),
-                           (6, 'SMDT'), (7, 'BD')]
+        if 'FROM dbo.ProductionShiftRuleHistory' in query:
+            self.description = [('EffectiveFromDate',), ('ShiftID',), ('StartTime',)]
+            self.result = [(date(2026, 1, 1), 1, datetime.min.time().replace(hour=7)),
+                           (date(2026, 1, 1), 2, datetime.min.time().replace(hour=19))]
+        elif 'FROM dbo.Fitting_StopType' in query:
+            self.description = []
+            self.result = [(2, 'SETUP'), (3, 'CHGOVER'), (4, 'IDLE'),
+                           (5, 'CLEAN'), (6, 'SMDT'), (7, 'BD')]
         elif 'GROUP BY event.McId' in query:
             self.result = self.aggregate
         elif 'SELECT event.LoggerEventID' in query:
@@ -38,6 +44,47 @@ class SummaryCursor:
 
 
 class LoggerSummaryTests(unittest.TestCase):
+    def test_summary_uses_shared_date_header_and_compact_back_header(self):
+        production_date = date(2026, 10, 1)
+        body = templates.get_template('logger_summary.html').render(
+            page_title='LOGGER TIME SUMMARY',
+            active_tab='logger-summary',
+            production_date=production_date,
+            summary=[dict(MachineLabel='F1', SetupMin=1, ChgOverMin=2,
+                          SmdtMin=3, BreakdownMin=4, CleanMin=5,
+                          TotalLoggedMin=15,
+                          Shift1SetupMin=1, Shift1ChgOverMin=0,
+                          Shift1SmdtMin=0, Shift1BreakdownMin=0,
+                          Shift1CleanMin=0, Shift2SetupMin=0,
+                          Shift2ChgOverMin=0, Shift2SmdtMin=0,
+                          Shift2BreakdownMin=0, Shift2CleanMin=0)],
+            events=[dict(McId=7, McInstanceNo=1, StopTypeSnapshot='SETUP',
+                         DurationMin=1, RelatedMachineSnapshot=None,
+                         SubMachineSnapshot=None, CauseSnapshot=None,
+                         StopId=2)],
+            overlap_warning=False,
+            overlap_count=0,
+        )
+        self.assertIn('action="/logger/summary"', body)
+        self.assertIn('name="production_date" type="date" value="2026-10-01"', body)
+        self.assertEqual(body.count('type="date"'), 1)
+        self.assertIn('>REFRESH</button>', body)
+        self.assertIn('href="/logger?production_date=2026-10-01">BACK TO LOGGER</a>', body)
+        self.assertIn('href="/logger?production_date=2026-10-01" aria-current="page">LOGGER</a>', body)
+        self.assertIn('<th class="logger-summary-group" colspan="6">SHIFT 1</th>', body)
+        self.assertIn('<th class="logger-summary-group" colspan="6">SHIFT 2</th>', body)
+        self.assertIn('<th class="logger-summary-group" colspan="6">TOTAL</th>', body)
+        self.assertEqual(body.count('<th>SETUP</th>'), 3)
+        self.assertNotIn('<th>TOTAL</th>', body)
+        self.assertNotIn('>VIEW</button>', body)
+        self.assertNotIn('Return to LOGGER', body)
+        heading_end = body.index('>BACK TO LOGGER</a>')
+        description_start = body.index(
+            'Calculated from saved LOGGER events - guide values')
+        summary_table = body.index('aria-label="LOGGER time summary"')
+        self.assertLess(heading_end, description_start)
+        self.assertLess(description_start, summary_table)
+
     def test_f_machine_mapping_uses_matching_instance_and_active_master_count(self):
         for equipment_code, instance_no in (('F1', 1), ('F2', 2)):
             cursor = GuideCursor()
@@ -45,7 +92,7 @@ class LoggerSummaryTests(unittest.TestCase):
             self.assertTrue(result['HasSetup'])
             guide_query = next(query for query, _ in cursor.calls if 'FROM dbo.LoggerEvent' in query)
             self.assertIn('event.McId=? AND event.McInstanceNo=?', guide_query)
-            self.assertEqual(cursor.guide_params[10:13], (date(2026, 10, 1), 7, instance_no))
+            self.assertEqual(cursor.guide_params[:3], (date(2026, 10, 1), 7, instance_no))
 
     def test_f_machine_mapping_rejects_instance_above_active_master_count(self):
         cursor = GuideCursor(instance_count=2)
@@ -62,22 +109,52 @@ class LoggerSummaryTests(unittest.TestCase):
 
     def test_summary_uses_saved_stop_ids_and_keeps_instances_separate(self):
         cursor = SummaryCursor([
-            (7, 1, 'F', 10, 5, 12, 20, 5),
-            (7, 2, 'F', 0, 0, 4, 0, 0),
+            (7, 1, 'F', 10, 5, 0, 5, 12, 20),
+            (7, 2, 'F', 0, 0, 0, 0, 4, 0),
         ], [], overlap=0)
         result = read_logger_time_summary(cursor, date(2026, 10, 1))
         self.assertEqual([row['MachineLabel'] for row in result['summary']], ['F1', 'F2'])
         self.assertEqual(result['summary'][0]['TotalLoggedMin'], 52)
         self.assertEqual(result['summary'][1]['TotalLoggedMin'], 4)
         aggregate_call = next(call for call in cursor.calls if 'GROUP BY event.McId' in call[0])
-        self.assertEqual(aggregate_call[1][:5], (2, 3, 6, 7, 5))
-        self.assertEqual(aggregate_call[1][5], date(2026, 10, 1))
-        self.assertEqual(aggregate_call[1][6:], (2, 3, 6, 7, 5))
+        self.assertEqual(aggregate_call[1][:6], (2, 3, 4, 5, 6, 7))
+        self.assertEqual(aggregate_call[1][6], date(2026, 10, 1))
+        self.assertEqual(aggregate_call[1][7:], (2, 3, 4, 5, 6, 7))
+
+    def test_summary_aggregates_shift_one_shift_two_and_unassigned_total(self):
+        cursor = SummaryCursor([
+            (7, 1, 'F', 3, 4, 0, 7, 5, 6),
+        ], [
+            (1, 7, 1, datetime(2026, 10, 1, 8, 0), datetime(2026, 10, 1, 8, 3),
+             3, 2, 'SETUP', None, None, None, None),
+            (2, 7, 1, datetime(2026, 10, 1, 20, 0), datetime(2026, 10, 1, 20, 4),
+             4, 3, 'CHGOVER', None, None, None, None),
+            (3, 7, 1, None, None, 5, 6, 'SMDT', None, None, None, None),
+            (4, 7, 1, datetime(2026, 10, 1, 8, 30), datetime(2026, 10, 1, 8, 36),
+             6, 7, 'BD', None, None, None, 2),
+        ], overlap=0)
+        result = read_logger_time_summary(cursor, date(2026, 10, 1))
+        row = result['summary'][0]
+        self.assertEqual(
+            [row[field] for field in (
+                'Shift1SetupMin', 'Shift1ChgOverMin', 'Shift1IdleMin',
+                'Shift1CleanMin', 'Shift1SmdtMin', 'Shift1BreakdownMin')],
+            [3, 0, 0, 0, 0, 0])
+        self.assertEqual(
+            [row[field] for field in (
+                'Shift2SetupMin', 'Shift2ChgOverMin', 'Shift2IdleMin',
+                'Shift2CleanMin', 'Shift2SmdtMin', 'Shift2BreakdownMin')],
+            [0, 4, 0, 0, 0, 6])
+        self.assertEqual(
+            [row[field] for field in (
+                'SetupMin', 'ChgOverMin', 'IdleMin', 'CleanMin',
+                'SmdtMin', 'BreakdownMin')],
+            [3, 4, 0, 7, 5, 6])
 
     def test_idle_is_excluded_and_saved_classification_is_authoritative(self):
-        cursor = SummaryCursor([(7, 1, 'F', 10, 0, 5, 20, 3)], [
+        cursor = SummaryCursor([(7, 1, 'F', 10, 0, 0, 3, 5, 20)], [
             (1, 7, 1, datetime(2026, 10, 1, 23, 55), datetime(2026, 10, 2, 0, 5), 5, 6,
-             'SMDT', 'CABLE CAR1', None, 'waiting'),
+             'SMDT', 'CABLE CAR1', None, 'waiting', None),
         ])
         result = read_logger_time_summary(cursor, date(2026, 10, 1))
         row = result['summary'][0]
@@ -87,7 +164,7 @@ class LoggerSummaryTests(unittest.TestCase):
         self.assertEqual(result['events'][0]['RelatedMachineSnapshot'], 'CABLE CAR1')
 
     def test_overlap_warning_is_read_only_and_route_is_get_only(self):
-        cursor = SummaryCursor([(7, 1, 'F', 0, 0, 0, 5, 0)], [], overlap=1)
+        cursor = SummaryCursor([(7, 1, 'F', 0, 0, 0, 0, 5, 0)], [], overlap=1)
         result = read_logger_time_summary(cursor, date(2026, 10, 1))
         self.assertTrue(result['overlap_warning'])
         self.assertEqual(result['overlap_count'], 1)
@@ -109,11 +186,15 @@ class GuideCursor:
         if 'FROM dbo.Fitting_MainMachine' in query:
             self.result = [(7, self.instance_count)]
         elif 'FROM dbo.Fitting_StopType' in query:
-            self.result = [(2, 'SETUP'), (3, 'CHGOVER'), (5, 'CLEAN'),
-                           (6, 'SMDT'), (7, 'BD')]
+            self.result = [(2, 'SETUP'), (3, 'CHGOVER'), (4, 'IDLE'),
+                           (5, 'CLEAN'), (6, 'SMDT'), (7, 'BD')]
+        elif 'FROM dbo.ProductionShiftRuleHistory' in query:
+            self.description = [('EffectiveFromDate',), ('ShiftID',), ('StartTime',)]
+            self.result = [(date(2026, 1, 1), 1, datetime(2026, 1, 1, 6, 0).time()),
+                           (date(2026, 1, 1), 2, datetime(2026, 1, 1, 19, 0).time())]
         elif 'FROM dbo.LoggerEvent' in query:
             self.guide_params = params
-            self.result = [(10, 5, 8, 370, 16, 1, 1, 1, 1, 1)]
+            self.result = [(2, 5, datetime(2026, 10, 1, 8, 0), 1)]
         else:
             raise AssertionError(query)
 

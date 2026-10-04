@@ -62,22 +62,26 @@ app.mount('/static', StaticFiles(directory=Path(__file__).parent / 'static'), na
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 
-def logger_load_context(production_date, saved=False, error=None, form=None):
+def logger_load_context(production_date, saved=False, error=None, form=None,
+                        preset_shift_id=None):
     with closing(get_connection()) as conn:
         cursor = conn.cursor()
         masters = read_logger_masters(cursor)
+        shift_rules = read_shift_rules(cursor, production_date)
         events = read_logger_events(cursor, production_date)
     return logger_page_context(masters, production_date, logger_events=events, saved=saved,
-                               error=error, form=form)
+                               error=error, form=form, shift_rules=shift_rules,
+                               preset_shift_id=preset_shift_id)
 
 
 @app.get('/logger', response_class=HTMLResponse)
 def logger_page(request: Request, production_date: date | None = None,
-                saved: bool = False):
+                saved: bool = False, preset_shift_id: int | None = None):
     production_date = production_date or date.today()
     status = 200
     try:
-        context = logger_load_context(production_date, saved=saved)
+        context = logger_load_context(production_date, saved=saved,
+                                      preset_shift_id=preset_shift_id)
     except ValueError as exc:
         context = dict(page_title='LOGGER', active_tab='logger',
                        production_date=production_date, error=str(exc), saved=False,
@@ -100,13 +104,13 @@ def logger_master_page(request: Request, production_date: date | None = None):
     try:
         with closing(get_connection()) as conn:
             review = read_logger_master_review(conn.cursor())
-        context = dict(page_title='LOGGER MASTER', active_tab='logger',
+        context = dict(page_title='LOGGER MASTER', active_tab='logger-master',
                        production_date=production_date, **review)
         return templates.TemplateResponse(request=request, name='logger_master.html',
                                           context=context,
                                           headers={'Cache-Control': 'no-store'})
     except Exception:
-        context = dict(page_title='LOGGER MASTER', active_tab='logger',
+        context = dict(page_title='LOGGER MASTER', active_tab='logger-master',
                        production_date=production_date,
                        counts=[], warnings=['Unable to load LOGGER Master review. Please retry.'],
                        main_machines=[], sub_machines=[], stop_types=[],
@@ -122,13 +126,13 @@ def logger_summary_page(request: Request, production_date: date | None = None):
     try:
         with closing(get_connection()) as conn:
             summary = read_logger_time_summary(conn.cursor(), production_date)
-        context = dict(page_title='LOGGER TIME SUMMARY', active_tab='logger',
+        context = dict(page_title='LOGGER TIME SUMMARY', active_tab='logger-summary',
                        production_date=production_date, **summary)
         return templates.TemplateResponse(request=request, name='logger_summary.html',
                                           context=context,
                                           headers={'Cache-Control': 'no-store'})
     except Exception:
-        context = dict(page_title='LOGGER TIME SUMMARY', active_tab='logger',
+        context = dict(page_title='LOGGER TIME SUMMARY', active_tab='logger-summary',
                        production_date=production_date, summary=[], events=[],
                        overlap_count=0, overlap_warning=False,
                        error='Unable to load LOGGER time summary. Please retry.')
@@ -148,26 +152,10 @@ def save_logger_form(form):
                'related_mc_instance_no': normalized['related_mc_instance_no'],
                'sub_mc_id': normalized['sub_mc_id'],
                'sub_mc_instance_no': normalized['sub_mc_instance_no']})
-        save_logger_event(conn, data, masters)
-    return data.production_date
-
-
-def update_logger_form(form):
-    try:
-        event_id = int(form.get('logger_event_id', ''))
-    except (TypeError, ValueError):
-        raise LoggerValidationError('INVALID_EVENT_ID', 'Select a valid LOGGER entry.') from None
-    data, selection = logger_form_input(form)
-    with closing(get_connection()) as conn:
-        masters = read_logger_masters(conn.cursor())
-        normalized = normalize_form_selection(selection, masters)
-        data = data.__class__(
-            **{**data.__dict__,
-               'related_mc_id': normalized['related_mc_id'],
-               'related_mc_instance_no': normalized['related_mc_instance_no'],
-               'sub_mc_id': normalized['sub_mc_id'],
-               'sub_mc_instance_no': normalized['sub_mc_instance_no']})
-        update_logger_event(conn, event_id, data, masters)
+        if data.logger_event_id is None:
+            save_logger_event(conn, data, masters)
+        else:
+            update_logger_event(conn, data.logger_event_id, data, masters)
     return data.production_date
 
 
@@ -176,9 +164,12 @@ async def save_logger_route(request: Request):
     form = await request.form()
     form_values = dict(form)
     try:
-        handler = update_logger_form if form_values.get('logger_event_id') else save_logger_form
-        production_date = await run_in_threadpool(handler, form_values)
-        return RedirectResponse(f'/logger?production_date={production_date}&saved=true',
+        production_date = await run_in_threadpool(save_logger_form, form_values)
+        preset_shift_id = form_values.get('preset_shift_id', '')
+        preset_query = (
+            f'&preset_shift_id={preset_shift_id}' if preset_shift_id else '')
+        return RedirectResponse(
+            f'/logger?production_date={production_date}{preset_query}&saved=true',
                                 status_code=303)
     except LoggerValidationError as exc:
         try:
@@ -188,7 +179,8 @@ async def save_logger_route(request: Request):
         try:
             context = await run_in_threadpool(
                 logger_load_context, selected_date, False,
-                f'{exc.code}: {exc}', form_values)
+                f'{exc.code}: {exc}', form_values,
+                form_values.get('preset_shift_id'))
         except Exception:
             context = dict(page_title='LOGGER', active_tab='logger',
                            production_date=selected_date, error=str(exc),
@@ -233,7 +225,7 @@ def production_page(request, plan_id=None, product_code=None, confirm=False, map
                     create=False, running_no=None, production_date=None, production_id=None, edit=False, save=False, void=False, production_input=None, data_saved=False, product_family=None, product_choices=None, press_message=None, press_message_type=None, wet_reject_message=None, wet_reject_message_type=None):
     requested_date = production_date
     production_date = production_date or date.today()
-    context = dict(families=FAMILIES, product_family=None, product_name=None, product_previews={}, production_data={}, calculated=calculate(None, None), data_saved=data_saved, production_date=production_date, lots=[], lots_for_date=[], production_data_by_lot={}, calculated_by_lot={}, current=None, edit=edit, edit_plans=[], plans=[], selected=None, products=[], material_prefix=None,
+    context = dict(families=FAMILIES, product_family=None, product_previews={}, production_data={}, calculated=calculate(None, None), data_saved=data_saved, production_date=production_date, lots=[], lots_for_date=[], production_data_by_lot={}, calculated_by_lot={}, current=None, edit=edit, edit_plans=[], plans=[], selected=None, products=[], material_prefix=None,
                    product_code=None, lot=None, error=None, lots_load_failed=False, running_no=None, created_lot=None,
                    press_production=[], day_start_time=None, eligible_presses=[], eligible_moulds=[], press_product_error=None,
                    press_message=press_message, press_message_type=press_message_type,
@@ -351,13 +343,6 @@ def production_page(request, plan_id=None, product_code=None, confirm=False, map
                         context["mapping_edit"] = True
                     else:
                         context["product_family"], context["product_code"] = mapped
-                        try:
-                            master_product = next((product for product in read_products(cursor)
-                                                   if product["ProductFamily"] == mapped[0]
-                                                   and product["ProductCode"] == mapped[1]), None)
-                            context["product_name"] = master_product["ProductName"] if master_product else None
-                        except Exception:
-                            context["product_name"] = None
                         context["lot"] = lot_prefix(mapped[0], mapped[1], selected["StartTime"])
                         context["running_no"] = next_running_no(cursor, context["lot"],
                             mapped[0], mapped[1], selected["StartTime"])
@@ -506,7 +491,19 @@ async def save_press_production_route_action(request, production_id, press_produ
                 ProductionEndTime=form.get('production_end_time'), Remark=form.get('remark'),
                 SetupMinutes=form.get('setup_minutes'), ChgOverMinutes=form.get('chgover_minutes'),
                 IdleMinutes=form.get('idle_minutes'), CleaningMinutes=form.get('cleaning_minutes'),
-                BreakdownMinutes=form.get('breakdown_minutes'))
+                BreakdownMinutes=form.get('breakdown_minutes'),
+                Shift1SetupMinutes=form.get('shift1_setup_minutes'),
+                Shift1ChgOverMinutes=form.get('shift1_chgover_minutes'),
+                Shift1IdleMinutes=form.get('shift1_idle_minutes'),
+                Shift1SmdtMinutes=form.get('shift1_smdt_minutes'),
+                Shift1BreakdownMinutes=form.get('shift1_breakdown_minutes'),
+                Shift1CleaningMinutes=form.get('shift1_cleaning_minutes'),
+                Shift2SetupMinutes=form.get('shift2_setup_minutes'),
+                Shift2ChgOverMinutes=form.get('shift2_chgover_minutes'),
+                Shift2IdleMinutes=form.get('shift2_idle_minutes'),
+                Shift2SmdtMinutes=form.get('shift2_smdt_minutes'),
+                Shift2BreakdownMinutes=form.get('shift2_breakdown_minutes'),
+                Shift2CleaningMinutes=form.get('shift2_cleaning_minutes'))
     try:
         await run_in_threadpool(save_press_production_change, production_id, data, press_production_id)
         return press_production_redirect(production_id, 'Press Production saved.')
@@ -575,12 +572,14 @@ def read_press_logger_guide(production_id: int, press_production_id: int):
     return JSONResponse({
         'production_date': str(found[0]),
         'equipment_code': found[1],
+        'shifts': guide['shifts'],
         'categories': {
             'SETUP': {'present': guide['HasSetup'], 'minutes': guide['SetupMinutes']},
             'CHGOVER': {'present': guide['HasChgOver'], 'minutes': guide['ChgOverMinutes']},
+            'IDLE': {'present': guide['HasIdle'], 'minutes': guide['IdleMinutes']},
             'CLEAN': {'present': guide['HasCleaning'], 'minutes': guide['CleaningMinutes']},
-            'BD': {'present': guide['HasBreakdown'], 'minutes': guide['BreakdownMinutes']},
             'SMDT': {'present': guide['HasSmdt'], 'minutes': guide['SmdtMinutes']},
+            'BD': {'present': guide['HasBreakdown'], 'minutes': guide['BreakdownMinutes']},
         },
     }, headers={'Cache-Control': 'no-store'})
 
@@ -1186,25 +1185,18 @@ async def press_mc_capability_route(press_code: str, request: Request):
 
 
 @app.get('/mould', response_class=HTMLResponse)
-def mould_page(request: Request, production_date: str | None = None, q: str = '',
-               family: str = '', product: str = '', status: str = '', mould_id: int | None = None,
+def mould_page(request: Request, production_date: date | None = None, q: str = '',
+               product: str = '', status: str = '', mould_id: int | None = None,
                message: str | None = None, message_type: str | None = None):
-    if isinstance(production_date, date):
-        navigation_date = production_date
-    else:
-        try:
-            navigation_date = date.fromisoformat(production_date) if production_date else None
-        except (TypeError, ValueError):
-            navigation_date = None
-    context = dict(page_title='Mould', active_tab='mould', production_date=navigation_date,
-                   search=q, family_filter=family, product_filter=product, status_filter=status,
-                   moulds=[], products=[],
+    production_date = production_date or date.today()
+    context = dict(page_title='Mould', active_tab='mould', production_date=production_date,
+                   search=q, product_filter=product, status_filter=status, moulds=[], products=[],
                    selected=None, status_history=[], recondition_history=[], usage_history=[],
                    message=message, message_type=message_type, error=None)
     response_status = 200
     try:
         with closing(get_connection()) as conn:
-            context.update(mould_context(conn.cursor(), q, family, product, status, mould_id))
+            context.update(mould_context(conn.cursor(), q, product, status, mould_id))
     except ValueError as exc:
         context['error'] = str(exc)
         response_status = 400
@@ -1216,18 +1208,8 @@ def mould_page(request: Request, production_date: str | None = None, q: str = ''
                                       headers={'Cache-Control': 'no-store'})
 
 
-def mould_redirect(mould_id=None, message=None, message_type='success', navigation=None):
+def mould_redirect(mould_id=None, message=None, message_type='success'):
     params = {}
-    for key in ('q', 'family', 'product', 'status'):
-        value = str((navigation or {}).get(key) or '').strip()
-        if value:
-            params[key] = value
-    navigation_date = str((navigation or {}).get('production_date') or '').strip()
-    try:
-        if navigation_date:
-            params['production_date'] = date.fromisoformat(navigation_date).isoformat()
-    except ValueError:
-        pass
     if mould_id:
         params['mould_id'] = mould_id
     if message:
@@ -1248,22 +1230,22 @@ async def mould_register_route(request: Request):
         mould = await run_in_threadpool(run_mould_change, register_mould, form.get('mould_name'),
                                         form.get('product_family'), form.get('product_code'),
                                         form.get('remark'))
-        return mould_redirect(mould['MouldID'], f"Registered {mould['MouldNo']}.", navigation=form)
+        return mould_redirect(mould['MouldID'], f"Registered {mould['MouldNo']}.")
     except ValueError as exc:
-        return mould_redirect(message=str(exc), message_type='error', navigation=form)
+        return mould_redirect(message=str(exc), message_type='error')
     except Exception:
-        return mould_redirect(message='Unable to register Mould. Please retry.', message_type='error', navigation=form)
+        return mould_redirect(message='Unable to register Mould. Please retry.', message_type='error')
 
 
 async def mould_mutation_route(request: Request, mould_id: int, operation, success_message):
     form = await request.form()
     try:
         mould = await run_in_threadpool(run_mould_change, operation, mould_id, form.get('remark', ''))
-        return mould_redirect(mould['MouldID'], success_message, navigation=form)
+        return mould_redirect(mould['MouldID'], success_message)
     except ValueError as exc:
-        return mould_redirect(mould_id, str(exc), 'error', navigation=form)
+        return mould_redirect(mould_id, str(exc), 'error')
     except Exception:
-        return mould_redirect(mould_id, 'Unable to update Mould. Please retry.', 'error', navigation=form)
+        return mould_redirect(mould_id, 'Unable to update Mould. Please retry.', 'error')
 
 
 @app.post('/mould/{mould_id}/edit')
@@ -1272,11 +1254,11 @@ async def mould_edit_route(request: Request, mould_id: int):
     try:
         mould = await run_in_threadpool(run_mould_change, update_mould_info, mould_id,
                                         form.get('mould_name'), form.get('remark'))
-        return mould_redirect(mould['MouldID'], 'Mould information saved.', navigation=form)
+        return mould_redirect(mould['MouldID'], 'Mould information saved.')
     except ValueError as exc:
-        return mould_redirect(mould_id, str(exc), 'error', navigation=form)
+        return mould_redirect(mould_id, str(exc), 'error')
     except Exception:
-        return mould_redirect(mould_id, 'Unable to update Mould information. Please retry.', 'error', navigation=form)
+        return mould_redirect(mould_id, 'Unable to update Mould information. Please retry.', 'error')
 
 
 @app.post('/mould/{mould_id}/recondition/start')
@@ -1297,11 +1279,11 @@ async def mould_status_route(request: Request, mould_id: int):
     try:
         mould = await run_in_threadpool(run_mould_change, set_mould_status, mould_id,
                                         form.get('new_status'), form.get('remark', ''))
-        return mould_redirect(mould['MouldID'], f"Mould status changed to {mould['Status']}.", navigation=form)
+        return mould_redirect(mould['MouldID'], f"Mould status changed to {mould['Status']}.")
     except ValueError as exc:
-        return mould_redirect(mould_id, str(exc), 'error', navigation=form)
+        return mould_redirect(mould_id, str(exc), 'error')
     except Exception:
-        return mould_redirect(mould_id, 'Unable to change Mould status. Please retry.', 'error', navigation=form)
+        return mould_redirect(mould_id, 'Unable to change Mould status. Please retry.', 'error')
 
 
 @app.get('/usage', response_class=HTMLResponse)

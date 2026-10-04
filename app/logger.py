@@ -4,6 +4,8 @@ from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 import re
 from typing import Any
+from app.production_clock import production_clock_datetime, read_day_start_time
+from app.production_data import read_shift_rules, resolve_shift
 
 DIRECT_SUB = "DIRECT_SUB"
 RELATED_MAIN = "RELATED_MAIN"
@@ -56,6 +58,9 @@ class LoggerSaveInput:
     note: Any = None
     created_by: Any = None
     classification_edited: Any = False
+    preset_shift_id: Any = None
+    event_shift_id: Any = None
+    logger_event_id: Any = None
 
 
 def _validation_error(code, message):
@@ -85,6 +90,9 @@ def _as_save_input(value):
         "note": "Note",
         "created_by": "CreatedBy",
         "classification_edited": "classification_edited",
+        "preset_shift_id": "PresetShiftID",
+        "event_shift_id": "EventShiftID",
+        "logger_event_id": "LoggerEventID",
     }
     values = {}
     for field, external in names.items():
@@ -155,7 +163,7 @@ def _validate_pair(first, second, code, label):
         _validation_error(code, f"{label} values must be supplied as a pair.")
 
 
-def _validate_logger_masters(data, masters):
+def _validate_logger_masters(data, masters, day_start_time=None):
     production_date = _parse_production_date(data.production_date)
     has_stop = data.stop not in (None, "")
     has_start = data.start not in (None, "")
@@ -170,6 +178,18 @@ def _validate_logger_masters(data, masters):
             _validation_error("EQUAL_STOP_START", "Stop and Start times must differ.")
     elif manual_duration is None:
         _validation_error("INVALID_DURATION", "Min is required when Stop and Start are blank.")
+
+    def timestamp_datetimes():
+        if day_start_time is None:
+            stop_datetime = datetime.combine(production_date, stop_time)
+            start_date = production_date if start_time > stop_time else production_date + timedelta(days=1)
+            start_datetime = datetime.combine(start_date, start_time)
+        else:
+            stop_datetime = production_clock_datetime(production_date, data.stop, day_start_time)
+            start_datetime = production_clock_datetime(production_date, data.start, day_start_time)
+            if start_datetime <= stop_datetime:
+                start_datetime += timedelta(days=1)
+        return stop_datetime, start_datetime
 
     if not isinstance(data.classification_edited, bool):
         _validation_error("INVALID_CLASSIFICATION_PROVENANCE", "classification_edited must be boolean.")
@@ -272,9 +292,7 @@ def _validate_logger_masters(data, masters):
         classification_source = "CAUSE_SHORTCUT"
 
     if timestamp_mode and stop_id == 6 and sub_stop_id == 20:
-        start_date = production_date if start_time > stop_time else production_date + timedelta(days=1)
-        stop_datetime = datetime.combine(production_date, stop_time)
-        start_datetime = datetime.combine(start_date, start_time)
+        stop_datetime, start_datetime = timestamp_datetimes()
         duration_min = int((start_datetime - stop_datetime).total_seconds() // 60)
         if duration_min >= 10:
             stop_id = 7
@@ -285,9 +303,7 @@ def _validate_logger_masters(data, masters):
                 _validation_error("INVALID_STOP_SUBSTOP", "Configured BD classification is unavailable.")
             classification_source = "DURATION_RULE"
     elif timestamp_mode:
-        stop_datetime = datetime.combine(production_date, stop_time)
-        start_date = production_date if start_time > stop_time else production_date + timedelta(days=1)
-        start_datetime = datetime.combine(start_date, start_time)
+        stop_datetime, start_datetime = timestamp_datetimes()
         duration_min = int((start_datetime - stop_datetime).total_seconds() // 60)
     else:
         stop_datetime = None
@@ -382,13 +398,75 @@ def _reject_overlapping_logger_event(cursor, values, snapshots):
         _validation_error("OVERLAPPING_EVENT", _overlap_message(existing, values, snapshots))
 
 
+def _resolve_logger_shift(cursor, values, data, day_start_time):
+    if values["stop_datetime"] is not None:
+        rules = read_shift_rules(cursor, values["production_date"])
+        shift = resolve_shift(
+            values["production_date"],
+            values["stop_datetime"].time(),
+            None,
+            rules,
+        )
+        if shift is None:
+            _validation_error(
+                "SHIFT_RULE_NOT_FOUND",
+                "No historical Production Shift rule applies to the LOGGER Stop time.",
+            )
+        return int(shift)
+
+    try:
+        preset_shift = int(data.preset_shift_id)
+    except (TypeError, ValueError):
+        _validation_error("INVALID_PRESET_SHIFT", "Select a valid Preset Shift.")
+    rules = read_shift_rules(cursor, values["production_date"])
+    if not any(int(rule["ShiftID"]) == preset_shift for rule in rules):
+        _validation_error("INVALID_PRESET_SHIFT", "Select a valid Preset Shift.")
+    return preset_shift
+
+
+def _resolve_logger_event_shift(cursor, production_date, event_shift_id, existing_shift):
+    if event_shift_id in (None, ""):
+        event_shift_id = existing_shift
+        if event_shift_id is None:
+            return None
+
+    raw_shift_id = str(event_shift_id).strip()
+    if not re.fullmatch(r"[0-9]+", raw_shift_id):
+        _validation_error("INVALID_EVENT_SHIFT", "Select a valid Event Shift.")
+    selected_shift = int(raw_shift_id)
+    rules = read_shift_rules(cursor, production_date)
+    if not any(int(rule["ShiftID"]) == selected_shift for rule in rules):
+        _validation_error("INVALID_EVENT_SHIFT", "Select a valid Event Shift.")
+    return selected_shift
+
+
+def _read_logger_day_start_time(cursor, production_date):
+    try:
+        return read_day_start_time(cursor, production_date)
+    except ValueError as exc:
+        _validation_error("PRODUCTION_DAY_RULE_NOT_FOUND", str(exc))
+
+
+def _read_existing_logger_event(cursor, event_id):
+    cursor.execute(
+        "SELECT StopDateTime, ShiftID FROM dbo.LoggerEvent WITH (UPDLOCK,HOLDLOCK) "
+        "WHERE LoggerEventID=?",
+        event_id,
+    )
+    row = cursor.fetchone()
+    return row if row is not None and len(row) >= 2 else (None, None)
+
+
 def save_logger_event(conn, data, masters=None):
     """Validate and insert one final operator-confirmed LOGGER event."""
     try:
         cursor = conn.cursor()
         if masters is None:
             masters = read_logger_masters(cursor)
-        values = _validate_logger_masters(_as_save_input(data), masters)
+        data = _as_save_input(data)
+        day_start_time = _read_logger_day_start_time(cursor, data.production_date)
+        values = _validate_logger_masters(data, masters, day_start_time)
+        shift_id = _resolve_logger_shift(cursor, values, data, day_start_time)
         snapshots = _build_logger_snapshots(values)
         _reject_overlapping_logger_event(cursor, values, snapshots)
         cursor.execute("""
@@ -399,18 +477,19 @@ def save_logger_event(conn, data, masters=None):
                  MachineNameSnapshot, RelatedMachineSnapshot,
                  SubMachineSnapshot, StopTypeSnapshot, SubStopTypeSnapshot,
                  CauseSnapshot, Note, SourceType, ClassificationSource,
-                 CreatedBy)
+                 ShiftID, CreatedBy)
             OUTPUT INSERTED.LoggerEventID
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, values["production_date"], values["stop_datetime"], values["start_datetime"],
             values["duration_min"], values["mc_id"], values["mc_instance_no"],
-            values["related_mc_id"], values["related_mc_instance_no"], values["sub_mc_id"],
-            values["sub_mc_instance_no"], values["stop_id"], values["sub_stop_id"],
+            values["related_mc_id"], values["related_mc_instance_no"],
+            values["sub_mc_id"], values["sub_mc_instance_no"], values["stop_id"],
+            values["sub_stop_id"],
             values["cause_id"], values["meo"], snapshots["MachineNameSnapshot"],
             snapshots["RelatedMachineSnapshot"], snapshots["SubMachineSnapshot"],
             snapshots["StopTypeSnapshot"], snapshots["SubStopTypeSnapshot"],
             snapshots["CauseSnapshot"], values["note"], "MANUAL",
-            values["classification_source"], values["created_by"])
+            values["classification_source"], shift_id, values["created_by"])
         row = cursor.fetchone()
         if not row:
             raise RuntimeError("LoggerEventID was not returned by the INSERT.")
@@ -431,12 +510,23 @@ def update_logger_event(conn, event_id, data, masters=None):
         cursor = conn.cursor()
         if masters is None:
             masters = read_logger_masters(cursor)
-        values = _validate_logger_masters(_as_save_input(data), masters)
+        data = _as_save_input(data)
+        _, existing_shift = _read_existing_logger_event(cursor, event_id)
+        day_start_time = _read_logger_day_start_time(cursor, data.production_date)
+        values = _validate_logger_masters(data, masters, day_start_time)
+        if values["stop_datetime"] is None:
+            shift_id = _resolve_logger_event_shift(
+                cursor, values["production_date"], data.event_shift_id, existing_shift)
+        else:
+            if data.event_shift_id not in (None, ""):
+                _resolve_logger_event_shift(
+                    cursor, values["production_date"], data.event_shift_id, None)
+            shift_id = _resolve_logger_shift(cursor, values, data, day_start_time)
         snapshots = _build_logger_snapshots(values)
         cursor.execute("""
             UPDATE dbo.LoggerEvent
             SET ProductionDate=?, StopDateTime=?, StartDateTime=?, DurationMin=?,
-                McId=?, McInstanceNo=?, RelatedMcId=?, RelatedMcInstanceNo=?,
+                McId=?, McInstanceNo=?, RelatedMcId=?, RelatedMcInstanceNo=?, ShiftID=?,
                 SubMcId=?, SubMcInstanceNo=?, StopId=?, SubStopId=?, CauseId=?, MEO=?,
                 MachineNameSnapshot=?, RelatedMachineSnapshot=?, SubMachineSnapshot=?,
                 StopTypeSnapshot=?, SubStopTypeSnapshot=?, CauseSnapshot=?, Note=?,
@@ -444,7 +534,7 @@ def update_logger_event(conn, event_id, data, masters=None):
             WHERE LoggerEventID=?
         """, values["production_date"], values["stop_datetime"], values["start_datetime"],
             values["duration_min"], values["mc_id"], values["mc_instance_no"],
-            values["related_mc_id"], values["related_mc_instance_no"], values["sub_mc_id"],
+            values["related_mc_id"], values["related_mc_instance_no"], shift_id, values["sub_mc_id"],
             values["sub_mc_instance_no"], values["stop_id"], values["sub_stop_id"],
             values["cause_id"], values["meo"], snapshots["MachineNameSnapshot"],
             snapshots["RelatedMachineSnapshot"], snapshots["SubMachineSnapshot"],
@@ -533,7 +623,7 @@ def read_logger_events(cursor, production_date):
                DurationMin, MachineNameSnapshot, RelatedMachineSnapshot,
                SubMachineSnapshot, CauseSnapshot, StopTypeSnapshot,
                SubStopTypeSnapshot, MEO, Note, McId, McInstanceNo,
-               RelatedMcId, RelatedMcInstanceNo, SubMcId, SubMcInstanceNo,
+               RelatedMcId, RelatedMcInstanceNo, ShiftID, SubMcId, SubMcInstanceNo,
                StopId, SubStopId, CauseId
         FROM dbo.LoggerEvent
         WHERE ProductionDate=?
@@ -545,7 +635,7 @@ def read_logger_events(cursor, production_date):
         "SubMachineSnapshot", "CauseSnapshot", "StopTypeSnapshot",
         "SubStopTypeSnapshot", "MEO", "Note",
         "McId", "McInstanceNo", "RelatedMcId", "RelatedMcInstanceNo",
-        "SubMcId", "SubMcInstanceNo", "StopId", "SubStopId", "CauseId",
+        "ShiftID", "SubMcId", "SubMcInstanceNo", "StopId", "SubStopId", "CauseId",
     ))
 
 

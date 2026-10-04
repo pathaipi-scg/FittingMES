@@ -1,0 +1,11 @@
+SET XACT_ABORT ON;
+BEGIN TRANSACTION;
+
+IF COL_LENGTH('dbo.LoggerEvent', 'ShiftID') IS NULL
+BEGIN
+    ALTER TABLE dbo.LoggerEvent
+        ADD ShiftID int NULL;
+END;
+
+COMMIT TRANSACTION;
+GO

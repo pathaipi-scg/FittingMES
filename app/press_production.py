@@ -65,6 +65,19 @@ def read_press_production(cursor, production_id):
             COALESCE(SUM(CASE WHEN time_event.TimeType='IDLE' THEN time_event.DurationMin ELSE 0 END), 0) AS IdleMinutes,
             COALESCE(SUM(CASE WHEN time_event.TimeType='CLEAN' THEN time_event.DurationMin ELSE 0 END), 0) AS CleaningMinutes,
             COALESCE(SUM(CASE WHEN time_event.TimeType='BREAKDOWN' THEN time_event.DurationMin ELSE 0 END), 0) AS BreakdownMinutes
+            ,COALESCE(SUM(CASE WHEN time_event.TimeType='SMDT' THEN time_event.DurationMin ELSE 0 END), 0) AS SMDTMinutes
+            ,COALESCE(SUM(CASE WHEN time_event.ShiftID=1 AND time_event.TimeType='SETUP' THEN time_event.DurationMin ELSE 0 END), 0) AS Shift1SetupMinutes
+            ,COALESCE(SUM(CASE WHEN time_event.ShiftID=1 AND time_event.TimeType='CHANGEOVER' THEN time_event.DurationMin ELSE 0 END), 0) AS Shift1ChgOverMinutes
+            ,COALESCE(SUM(CASE WHEN time_event.ShiftID=1 AND time_event.TimeType='IDLE' THEN time_event.DurationMin ELSE 0 END), 0) AS Shift1IdleMinutes
+            ,COALESCE(SUM(CASE WHEN time_event.ShiftID=1 AND time_event.TimeType='SMDT' THEN time_event.DurationMin ELSE 0 END), 0) AS Shift1SmdtMinutes
+            ,COALESCE(SUM(CASE WHEN time_event.ShiftID=1 AND time_event.TimeType='BREAKDOWN' THEN time_event.DurationMin ELSE 0 END), 0) AS Shift1BreakdownMinutes
+            ,COALESCE(SUM(CASE WHEN time_event.ShiftID=1 AND time_event.TimeType='CLEAN' THEN time_event.DurationMin ELSE 0 END), 0) AS Shift1CleaningMinutes
+            ,COALESCE(SUM(CASE WHEN time_event.ShiftID=2 AND time_event.TimeType='SETUP' THEN time_event.DurationMin ELSE 0 END), 0) AS Shift2SetupMinutes
+            ,COALESCE(SUM(CASE WHEN time_event.ShiftID=2 AND time_event.TimeType='CHANGEOVER' THEN time_event.DurationMin ELSE 0 END), 0) AS Shift2ChgOverMinutes
+            ,COALESCE(SUM(CASE WHEN time_event.ShiftID=2 AND time_event.TimeType='IDLE' THEN time_event.DurationMin ELSE 0 END), 0) AS Shift2IdleMinutes
+            ,COALESCE(SUM(CASE WHEN time_event.ShiftID=2 AND time_event.TimeType='SMDT' THEN time_event.DurationMin ELSE 0 END), 0) AS Shift2SmdtMinutes
+            ,COALESCE(SUM(CASE WHEN time_event.ShiftID=2 AND time_event.TimeType='BREAKDOWN' THEN time_event.DurationMin ELSE 0 END), 0) AS Shift2BreakdownMinutes
+            ,COALESCE(SUM(CASE WHEN time_event.ShiftID=2 AND time_event.TimeType='CLEAN' THEN time_event.DurationMin ELSE 0 END), 0) AS Shift2CleaningMinutes
         FROM dbo.PressProduction AS pp
         JOIN dbo.EquipmentMaster AS equipment ON equipment.EquipmentCode=pp.MachineCode
         LEFT JOIN dbo.MouldMaster AS mould ON mould.MouldID=pp.MouldID
@@ -73,7 +86,7 @@ def read_press_production(cursor, production_id):
                     ON time_event.ProductionID=pp.ProductionID
                  AND time_event.EquipmentCode=pp.MachineCode
                  AND time_event.SourceType='MANUAL'
-                 AND time_event.TimeType IN ('SETUP','CHANGEOVER','IDLE','CLEAN','BREAKDOWN')
+                 AND time_event.TimeType IN ('SETUP','CHANGEOVER','IDLE','CLEAN','BREAKDOWN','SMDT')
         WHERE pp.ProductionID=?
                 GROUP BY pp.PressProductionID, pp.ProductionID, pp.MachineCode, equipment.EquipmentName,
                         pp.DispatchQty, pp.CounterQty, pp.CuringQty, pp.MouldID, mould.MouldNo, mould.MouldName,
@@ -131,22 +144,43 @@ def _manual_minutes(data):
 
 
 def _save_manual_minutes(cursor, production_id, machine_code, data):
-    for time_type, duration in _manual_minutes(data).items():
+    shift_fields = {
+        1: {'SETUP': 'Shift1SetupMinutes', 'CHANGEOVER': 'Shift1ChgOverMinutes',
+            'IDLE': 'Shift1IdleMinutes',
+            'SMDT': 'Shift1SmdtMinutes', 'BREAKDOWN': 'Shift1BreakdownMinutes',
+            'CLEAN': 'Shift1CleaningMinutes'},
+        2: {'SETUP': 'Shift2SetupMinutes', 'CHANGEOVER': 'Shift2ChgOverMinutes',
+            'IDLE': 'Shift2IdleMinutes',
+            'SMDT': 'Shift2SmdtMinutes', 'BREAKDOWN': 'Shift2BreakdownMinutes',
+            'CLEAN': 'Shift2CleaningMinutes'},
+    }
+    if any(field in data for fields in shift_fields.values() for field in fields.values()):
+        values = [
+            (shift_id, time_type, _optional_minutes(data.get(field), field))
+            for shift_id, fields in shift_fields.items()
+            for time_type, field in fields.items()
+        ]
+    else:
+        values = [(1, time_type, duration)
+                  for time_type, duration in _manual_minutes(data).items()]
+
+    for shift_id, time_type, duration in values:
         cursor.execute('''SELECT TimeEventID FROM dbo.EquipmentTimeEvent WITH (UPDLOCK,HOLDLOCK)
-            WHERE ProductionID=? AND EquipmentCode=? AND TimeType=? AND SourceType='MANUAL' ''',
-            production_id, machine_code, time_type)
+            WHERE ProductionID=? AND EquipmentCode=? AND ShiftID=?
+              AND TimeType=? AND SourceType='MANUAL' ''',
+            production_id, machine_code, shift_id, time_type)
         existing = cursor.fetchone()
         if existing:
             cursor.execute('''UPDATE dbo.EquipmentTimeEvent
                 SET DurationMin=?, StartDateTime=NULL, EndDateTime=NULL, UpdatedAt=SYSDATETIME()
                 WHERE TimeEventID=? AND ProductionID=? AND EquipmentCode=?
-                  AND TimeType=? AND SourceType='MANUAL' ''',
-                duration, existing[0], production_id, machine_code, time_type)
+                  AND ShiftID=? AND TimeType=? AND SourceType='MANUAL' ''',
+                duration, existing[0], production_id, machine_code, shift_id, time_type)
         else:
             cursor.execute('''INSERT INTO dbo.EquipmentTimeEvent
-                (ProductionID,EquipmentCode,TimeType,DurationMin,SourceType)
-                VALUES (?,?,?,?, 'MANUAL')''',
-                production_id, machine_code, time_type, duration)
+                (ProductionID,EquipmentCode,ShiftID,TimeType,DurationMin,SourceType)
+                VALUES (?,?,?,?,?, 'MANUAL')''',
+                production_id, machine_code, shift_id, time_type, duration)
 
 
 def validate_press_input(data, require_mould=True, production_date=None, day_start_time=None,
@@ -256,7 +290,7 @@ def save_press_production(conn, production_id, data, press_production_id=None):
         day_start_time = read_day_start_time(cursor, production_date)
         values = validate_press_input(data, require_mould=press_production_id is None,
                           production_date=production_date, day_start_time=day_start_time,
-                          allow_incomplete=press_production_id is None)
+                          allow_incomplete=True)
         _validate_press(cursor, product_family, product_code, values['MachineCode'])
 
         if press_production_id is None:
@@ -278,12 +312,17 @@ def save_press_production(conn, production_id, data, press_production_id=None):
             usage_recondition_no = current_recondition_no
             has_usage = False
         else:
-            cursor.execute('''SELECT PressProductionID, MachineCode, MouldID, CounterQty
+            cursor.execute('''SELECT PressProductionID, MachineCode, MouldID, CounterQty,
+                                     ProductionStartTime, ProductionEndTime
                 FROM dbo.PressProduction WITH (UPDLOCK,HOLDLOCK)
                 WHERE PressProductionID=? AND ProductionID=?''', press_production_id, production_id)
             existing = cursor.fetchone()
             if not existing:
                 raise ValueError('Press Production row not found for this Lot.')
+            if 'ProductionStartTime' not in data:
+                values['ProductionStartTime'] = existing[4]
+            if 'ProductionEndTime' not in data:
+                values['ProductionEndTime'] = existing[5]
             if existing[2] != values['MouldID'] and (existing[3] or 0) > 0:
                 raise ValueError('Mould assignment is locked after production usage begins.')
             cursor.execute('''SELECT ReconditionNo FROM dbo.MouldUsage WITH (UPDLOCK,HOLDLOCK)
@@ -402,10 +441,6 @@ def build_press_production_context(cursor, lot):
     product_code = lot.get('ProductCode')
     rows_for_lot = read_press_production(cursor, lot['ProductionID'])
     day_start_time = read_day_start_time(cursor, lot['ProdDate'])
-    for row in rows_for_lot:
-        row['SMDTMinutes'] = calculate_smdt(
-            row.get('ProductionStartTime'), row.get('ProductionEndTime'),
-            {time_type: Decimal(str(row.get(field) or 0)) for time_type, field in TIME_FIELDS.items()})
     if not product_family:
         return dict(press_production=rows_for_lot, day_start_time=day_start_time,
                     eligible_presses=[], eligible_moulds=[],

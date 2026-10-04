@@ -84,6 +84,7 @@ class LoggerMasterReviewTests(unittest.TestCase):
             response = logger_master_page(request(), date(2026, 10, 1))
         body = response.body.decode()
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["active_tab"], "logger-master")
         self.assertIn('LOGGER MASTER MAINTENANCE', body)
         self.assertIn('RELATED_MAIN PROXY', body)
         self.assertIn('รอปูน', body)

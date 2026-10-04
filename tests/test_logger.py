@@ -1,5 +1,6 @@
 import unittest
-from datetime import datetime
+from datetime import datetime, time
+from unittest.mock import patch
 
 from app.logger import (
     DIRECT_SUB,
@@ -35,24 +36,34 @@ class QueueCursor:
 
 
 class SaveCursor:
-    def __init__(self, event_id=101, fail=False, overlap_row=None, overlap_machine=(7, 1)):
+    def __init__(self, event_id=101, fail=False, overlap_row=None, overlap_machine=(7, 1),
+                 existing_event=(None, 1)):
         self.event_id = event_id
         self.fail = fail
         self.overlap_row = overlap_row
         self.overlap_machine = overlap_machine
+        self.existing_event = existing_event
         self.executed = []
         self.inserted = []
         self.rowcount = 1
+        self.description = []
 
     def execute(self, query, *params):
         if self.fail:
             raise RuntimeError("simulated INSERT failure")
-        self.executed.append((query, params))
+        self.last_query = query
+        if "ProductionDayRuleHistory" not in query and "ProductionShiftRuleHistory" not in query:
+            self.executed.append((query, params))
         if "INSERT INTO dbo.LoggerEvent" in query:
             self.inserted.append((query, params))
 
     def fetchone(self):
-        if self.executed and "SELECT TOP (1) LoggerEventID" in self.executed[-1][0]:
+        query = getattr(self, "last_query", "")
+        if "ProductionDayRuleHistory" in query:
+            return (time(8),)
+        if "SELECT StopDateTime, ShiftID" in query:
+            return self.existing_event
+        if "SELECT TOP (1) LoggerEventID" in query:
             if self.overlap_row is None:
                 return None
             params = self.executed[-1][1]
@@ -65,11 +76,20 @@ class SaveCursor:
             return None
         return (self.event_id,)
 
+    def fetchall(self):
+        query = getattr(self, "last_query", "")
+        if "ProductionShiftRuleHistory" in query:
+            self.description = [("EffectiveFromDate",), ("ShiftID",), ("StartTime",)]
+            return [("2026-01-01", 1, time(6)), ("2026-01-01", 2, time(19))]
+        return []
+
 
 class SaveConnection:
-    def __init__(self, event_id=101, fail=False, overlap_row=None, overlap_machine=(7, 1)):
+    def __init__(self, event_id=101, fail=False, overlap_row=None, overlap_machine=(7, 1),
+                 existing_event=(None, 1)):
         self.cursor_instance = SaveCursor(event_id=event_id, fail=fail, overlap_row=overlap_row,
-                                          overlap_machine=overlap_machine)
+                                          overlap_machine=overlap_machine,
+                                          existing_event=existing_event)
         self.commits = 0
         self.rollbacks = 0
 
@@ -151,6 +171,55 @@ class LoggerResolverTests(unittest.TestCase):
         self.assertIsNone(values["stop_datetime"])
         self.assertIsNone(values["start_datetime"])
         self.assertEqual(values["duration_min"], 2.5)
+
+    def test_duration_only_uses_preset_shift_and_timestamp_uses_stop_rule(self):
+        duration = SaveConnection()
+        save_logger_event(duration, self.save_input(
+            stop="", start="", duration_min="2", preset_shift_id=2), self.masters())
+        self.assertEqual(duration.cursor_instance.inserted[0][1][23], 2)
+
+        timestamp = SaveConnection()
+        save_logger_event(timestamp, self.save_input(
+            stop="10:00", start="10:10", preset_shift_id=2), self.masters())
+        self.assertEqual(timestamp.cursor_instance.inserted[0][1][23], 1)
+
+    def test_timestamp_shift_boundaries_use_live_rule_fixture(self):
+        expected = {
+            "05:59": 2, "06:00": 1, "06:01": 1,
+            "18:59": 1, "19:00": 2, "19:01": 2,
+            "23:59": 2, "00:00": 2,
+        }
+        for stop, shift in expected.items():
+            with self.subTest(stop=stop):
+                connection = SaveConnection()
+                start = "00:10" if stop == "23:59" else (
+                    "00:10" if stop == "00:00" else
+                    f"{(int(stop[:2]) + (1 if int(stop[:2]) < 23 else 0)):02d}:{stop[3:]}")
+                if stop in ("23:59", "00:00"):
+                    start = "00:10"
+                save_logger_event(connection, self.save_input(
+                    stop=stop, start=start, preset_shift_id=1), self.masters())
+                self.assertEqual(connection.cursor_instance.inserted[0][1][23], shift)
+
+    def test_post_midnight_stop_uses_selected_production_date_rules(self):
+        old_rules = [
+            dict(EffectiveFromDate="2026-01-01", ShiftID=1, StartTime=time(6)),
+            dict(EffectiveFromDate="2026-01-01", ShiftID=2, StartTime=time(19)),
+        ]
+        new_rules = [
+            dict(EffectiveFromDate="2026-10-02", ShiftID=1, StartTime=time(7)),
+            dict(EffectiveFromDate="2026-10-02", ShiftID=2, StartTime=time(20)),
+        ]
+
+        def rules_for(_cursor, production_date):
+            return old_rules if str(production_date) == "2026-10-01" else new_rules
+
+        connection = SaveConnection()
+        with patch("app.logger.read_shift_rules", side_effect=rules_for) as read_rules:
+            save_logger_event(connection, self.save_input(
+                stop="02:00", start="02:10", preset_shift_id=1), self.masters())
+        self.assertEqual(read_rules.call_args.args[1].isoformat(), "2026-10-01")
+        self.assertEqual(connection.cursor_instance.inserted[0][1][23], 2)
 
     def test_manual_duration_rejects_invalid_values_and_partial_timestamps(self):
         for duration in ("1.25", "0", "-1", "abc", ""):
@@ -339,6 +408,82 @@ class LoggerResolverTests(unittest.TestCase):
         query, params = connection.cursor_instance.executed[-1]
         self.assertIn("UPDATE dbo.LoggerEvent", query)
         self.assertEqual(params[-1], 42)
+        self.assertEqual(connection.cursor_instance.inserted, [])
+
+    def test_duration_only_update_preserves_persisted_shift(self):
+        connection = SaveConnection(existing_event=(None, 1))
+        update_logger_event(connection, 42, self.save_input(
+            stop="", start="", duration_min="2", preset_shift_id=2,
+            event_shift_id=1), self.masters())
+        query, params = connection.cursor_instance.executed[-1]
+        self.assertIn("ShiftID=?", query)
+        self.assertEqual(params[8], 1)
+
+    def test_duration_only_update_changes_event_shift_independently_of_preset(self):
+        connection = SaveConnection(existing_event=(None, 1))
+        update_logger_event(connection, 42, self.save_input(
+            stop="", start="", duration_min="2", preset_shift_id=1,
+            event_shift_id="2"), self.masters())
+        params = connection.cursor_instance.executed[-1][1]
+        self.assertEqual(params[8], 2)
+
+    def test_legacy_duration_only_update_preserves_null_event_shift(self):
+        connection = SaveConnection(existing_event=(None, None))
+        update_logger_event(connection, 42, self.save_input(
+            stop="", start="", duration_min="2", preset_shift_id=2,
+            event_shift_id=""), self.masters())
+        params = connection.cursor_instance.executed[-1][1]
+        self.assertIsNone(params[8])
+
+    def test_legacy_duration_only_update_can_set_a_valid_event_shift(self):
+        for shift_id in (1, 2):
+            with self.subTest(shift_id=shift_id):
+                connection = SaveConnection(existing_event=(None, None))
+                update_logger_event(connection, 42, self.save_input(
+                    stop="", start="", duration_min="2", preset_shift_id=1,
+                    event_shift_id=str(shift_id)), self.masters())
+                params = connection.cursor_instance.executed[-1][1]
+                self.assertEqual(params[8], shift_id)
+
+    def test_duration_only_update_rejects_invalid_event_shift(self):
+        connection = SaveConnection(existing_event=(None, None))
+        with self.assertRaisesRegex(LoggerValidationError, "valid Event Shift"):
+            update_logger_event(connection, 42, self.save_input(
+                stop="", start="", duration_min="2", event_shift_id="99"), self.masters())
+        self.assertEqual(connection.rollbacks, 1)
+
+    def test_timestamp_update_recalculates_shift_from_new_stop(self):
+        connection = SaveConnection(existing_event=(
+            datetime(2026, 10, 1, 18, 50), 1))
+        update_logger_event(connection, 42, self.save_input(
+            stop="19:10", start="19:20", preset_shift_id=1), self.masters())
+        params = connection.cursor_instance.executed[-1][1]
+        self.assertEqual(params[8], 2)
+
+    def test_timestamp_edit_crossing_shift_boundary_recalculates_shift(self):
+        connection = SaveConnection(existing_event=(
+            datetime(2026, 10, 1, 18, 59), 1))
+        update_logger_event(connection, 42, self.save_input(
+            stop="19:00", start="19:10", preset_shift_id=1,
+            event_shift_id="1"), self.masters())
+        params = connection.cursor_instance.executed[-1][1]
+        self.assertEqual(params[8], 2)
+
+    def test_timestamp_edit_rejects_invalid_submitted_event_shift(self):
+        connection = SaveConnection(existing_event=(
+            datetime(2026, 10, 1, 16, 0), 1))
+        with self.assertRaisesRegex(LoggerValidationError, "valid Event Shift"):
+            update_logger_event(connection, 42, self.save_input(
+                stop="16:00", start="16:10", event_shift_id="99"), self.masters())
+        self.assertEqual(connection.rollbacks, 1)
+
+    def test_legacy_timestamped_edit_resolves_null_shift_from_stop(self):
+        connection = SaveConnection(existing_event=(
+            datetime(2026, 10, 1, 16, 0), None))
+        update_logger_event(connection, 42, self.save_input(
+            stop="16:00", start="16:10", preset_shift_id=2), self.masters())
+        params = connection.cursor_instance.executed[-1][1]
+        self.assertEqual(params[8], 1)
 
     def test_save_machine_level_types_without_target(self):
         for stop_id, stop_type in ((2, "SETUP"), (3, "CHGOVER"), (4, "CLEAN"), (5, "IDLE")):
@@ -459,8 +604,9 @@ class LoggerResolverTests(unittest.TestCase):
         )
         for stop, start in cases:
             with self.subTest(stop=stop, start=start):
+                overlap_date = datetime(2026, 10, 2) if stop < "08:00" else datetime(2026, 10, 1)
                 connection = SaveConnection(overlap_row=self.overlap_row(
-                    datetime(2026, 10, 1, 8), datetime(2026, 10, 1, 10)))
+                    overlap_date.replace(hour=8), overlap_date.replace(hour=10)))
                 with self.assertRaisesRegex(LoggerValidationError, "Time overlaps an existing LOGGER event"):
                     save_logger_event(connection, self.save_input(stop=stop, start=start), self.masters())
                 self.assertEqual(len(connection.cursor_instance.executed), 1)
@@ -552,6 +698,14 @@ class LoggerResolverTests(unittest.TestCase):
         self.assertEqual(long_params[10:13], (7, 21, 2))
         self.assertEqual(long_params[17:20], ("BD", "--", "SMDT cause"))
         self.assertEqual(long_params[22], "DURATION_RULE")
+
+        smdt_long_before_cutoff = SaveConnection()
+        save_logger_event(smdt_long_before_cutoff, self.save_input(
+            cause_id=2, stop_id=6, sub_stop_id=20,
+            stop="07:00", start="07:10"), self.masters())
+        before_cutoff_params = smdt_long_before_cutoff.cursor_instance.inserted[0][1]
+        self.assertEqual(str(before_cutoff_params[1]), "2026-10-02 07:00:00")
+        self.assertEqual(str(before_cutoff_params[2]), "2026-10-02 07:10:00")
 
     def test_setup_is_not_duration_converted_and_nullable_fields_are_supported(self):
         connection = SaveConnection()

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import unittest
+from pathlib import Path
 from datetime import date, datetime
 from unittest.mock import MagicMock, patch
 from starlette.requests import Request
@@ -68,8 +69,105 @@ class LoggerPageTests(unittest.TestCase):
             {"mc_id": 4, "machine": "Robot"},
         ])
         instance_options = json.loads(context["instance_options_json"])
-        self.assertEqual([item["display_label"] for item in instance_options["7:1"]], ["Mould1"])
-        self.assertEqual(instance_options["4:1"], [])
+        self.assertEqual([item["display_label"] for item in instance_options["7:1"]],
+                         ["Mould1", "Robot1", "Robot2"])
+        self.assertEqual([item["display_label"] for item in instance_options["4:1"]],
+                         ["Robot1", "Robot2"])
+
+    def test_context_defaults_and_preserves_preset_shift(self):
+        rules = [
+            {"EffectiveFromDate": date(2026, 1, 1), "ShiftID": 1,
+             "StartTime": datetime.strptime("06:00", "%H:%M").time()},
+            {"EffectiveFromDate": date(2026, 1, 1), "ShiftID": 2,
+             "StartTime": datetime.strptime("19:00", "%H:%M").time()},
+        ]
+        default_context = logger_page_context(
+            self.masters, date(2026, 10, 1), shift_rules=rules)
+        preset_context = logger_page_context(
+            self.masters, date(2026, 10, 1),
+            form={"preset_shift_id": "2"}, shift_rules=rules)
+        self.assertEqual(default_context["preset_shift_id"], "1")
+        self.assertEqual(preset_context["preset_shift_id"], "2")
+
+    def test_timestamped_edit_context_resolves_event_shift_from_stop(self):
+        rules = [
+            {"EffectiveFromDate": date(2026, 1, 1), "ShiftID": 1,
+             "StartTime": datetime.strptime("06:00", "%H:%M").time()},
+            {"EffectiveFromDate": date(2026, 1, 1), "ShiftID": 2,
+             "StartTime": datetime.strptime("19:00", "%H:%M").time()},
+        ]
+        event = {
+            "LoggerEventID": 12,
+            "StopDateTime": datetime(2026, 10, 1, 18, 59),
+            "StartDateTime": datetime(2026, 10, 1, 19, 5),
+            "ShiftID": None,
+        }
+        context = logger_page_context(
+            self.masters, date(2026, 10, 1), logger_events=[event], shift_rules=rules)
+        self.assertEqual(context["logger_events"][0]["ResolvedShiftID"], "1")
+        self.assertIsNone(event["ShiftID"])
+
+    def test_duration_only_edit_context_keeps_nullable_persisted_shift(self):
+        rules = [
+            {"EffectiveFromDate": date(2026, 1, 1), "ShiftID": 1,
+             "StartTime": datetime.strptime("06:00", "%H:%M").time()},
+            {"EffectiveFromDate": date(2026, 1, 1), "ShiftID": 2,
+             "StartTime": datetime.strptime("19:00", "%H:%M").time()},
+        ]
+        events = [
+            {"LoggerEventID": 20, "StopDateTime": None, "StartDateTime": None,
+             "ShiftID": None},
+            {"LoggerEventID": 21, "StopDateTime": None, "StartDateTime": None,
+             "ShiftID": 2},
+        ]
+        context = logger_page_context(
+            self.masters, date(2026, 10, 1), logger_events=events,
+            shift_rules=rules, preset_shift_id=1)
+        self.assertEqual(
+            [item["ResolvedShiftID"] for item in context["logger_events"]],
+            [None, 2],
+        )
+        self.assertEqual(context["preset_shift_id"], "1")
+
+    def test_event_shift_ui_is_edit_only_and_preset_is_independent(self):
+        source = Path("app/templates/logger.html").read_text(encoding="utf-8")
+        self.assertIn('id="logger-event-shift" hidden', source)
+        self.assertIn('id="logger-event-shift-edit" hidden', source)
+        self.assertIn('<option value="">-</option>', source)
+        self.assertIn('>Shift:<select id="logger-preset-shift">', source)
+        self.assertIn('>{{ rule.ShiftID }}</option>', source)
+        self.assertIn("eventShift.value = event.ShiftID == null ? '' : String(event.ShiftID)", source)
+        self.assertIn("eventShift.options[0].disabled = event.ShiftID != null", source)
+        self.assertIn("eventShift.disabled = true", source)
+        self.assertIn("Shift by Time: ${event.ResolvedShiftID ?? '-'}", source)
+        self.assertNotIn("Auto from Stop", source)
+        self.assertNotIn("No applicable Shift rule", source)
+        self.assertNotIn("Shift {{ rule.ShiftID }}", source)
+        self.assertIn("if (eventId.value)", source)
+        self.assertIn("saveButton.textContent = 'SAVE EDIT'", source)
+        enter_edit = source.split("function enterEditMode(event) {", 1)[1].split(
+            "\n  }", 1)[0]
+        self.assertNotIn("presetShift.value =", enter_edit)
+        self.assertIn("presetShiftValue.value = presetShift.value", source)
+        self.assertIn("url.searchParams.set('preset_shift_id', presetShift.value)", source)
+
+    def test_history_shift_prefers_persisted_value_then_timestamp_fallback(self):
+        source = Path("app/templates/logger.html").read_text(encoding="utf-8")
+        self.assertIn(
+            "event.ShiftID if event.ShiftID is not none else "
+            "event.ResolvedShiftID if event.ResolvedShiftID is not none else '-'",
+            source,
+        )
+        self.assertIn(
+            'event_row["ResolvedShiftID"] = (',
+            Path("app/logger_page.py").read_text(encoding="utf-8"),
+        )
+
+    def test_template_keeps_preset_separate_from_event_shift(self):
+        source = Path("app/templates/logger.html").read_text(encoding="utf-8")
+        self.assertIn('id="logger-preset-shift"', source)
+        self.assertIn("event.ShiftID", source)
+        self.assertIn("presetShiftValue.value = presetShift.value", source)
 
     def test_form_input_keeps_nullable_values_and_created_by_null(self):
         data, selection = logger_form_input(self.form(related_mc_id="", sub_mc_id=""))
@@ -77,6 +175,12 @@ class LoggerPageTests(unittest.TestCase):
         self.assertIsNone(data.related_mc_id)
         self.assertIsNone(data.sub_mc_id)
         self.assertEqual(selection["kind"], "DIRECT_SUB")
+
+    def test_form_input_maps_event_shift_without_changing_preset_shift(self):
+        data, _ = logger_form_input(self.form(
+            preset_shift_id="2", event_shift_id="1"))
+        self.assertEqual(data.preset_shift_id, 2)
+        self.assertEqual(data.event_shift_id, "1")
 
     def test_save_form_normalizes_selection_and_calls_service_once(self):
         conn = MagicMock()
@@ -90,6 +194,20 @@ class LoggerPageTests(unittest.TestCase):
         self.assertEqual(data.sub_mc_id, 2)
         self.assertIsNone(data.related_mc_id)
         self.assertIsNone(data.created_by)
+
+    def test_save_edit_forwards_event_shift_and_header_preset_independently(self):
+        conn = MagicMock()
+        with patch("app.main.get_connection", return_value=conn), \
+             patch("app.main.read_logger_masters", return_value=self.masters), \
+             patch("app.main.update_logger_event", return_value=42) as update:
+            result = save_logger_form(self.form(
+                logger_event_id="42", event_shift_id="2", preset_shift_id="1"))
+        self.assertEqual(result, date(2026, 10, 1))
+        update.assert_called_once()
+        self.assertEqual(update.call_args.args[1], 42)
+        data = update.call_args.args[2]
+        self.assertEqual(data.event_shift_id, "2")
+        self.assertEqual(data.preset_shift_id, 1)
 
     def test_malformed_selection_does_not_reach_service(self):
         with patch("app.main.save_logger_event") as save:
@@ -107,7 +225,8 @@ class LoggerPageTests(unittest.TestCase):
         save.assert_called_once()
 
     def test_logger_route_is_registered(self):
-        paths = {(route.path, tuple(route.methods or ())) for route in app.routes}
+        paths = {(route.path, tuple(getattr(route, "methods", ()) or ()))
+                 for route in app.routes if hasattr(route, "methods")}
         self.assertIn(("/logger", ("GET",)), paths)
         self.assertIn(("/logger/save", ("POST",)), paths)
 

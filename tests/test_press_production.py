@@ -59,7 +59,9 @@ class PressProductionCursor:
                            and row.get('CreatedAt', datetime.min) > released_at]
         elif 'FROM dbo.PressProduction WITH' in sql:
             row = self.conn.press_rows.get(args[0])
-            self.result = [(row['PressProductionID'], row['MachineCode'], row['MouldID'], row['CounterQty'])] if row and row['ProductionID'] == args[1] else []
+            self.result = [(row['PressProductionID'], row['MachineCode'], row['MouldID'],
+                            row['CounterQty'], row.get('ProductionStartTime'),
+                            row.get('ProductionEndTime'))] if row and row['ProductionID'] == args[1] else []
         elif 'assigned_lot.ProdDate' in sql:
             production_date, mould_id = args
             self.result = [(row['PressProductionID'],) for row in self.conn.press_rows.values()
@@ -69,8 +71,8 @@ class PressProductionCursor:
             self.result = [(row['ReconditionNo'],)] if row and 'SELECT ReconditionNo' in sql else ([(row['MouldUsageID'],)] if row else [])
         elif 'FROM dbo.EquipmentTimeEvent WITH' in sql:
             self.result = [(row['TimeEventID'],) for row in self.conn.time_events.values()
-                           if (row['ProductionID'], row['EquipmentCode'], row['TimeType'], row['SourceType'])
-                           == (*args, 'MANUAL')]
+                           if (row['ProductionID'], row['EquipmentCode'], row.get('ShiftID'),
+                               row['TimeType'], row['SourceType']) == (*args, 'MANUAL')]
         elif 'INSERT INTO dbo.PressProduction' in sql:
             pp_id = self.conn.next_pp_id
             self.conn.next_pp_id += 1
@@ -91,7 +93,8 @@ class PressProductionCursor:
             else:
                 row = self.conn.press_rows[args[-2]]
                 row.update(MachineCode=args[0], DispatchQty=args[1], CounterQty=args[2],
-                           CuringQty=args[3], MouldID=args[4])
+                           CuringQty=args[3], MouldID=args[4],
+                           ProductionStartTime=args[5], ProductionEndTime=args[6])
             self.result = []
         elif 'INSERT INTO dbo.MouldUsage' in sql:
             mould_id, pp_id, recondition_no, cycles = args
@@ -103,17 +106,18 @@ class PressProductionCursor:
             self.conn.usage_rows[pp_id]['UsageCycles'] = cycles
             self.result = []
         elif 'UPDATE dbo.EquipmentTimeEvent' in sql:
-            duration, event_id, production_id, machine_code, time_type = args
+            duration, event_id, production_id, machine_code, shift_id, time_type = args
             row = self.conn.time_events[event_id]
-            self.assert_event_key(row, production_id, machine_code, time_type)
+            self.assert_event_key(row, production_id, machine_code, shift_id, time_type)
             row['DurationMin'] = duration
             self.result = []
         elif 'INSERT INTO dbo.EquipmentTimeEvent' in sql:
-            production_id, machine_code, time_type, duration = args
+            production_id, machine_code, shift_id, time_type, duration = args
             event_id = self.conn.next_event_id
             self.conn.next_event_id += 1
             self.conn.time_events[event_id] = dict(TimeEventID=event_id, ProductionID=production_id,
-                EquipmentCode=machine_code, TimeType=time_type, DurationMin=duration, SourceType='MANUAL')
+                EquipmentCode=machine_code, ShiftID=shift_id, TimeType=time_type,
+                DurationMin=duration, SourceType='MANUAL')
             self.result = []
         else:
             raise AssertionError('Unexpected SQL: ' + sql)
@@ -126,9 +130,10 @@ class PressProductionCursor:
         result, self.result = self.result, []
         return result
 
-    def assert_event_key(self, row, production_id, machine_code, time_type):
-        assert (row['ProductionID'], row['EquipmentCode'], row['TimeType'], row['SourceType']) == \
-            (production_id, machine_code, time_type, 'MANUAL')
+    def assert_event_key(self, row, production_id, machine_code, shift_id, time_type):
+        assert (row['ProductionID'], row['EquipmentCode'], row.get('ShiftID'),
+                row['TimeType'], row['SourceType']) == \
+            (production_id, machine_code, shift_id, time_type, 'MANUAL')
 
 
 class PressProductionConnection:
@@ -194,13 +199,25 @@ class PressProductionTests(unittest.TestCase):
                         {'SETUP': Decimal('10'), 'CHANGEOVER': Decimal('5'),
                          'CLEAN': Decimal('8'), 'BREAKDOWN': Decimal('20')}), Decimal('437'))
 
-    def test_production_template_keeps_log_smdt_read_only_and_out_of_form(self):
+    def test_production_template_uses_inline_shift_aware_log_cal(self):
         from pathlib import Path
         template = Path('app/templates/production.html').read_text(encoding='utf-8')
-        self.assertIn('>Log SMDT</th>', template)
-        self.assertIn('class="logger-smdt-guide"', template)
+        self.assertIn('name="shift1_smdt_minutes"', template)
+        self.assertIn('name="shift2_smdt_minutes"', template)
+        self.assertIn('name="shift1_idle_minutes"', template)
+        self.assertIn('name="shift2_idle_minutes"', template)
+        self.assertIn('colspan="6">SHIFT 1</th>', template)
+        self.assertIn('colspan="6">SHIFT 2</th>', template)
+        self.assertIn('colspan="6">TOTAL</th>', template)
+        self.assertIn('<th>CHG</th>', template)
+        self.assertNotIn('<th>CHGOVER</th>', template)
+        self.assertNotIn('<th rowspan="2">Idle</th>', template)
+        self.assertNotIn('log-cal-row', template)
+        self.assertNotIn('log-cal-editor', template)
+        self.assertNotIn('>Log SMDT</th>', template)
+        self.assertNotIn('class="logger-smdt-guide"', template)
         self.assertIn('>LOG CAL</button>', template)
-        self.assertIn('<th>Release</th><th>Press</th>', template)
+        self.assertIn('<th rowspan="2">Release</th><th rowspan="2">Press</th>', template)
         self.assertLess(template.rindex('>LOG CAL</button>'), template.rindex('>Save</button>'))
         self.assertNotIn('SuggestedSetupMinutes', template)
         self.assertNotIn('name="logger_smdt"', template)
@@ -390,6 +407,43 @@ class PressProductionTests(unittest.TestCase):
         sql = [query for query, _ in conn.sql]
         self.assertTrue(any("@Resource='FittingMES.ProductionLot'" in query for query in sql))
         self.assertEqual((conn.commits, conn.rollbacks), (1, 0))
+
+    def test_shift_log_cal_values_are_saved_separately_without_total_row(self):
+        conn = PressProductionConnection()
+        data = valid_input(
+            Shift1SetupMinutes='11', Shift1ChgOverMinutes='12',
+            Shift1IdleMinutes='13',
+            Shift1SmdtMinutes='13', Shift1BreakdownMinutes='14',
+            Shift1CleaningMinutes='15', Shift2SetupMinutes='21',
+            Shift2ChgOverMinutes='22', Shift2SmdtMinutes='23',
+            Shift2IdleMinutes='23',
+            Shift2BreakdownMinutes='24', Shift2CleaningMinutes='25')
+        save_press_production(conn, 7, data)
+        values = {(row['ShiftID'], row['TimeType']): row['DurationMin']
+                  for row in conn.time_events.values()}
+        self.assertEqual(values[(1, 'SETUP')], Decimal('11'))
+        self.assertEqual(values[(2, 'SMDT')], Decimal('23'))
+        self.assertEqual(values[(1, 'IDLE')], Decimal('13'))
+        self.assertEqual(values[(2, 'IDLE')], Decimal('23'))
+        self.assertEqual(len(values), 12)
+        self.assertNotIn((1, 'TOTAL'), values)
+        self.assertNotIn((2, 'TOTAL'), values)
+
+    def test_update_without_start_end_fields_preserves_existing_times(self):
+        conn = PressProductionConnection()
+        start = datetime(2026, 9, 26, 22, 0)
+        end = datetime(2026, 9, 27, 0, 15)
+        conn.press_rows[30] = dict(PressProductionID=30, ProductionID=7,
+            MachineCode='F2', MouldID=4, CounterQty=100,
+            ProductionStartTime=start, ProductionEndTime=end)
+        conn.usage_rows[30] = dict(MouldUsageID=130, MouldID=4,
+            PressProductionID=30, ReconditionNo=1, UsageCycles=100)
+        data = valid_input()
+        data.pop('ProductionStartTime')
+        data.pop('ProductionEndTime')
+        save_press_production(conn, 7, data, 30)
+        self.assertEqual(conn.press_rows[30]['ProductionStartTime'], start)
+        self.assertEqual(conn.press_rows[30]['ProductionEndTime'], end)
 
     def test_counter_edit_replaces_existing_usage_without_double_count_and_keeps_generation(self):
         conn = PressProductionConnection()
