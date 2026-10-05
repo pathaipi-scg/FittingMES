@@ -14,11 +14,11 @@ from app.press_mc import (add_press, assign_line, page_context, read_capability_
 
 PRODUCTS = [
     dict(PressCode='F3',PressName='Press 3',CurrentLine='LINE1',CurrentLineName='Line 1',
-         ProductFamily='Family A',ProductCode='01',ProductName='Product 1',ProductNameTH='ชื่อ 1',CanProduce=1,StandardSpeed=34),
+         ProductFamilyID=1,ProductFamily='Family A',ProductCode='01',ProductName='Product 1',ProductNameTH='ชื่อ 1',CanProduce=1,StandardSpeed=34),
     dict(PressCode='F3',PressName='Press 3',CurrentLine='LINE1',CurrentLineName='Line 1',
-         ProductFamily='Family A',ProductCode='02',ProductName='Product 2',ProductNameTH='ชื่อ 2',CanProduce=0,StandardSpeed=None),
+         ProductFamilyID=1,ProductFamily='Family A',ProductCode='02',ProductName='Product 2',ProductNameTH='ชื่อ 2',CanProduce=0,StandardSpeed=None),
     dict(PressCode='F3',PressName='Press 3',CurrentLine='LINE1',CurrentLineName='Line 1',
-         ProductFamily='Family B',ProductCode='01',ProductName='Other 1',ProductNameTH=None,CanProduce=0,StandardSpeed=None),
+         ProductFamilyID=2,ProductFamily='Family B',ProductCode='01',ProductName='Other 1',ProductNameTH=None,CanProduce=0,StandardSpeed=None),
 ]
 
 
@@ -135,9 +135,9 @@ class PressMcTests(unittest.TestCase):
         self.assertIn('F15',html)
         self.assertIn('Future Press',html)
         self.assertIn('Product Capability',html)
-        self.assertEqual(html.count('data-family='),3)
-        self.assertIn('data-family="Family A" data-product-code="01" data-original="1" checked',html)
-        self.assertIn('data-family="Family A" data-product-code="02" data-original="0"',html)
+        self.assertEqual(html.count('data-family-id='),3)
+        self.assertIn('data-family-id="1" data-product-code="01" data-original="1" checked',html)
+        self.assertIn('data-family-id="1" data-product-code="02" data-original="0"',html)
         self.assertIn('LINE1 / Line 1',html)
         self.assertIn('data-original-speed="34"',html)
         self.assertIn('Disable Press',html)
@@ -170,10 +170,10 @@ class PressMcTests(unittest.TestCase):
     def test_full_41_product_matrix_is_read_from_sql_view(self):
         conn=FakeConnection()
         conn.matrix=[]
-        for family,count in (('NeuFit / NeuStile',11),('Oriental',11),('Prestige Common',10),('Special Ridge',9)):
+        for family_id,family,count in ((1,'NeuFit / NeuStile',11),(2,'Oriental',11),(3,'Prestige Common',10),(4,'Special Ridge',9)):
             for number in range(1,count+1):
                 conn.matrix.append(dict(PressCode='F3',PressName='Press 3',CurrentLine='LINE1',
-                    CurrentLineName='Line 1',ProductFamily=family,ProductCode=f'{number:02d}',
+                    CurrentLineName='Line 1',ProductFamilyID=family_id,ProductFamily=family,ProductCode=f'{number:02d}',
                     ProductName='Product '+str(number),ProductNameTH=None,CanProduce=0,StandardSpeed=None))
         matrix=read_capability_matrix(conn.cursor(),'F3')
         self.assertEqual(len(matrix),41)
@@ -184,14 +184,14 @@ class PressMcTests(unittest.TestCase):
     def test_capability_save_calls_history_procedure_only_for_changed_product(self):
         conn=FakeConnection()
         changed=save_capabilities(conn,'F3',[
-            {'ProductFamily':'Family A','ProductCode':'01','CanProduce':True,'StandardSpeed':34},
-            {'ProductFamily':'Family A','ProductCode':'02','CanProduce':True,'StandardSpeed':35}],
+            {'ProductFamilyID':1,'ProductCode':'01','CanProduce':True,'StandardSpeed':34},
+            {'ProductFamilyID':1,'ProductCode':'02','CanProduce':True,'StandardSpeed':35}],
             'operator note')
         self.assertEqual(changed,1)
         self.assertEqual(conn.begins,1)
         self.assertEqual(len(conn.capability_calls),1)
-        self.assertEqual(conn.capability_calls[0],('F3','Family A','02',True,'operator note','FittingMES'))
-        self.assertEqual(conn.speed_calls,[('F3','Family A','02',35)])
+        self.assertEqual(conn.capability_calls[0],('F3',1,'02',True,'operator note','FittingMES'))
+        self.assertEqual(conn.speed_calls,[('F3',1,'02',35)])
         self.assertEqual(conn.commits,1)
         self.assertTrue(conn.autocommit)
         self.assertEqual([sql.strip() for sql,_ in conn.sql if sql.strip() in
@@ -202,13 +202,13 @@ class PressMcTests(unittest.TestCase):
     def test_capability_speed_preserves_decimal_value(self):
         conn=FakeConnection()
         changed=save_capabilities(conn,'F3',[
-            {'ProductFamily':'Family A','ProductCode':'02','CanProduce':True,'StandardSpeed':3.25}])
+            {'ProductFamilyID':1,'ProductCode':'02','CanProduce':True,'StandardSpeed':3.25}])
         self.assertEqual(changed,1)
-        self.assertEqual(conn.speed_calls,[('F3','Family A','02',Decimal('3.25'))])
+        self.assertEqual(conn.speed_calls,[('F3',1,'02',Decimal('3.25'))])
 
     def test_capability_http_route_passes_f1_composite_key_to_procedure_and_commits(self):
         conn=FakeConnection()
-        payload=json.dumps({'changes':[{'ProductFamily':'Family B','ProductCode':'01','CanProduce':True,'StandardSpeed':29}],
+        payload=json.dumps({'changes':[{'ProductFamilyID':2,'ProductCode':'01','CanProduce':True,'StandardSpeed':29}],
                             'remark':'PressMc capability update'})
         async def receive(): return {'type':'http.request','body':payload.encode(),'more_body':False}
         req=Request({'type':'http','method':'POST','path':'/press-mc/F3/capabilities',
@@ -217,8 +217,8 @@ class PressMcTests(unittest.TestCase):
             response=asyncio.run(press_mc_capability_route('F3',req))
         self.assertEqual(response.status_code,200)
         self.assertEqual(json.loads(response.body)['message'],'Press capability changes saved.')
-        self.assertEqual(conn.capability_calls,[('F3','Family B','01',True,'PressMc capability update','FittingMES')])
-        self.assertEqual(conn.speed_calls,[('F3','Family B','01',29)])
+        self.assertEqual(conn.capability_calls,[('F3',2,'01',True,'PressMc capability update','FittingMES')])
+        self.assertEqual(conn.speed_calls,[('F3',2,'01',29)])
         self.assertEqual(conn.commits,1)
         self.assertTrue(conn.autocommit)
         self.assertIn('BEGIN TRANSACTION',[sql.strip() for sql,_ in conn.sql])
@@ -227,7 +227,7 @@ class PressMcTests(unittest.TestCase):
     def test_capability_save_rolls_back_all_requested_changes_on_procedure_error(self):
         conn=FakeConnection(); conn.fail='EXEC dbo.sp_SetPressProductCapability'
         with self.assertRaises(RuntimeError):
-            save_capabilities(conn,'F3',[{'ProductFamily':'Family A','ProductCode':'02','CanProduce':True}])
+            save_capabilities(conn,'F3',[{'ProductFamilyID':1,'ProductCode':'02','CanProduce':True}])
         self.assertEqual(conn.commits,0)
         self.assertEqual(conn.rollbacks,1)
         self.assertTrue(conn.autocommit)
@@ -235,9 +235,9 @@ class PressMcTests(unittest.TestCase):
 
     def test_capability_request_rejects_unknown_product_and_duplicate_keys(self):
         for changes in (
-            [{'ProductFamily':'Not a family','ProductCode':'01','CanProduce':True}],
-            [{'ProductFamily':'Family A','ProductCode':'01','CanProduce':True},
-             {'ProductFamily':'Family A','ProductCode':'01','CanProduce':False}],
+            [{'ProductFamilyID':99,'ProductCode':'01','CanProduce':True}],
+            [{'ProductFamilyID':1,'ProductCode':'01','CanProduce':True},
+             {'ProductFamilyID':1,'ProductCode':'01','CanProduce':False}],
         ):
             conn=FakeConnection()
             with self.assertRaises(ValueError): save_capabilities(conn,'F3',changes)

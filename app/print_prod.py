@@ -25,11 +25,11 @@ def read_print_prod_context(cursor, production_date):
         except (TypeError, ValueError):
             pass
     plan_week = read_plan_week(cursor, production_date)
-    cursor.execute("""SELECT ProductFamily,ProductCode,ProductName
+    cursor.execute("""SELECT ProductFamilyID,ProductCode,ProductName
         FROM dbo.ProductCodeMaster WHERE IsActive=1""")
     product_names = {(row[0], row[1]): row[2] for row in cursor.fetchall()}
     for record in records:
-        record["ProductName"] = product_names.get((record.get("ProductFamily"), record.get("ProductCode")))
+        record["ProductName"] = product_names.get((record.get("ProductFamilyID"), record.get("ProductCode")))
         if record.get("PlanQty") is not None:
             record["PlanQty"] = int(record["PlanQty"])
     usage = read_usage_context(cursor, production_date)

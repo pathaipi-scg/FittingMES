@@ -69,15 +69,15 @@ const nodes = Object.fromEntries(ids.map(id => [id, new Element(id.includes('sel
 const body = new Element('tbody');
 const table = new Element('table'); table.append(body);
 const lots = [
-  {ProductionID:101,ProdDate:'2026-09-24',Shift:'1',ProductFamily:'NeuFit / NeuStile',ProductCode:'06',ProductName:'Eaves',LotNo:'NEW-R2',ProductionQty:700,DepalletQtyTotal:200,RemainingCuringQty:500,RunNo:2},
-  {ProductionID:100,ProdDate:'2026-09-24',Shift:'2',ProductFamily:'NeuFit / NeuStile',ProductCode:'06',ProductName:'Eaves',LotNo:'NEW-R1',ProductionQty:500,DepalletQtyTotal:0,RemainingCuringQty:500,RunNo:1},
-  {ProductionID:99,ProdDate:'2026-09-23',Shift:'1',ProductFamily:'NeuFit / NeuStile',ProductCode:'06',ProductName:'Eaves',LotNo:'EMPTY',ProductionQty:300,DepalletQtyTotal:300,RemainingCuringQty:0,RunNo:1},
-  {ProductionID:98,ProdDate:'2026-09-22',Shift:'1',ProductFamily:'NeuFit / NeuStile',ProductCode:'07',ProductName:'Angle Ridge',LotNo:'ZERO',ProductionQty:0,DepalletQtyTotal:0,RemainingCuringQty:0,RunNo:1}
+  {ProductionID:101,ProdDate:'2026-09-24',Shift:'1',ProductFamilyID:41,ProductFamily:'NeuFit / NeuStile',ProductCode:'06',ProductName:'Eaves',LotNo:'NEW-R2',ProductionQty:700,DepalletQtyTotal:200,RemainingCuringQty:500,RunNo:2},
+  {ProductionID:100,ProdDate:'2026-09-24',Shift:'2',ProductFamilyID:41,ProductFamily:'NeuFit / NeuStile',ProductCode:'06',ProductName:'Eaves',LotNo:'NEW-R1',ProductionQty:500,DepalletQtyTotal:0,RemainingCuringQty:500,RunNo:1},
+  {ProductionID:99,ProdDate:'2026-09-23',Shift:'1',ProductFamilyID:41,ProductFamily:'NeuFit / NeuStile',ProductCode:'06',ProductName:'Eaves',LotNo:'EMPTY',ProductionQty:300,DepalletQtyTotal:300,RemainingCuringQty:0,RunNo:1},
+  {ProductionID:98,ProdDate:'2026-09-22',Shift:'1',ProductFamilyID:41,ProductFamily:'NeuFit / NeuStile',ProductCode:'07',ProductName:'Angle Ridge',LotNo:'ZERO',ProductionQty:0,DepalletQtyTotal:0,RemainingCuringQty:0,RunNo:1}
 ];
 const products = [
-  {ProductFamily:'NeuFit / NeuStile',ProductCode:'06',ProductName:'Eaves'},
-  {ProductFamily:'NeuFit / NeuStile',ProductCode:'07',ProductName:'Angle Ridge'},
-  {ProductFamily:'Oriental',ProductCode:'06',ProductName:'Other Eaves'}
+  {ProductFamilyID:41,ProductFamily:'NeuFit / NeuStile',ProductCode:'06',ProductName:'Eaves'},
+  {ProductFamilyID:41,ProductFamily:'NeuFit / NeuStile',ProductCode:'07',ProductName:'Angle Ridge'},
+  {ProductFamilyID:52,ProductFamily:'Oriental',ProductCode:'06',ProductName:'Other Eaves'}
 ];
 const reasonList = ['R01','R02','R03','R99'].map((ReasonCode,index) => ({ReasonCode,ReasonNameTH:'Reason '+ReasonCode,SortOrder:index,IsActive:true}));
 const entry = id => ({depallet:{ProductionID:id,DepalletID:null,DepalletQty:'',GoodQty:'',Shift:'1',Remark:'',R99:0},
@@ -109,7 +109,7 @@ vm.runInNewContext(source, {document,window,URL,Intl,fetch:async (url,options) =
   const family = nodes['depallet-family'], product = nodes['depallet-product'];
   const lotChoice = nodes['depallet-production-lot'], create = nodes['create-depallet-lot'];
   assert.equal(product.disabled,true); assert.equal(lotChoice.disabled,true); assert.equal(create.disabled,true);
-  family.value = 'NeuFit / NeuStile'; family.handlers.change();
+  family.value = '41'; family.handlers.change();
   assert.equal(product.disabled,false);
   assert.deepEqual(product.children.map(option => option.value),['','06','07']);
   product.value = '06'; product.handlers.change();

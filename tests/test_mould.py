@@ -10,10 +10,11 @@ from app.mould import (page_context, read_mould_detail, read_mould_list, read_pr
 
 
 PRODUCTS = [
-    dict(ProductFamily='Family A', ProductCode='01', ProductName='Product One'),
-    dict(ProductFamily='Family B', ProductCode='02', ProductName='Product Two'),
+    dict(ProductFamilyID=1, ProductFamily='Family A', ProductCode='01', ProductName='Product One'),
+    dict(ProductFamilyID=2, ProductFamily='Family B', ProductCode='02', ProductName='Product Two'),
 ]
-MOULD = dict(MouldID=4, MouldNo='M000001', MouldName='Mould One', ProductFamily='Family A',
+FAMILIES = [dict(ProductFamilyID=1,ProductFamily='Family A'),dict(ProductFamilyID=2,ProductFamily='Family B')]
+MOULD = dict(MouldID=4, MouldNo='M000001', MouldName='Mould One', ProductFamilyID=1, ProductFamily='Family A',
              ProductCode='01', ProductName='Product One', Status='ACTIVE', CurrentReconditionNo=2,
              CurrentAge=70, LifetimeAge=220, UsageRecordCount=4,
              LastUsageDateTime='2026-09-27 10:00:00', Remark='Checked',
@@ -41,7 +42,9 @@ class FakeCursor:
         self.conn.sql.append((sql, args))
         if self.conn.fail and self.conn.fail in sql:
             raise RuntimeError('simulated SQL failure')
-        if 'ProductCodeMaster' in sql:
+        if 'FROM dbo.ProductFamilyMaster' in sql:
+            self._set(self.conn.families)
+        elif 'ProductCodeMaster' in sql:
             self._set(self.conn.products)
         elif 'vw_MouldList' in sql:
             if 'WHERE MouldID=?' in sql:
@@ -51,9 +54,9 @@ class FakeCursor:
                 search, _, _, family, _, product_family, _, code, status, _ = args
                 if search and search.casefold() not in (self.conn.mould['MouldNo'] + self.conn.mould['MouldName']).casefold():
                     rows = []
-                if family and self.conn.mould['ProductFamily'] != family:
+                if family and self.conn.mould['ProductFamilyID'] != family:
                     rows = []
-                if product_family and (self.conn.mould['ProductFamily'] != product_family or self.conn.mould['ProductCode'] != code):
+                if product_family and (self.conn.mould['ProductFamilyID'] != product_family or self.conn.mould['ProductCode'] != code):
                     rows = []
                 if status and self.conn.mould['Status'] != status:
                     rows = []
@@ -69,7 +72,8 @@ class FakeCursor:
             changed = dict(self.conn.mould)
             if 'sp_Mould_Register' in sql:
                 changed.update(MouldID=5, MouldNo='M000002', MouldName=args[0],
-                               ProductFamily=args[1], ProductCode=args[2], Status='ACTIVE')
+                               ProductFamilyID=args[1], ProductFamily='Family B',
+                               ProductCode=args[2], Status='ACTIVE')
             elif 'sp_Mould_UpdateInfo' in sql:
                 changed.update(MouldName=args[1], Remark=args[2])
             elif 'sp_Mould_SendToRecondition' in sql:
@@ -95,6 +99,7 @@ class FakeCursor:
 class FakeConnection:
     def __init__(self):
         self.products = [dict(row) for row in PRODUCTS]
+        self.families = [dict(row) for row in FAMILIES]
         self.mould = dict(MOULD)
         self.status_history = [dict(row) for row in STATUS_HISTORY]
         self.recondition_history = [dict(row) for row in RECONDITION_HISTORY]
@@ -127,9 +132,9 @@ class MouldTests(unittest.TestCase):
                     self.assertNotIn('production_date=', page)
 
     def test_mould_redirect_preserves_filters_and_omits_invalid_or_empty_date(self):
-        navigation = {'q': 'M000001', 'family': 'Family A', 'product': 'Family A|01', 'status': 'ACTIVE'}
+        navigation = {'q': 'M000001', 'family': '1', 'product': '1|01', 'status': 'ACTIVE'}
         without_date = mould_redirect(4, 'Saved', navigation=navigation)
-        self.assertEqual(without_date.headers['location'], '/mould?q=M000001&family=Family+A&product=Family+A%7C01&status=ACTIVE&mould_id=4&message=Saved&message_type=success')
+        self.assertEqual(without_date.headers['location'], '/mould?q=M000001&family=1&product=1%7C01&status=ACTIVE&mould_id=4&message=Saved&message_type=success')
         with_date = mould_redirect(4, 'Saved', navigation={**navigation, 'production_date': '2026-10-01'})
         self.assertIn('production_date=2026-10-01', with_date.headers['location'])
         empty_date = mould_redirect(4, 'Saved', navigation={**navigation, 'production_date': ''})
@@ -146,11 +151,11 @@ class MouldTests(unittest.TestCase):
 
     def test_list_reads_authoritative_view_and_applies_search_product_status_filters(self):
         conn = FakeConnection()
-        rows = read_mould_list(conn.cursor(), 'M000001', 'Family A', 'Family A|01', 'ACTIVE')
+        rows = read_mould_list(conn.cursor(), 'M000001', '1', '1|01', 'ACTIVE')
         self.assertEqual(rows[0]['CurrentAge'], 70)
         sql, args = conn.sql[-1]
         self.assertIn('FROM dbo.vw_MouldList', sql)
-        self.assertEqual(args, ('M000001', '%M000001%', '%M000001%', 'Family A', 'Family A', 'Family A', 'Family A', '01', 'ACTIVE', 'ACTIVE'))
+        self.assertEqual(args, ('M000001', '%M000001%', '%M000001%', 1, 1, 1, 1, '01', 'ACTIVE', 'ACTIVE'))
         self.assertEqual(read_mould_list(conn.cursor(), 'absent'), [])
         with self.assertRaisesRegex(ValueError, 'valid Mould status'):
             read_mould_list(conn.cursor(), status='UNKNOWN')
@@ -185,22 +190,22 @@ class MouldTests(unittest.TestCase):
 
     def test_family_filter_preserves_composite_product_identity(self):
         conn = FakeConnection()
-        rows = read_mould_list(conn.cursor(), family='Family A', product='Family A|01')
+        rows = read_mould_list(conn.cursor(), family='1', product='1|01')
         self.assertEqual([row['ProductFamily'] for row in rows], ['Family A'])
-        self.assertEqual(conn.sql[-1][1][3:8], ('Family A', 'Family A', 'Family A', 'Family A', '01'))
+        self.assertEqual(conn.sql[-1][1][3:8], (1, 1, 1, 1, '01'))
 
     def test_selected_mould_is_hidden_when_filtered_out(self):
         conn = FakeConnection()
-        context = page_context(conn.cursor(), family='Family B', mould_id=4)
+        context = page_context(conn.cursor(), family='2', mould_id=4)
         self.assertEqual(context['moulds'], [])
         self.assertIsNone(context['selected'])
 
     def test_register_calls_database_numbering_procedure_and_reloads_view(self):
         conn = FakeConnection()
-        mould = register_mould(conn, 'New Mould', 'Family B', '02', 'Intake')
+        mould = register_mould(conn, 'New Mould', '2', '02', 'Intake')
         sql, args = conn.procedures[0]
         self.assertIn('EXEC dbo.sp_Mould_Register', sql)
-        self.assertEqual(args, ('New Mould', 'Family B', '02', 'Intake', 'FittingMES'))
+        self.assertEqual(args, ('New Mould', 2, '02', 'Intake', 'FittingMES'))
         self.assertEqual(mould['MouldNo'], 'M000002')
         self.assertTrue(any('FROM dbo.vw_MouldList WHERE MouldID=?' in query for query, _ in conn.sql))
         self.assertEqual((conn.commits, conn.rollbacks), (1, 0))
@@ -263,8 +268,8 @@ class MouldTests(unittest.TestCase):
     def test_page_renders_filters_authoritative_age_actions_and_histories(self):
         conn = FakeConnection()
         with patch('app.main.get_connection', return_value=conn):
-            response = mould_page(request(), production_date=date(2026, 9, 27), family='Family A',
-                                  product='Family A|01', status='ACTIVE', q='M000001', mould_id=4)
+            response = mould_page(request(), production_date=date(2026, 9, 27), family='1',
+                                  product='1|01', status='ACTIVE', q='M000001', mould_id=4)
         self.assertEqual(response.status_code, 200)
         page = response.body.decode()
         for text in ('M000001', 'Mould One', 'Product One', 'Lifetime Age', 'Status History',
@@ -273,13 +278,13 @@ class MouldTests(unittest.TestCase):
                      'FittingMES:mould-filters'):
             self.assertIn(text, page)
         self.assertIn('name="family"', page)
-        self.assertIn('family=Family', page)
-        self.assertIn('product=Family', page)
+        self.assertIn('family=1', page)
+        self.assertIn('product=1', page)
         self.assertNotIn('name="mould_no"', page)
         self.assertIn('<button class="primary" type="submit">Save Info</button>', page)
         self.assertIn('<a id="mould-clear" class="button" href="/mould?clear=1&amp;production_date=2026-09-27">Clear</a>', page)
         filter_product = page.split('id="mould-product-filter"', 1)[1].split('</select>', 1)[0]
-        self.assertIn('value="Family A|01"', filter_product)
+        self.assertIn('value="1|01"', filter_product)
         self.assertIn('>01 / Product One</option>', filter_product)
         self.assertNotIn('>Family A / 01 / Product One</option>', filter_product)
         register_product = page.split('id="new-mould-product"', 1)[1].split('</select>', 1)[0]
@@ -288,7 +293,7 @@ class MouldTests(unittest.TestCase):
         self.assertNotIn('name="remark"', register_form)
         self.assertIn('name="remark"', page.split('class="mould-edit-form"', 1)[1].split('</form>', 1)[0])
         self.assertIn('Mould No. is generated by the database during registration.', page)
-        self.assertIn('data-family="Family A" data-product="Family A|01"', page)
+        self.assertIn('data-family="1" data-product="1|01"', page)
         list_table = page.split('<table class="mould-table">', 1)[1].split('</table>', 1)[0]
         for heading in ('Mould No.', 'Mould Name', 'Product', 'Status', 'Current Age', 'Lifetime Age'):
             self.assertIn(f'<th>{heading}</th>', list_table)

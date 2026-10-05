@@ -43,7 +43,7 @@ def read_historical_plans(cursor, production_date):
 
 def read_prod_records(cursor, production_date):
     cursor.execute("""SELECT p.ProductionID,p.ProdDate,p.Shift,p.MaterialCode,
-        p.MaterialName,p.LotNo,p.ProductFamily,p.ProductCode,p.PlanName,p.PlanQty,
+        p.MaterialName,p.LotNo,p.ProductFamilyID,p.ProductFamily,p.ProductCode,p.PlanName,p.PlanQty,
         d.ProductionStartTime,d.ProductionEndTime,d.CounterQty,d.CuringQty,d.Remark
         FROM dbo.ProductionLot p
         LEFT JOIN dbo.ProductionData d ON d.ProductionID=p.ProductionID

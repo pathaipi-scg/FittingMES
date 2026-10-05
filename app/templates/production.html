@@ -168,14 +168,12 @@ main>header,main>.panel,main>.error{flex-shrink:0}
 <input type="hidden" name="production_date" value="{{ production_date }}"><input type="hidden" name="plan_id" value="{{ selected.selection_id }}">
 {% if mapping_edit %}<input type="hidden" name="mapping_edit" value="true">{% endif %}
 <span class="material-prefix" hidden>Material prefix <strong>{{ material_prefix }}</strong></span>
-{% set field_names = ['neufit','oriental','special_ridge','prestige_common'] %}
-{% set short_labels = {'NeuFit / NeuStile': 'NeuStile', 'Oriental': 'Oriental', 'Special Ridge': 'Ridge', 'Prestige Common': 'Prestige'} %}
-{% for family, letter in families %}
-{% set choices = products|selectattr('ProductFamily','equalto',family)|list %}
-<div class="family-product-field"><label for="family-product-{{ loop.index }}">{{ short_labels.get(family, family) }}</label>
-<select id="family-product-{{ loop.index }}" name="{{ field_names[loop.index0] }}" class="family-product-select" data-family="{{ family }}" {% if not choices %}disabled{% endif %}>
+{% for family in families %}
+{% set choices = products|selectattr('ProductFamilyID','equalto',family.ProductFamilyID)|list %}
+<div class="family-product-field"><label for="family-product-{{ loop.index }}">{{ family.ProductFamily }}</label>
+<select id="family-product-{{ loop.index }}" name="family_{{ family.ProductFamilyID }}" class="family-product-select" data-family="{{ family.ProductFamilyID }}" {% if not choices %}disabled{% endif %}>
 <option value="">{{ '- / Select Product' if choices else '- / No master rows' }}</option>
-{% for product in choices %}<option value="{{ product.ProductCode }}" {% if product_family == family and product_code == product.ProductCode %}selected{% endif %}>{{ product.ProductCode }} &mdash; {{ product.ProductName }}</option>{% endfor %}
+{% for product in choices %}<option value="{{ product.ProductCode }}" {% if product_family_id == family.ProductFamilyID and product_code == product.ProductCode %}selected{% endif %}>{{ product.ProductCode }} &mdash; {{ product.ProductName }}</option>{% endfor %}
 </select></div>
 {% endfor %}
 <button type="submit" class="primary" {% if not products %}disabled{% endif %}>Confirm</button>
@@ -641,7 +639,7 @@ main>header,main>.panel,main>.error{flex-shrink:0}
       event.preventDefault();
       const first = selects.find(select => !select.disabled);
       if (first) {
-        first.setCustomValidity('Select exactly one product across the four families.');
+        first.setCustomValidity('Select exactly one product across the product families.');
         first.reportValidity();
       }
     }

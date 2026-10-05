@@ -143,10 +143,10 @@ def _query_rows(cursor, production_date):
         JOIN dbo.EquipmentMaster AS equipment ON equipment.EquipmentCode=pp.MachineCode
         LEFT JOIN dbo.MouldMaster AS mould ON mould.MouldID=pp.MouldID
         LEFT JOIN dbo.ProductCodeMaster AS pm
-          ON pm.ProductFamily=lot.ProductFamily AND pm.ProductCode=lot.ProductCode
+          ON pm.ProductFamilyID=lot.ProductFamilyID AND pm.ProductCode=lot.ProductCode
         LEFT JOIN dbo.PressProductCapability AS capability
           ON capability.PressEquipmentCode=pp.MachineCode
-         AND capability.ProductFamily=lot.ProductFamily
+         AND capability.ProductFamilyID=lot.ProductFamilyID
          AND capability.ProductCode=lot.ProductCode
         LEFT JOIN dbo.EquipmentTimeEvent AS event
           ON event.ProductionID=pp.ProductionID AND event.EquipmentCode=pp.MachineCode

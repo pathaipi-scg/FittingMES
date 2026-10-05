@@ -10,14 +10,20 @@ PLAN = dict(selection_id='p1', StartTime=DAY, Shift='D', PlanName='Plan 1',
             MaterialCode='12345678XX', MaterialName='Product brown', PlanCount=3600)
 LOT = dict(ProductionID=7, ProdDate=DAY, Shift='D', PlanName='Plan 1',
            MaterialCode='12345678XX', MaterialName='Product brown', PlanQty=3600,
-           ProductCode='06', LotPrefix='B0066909', RunningNo=1, LotNo='B006690901', CanVoid=1)
+           ProductFamilyID=1, ProductFamily='NeuFit / NeuStile', ProductCode='06',
+           LotPrefix='B0066909', RunningNo=1, LotNo='B006690901', CanVoid=1)
 
 def request():
     return Request({'type':'http', 'method':'GET', 'path':'/', 'headers':[]})
 
+def insert_test_lot(conn, plan=PLAN, prefix='B066909', running_no=1, family_id=1):
+    with patch('app.lots.lot_prefix', return_value=prefix):
+        return insert_lot(conn, plan, '06', prefix, running_no, product_family_id=family_id)
+
 class ProductionTests(unittest.TestCase):
     def test_prefix(self):
-        self.assertEqual(lot_prefix('NeuFit / NeuStile', '06', DAY), 'B066909')
+        cursor=MagicMock(); cursor.fetchone.return_value=('B',)
+        self.assertEqual(lot_prefix(cursor, 1, '06', DAY), 'B066909')
 
     def test_date_filtered_source(self):
         cursor = MagicMock()
@@ -77,7 +83,8 @@ class ProductionTests(unittest.TestCase):
         self.assertIn('WHERE p.IsActive=1',sql)
 
     def test_mapping_and_create_redirect(self):
-        conn=MagicMock(); conn.cursor.return_value.fetchone.side_effect=[('NeuFit / NeuStile','06'),(1,)]
+        conn=MagicMock(); conn.cursor.return_value.fetchone.side_effect=[
+            (1,'06'),('NeuFit / NeuStile','Product'),('B',),(1,)]
         with patch('app.main.get_connection',return_value=conn),patch('app.main.read_lots',return_value=[]),patch('app.main.read_plans',return_value=[dict(PLAN)]),patch('app.main.insert_lot',return_value=8) as insert:
             response=production_page(request(),'p1',create=True,running_no=1,production_date=DAY)
         self.assertEqual(response.status_code,303)
@@ -86,12 +93,11 @@ class ProductionTests(unittest.TestCase):
 
     def test_mapped_product_header_includes_authoritative_product_name(self):
         conn = MagicMock()
-        master_products = [dict(ProductFamily='Prestige Common', ProductCode='13', ProductName='Angle HIP')]
+        conn.cursor.return_value.fetchone.return_value=('Prestige Common','Angle HIP')
         with patch('app.main.get_connection', return_value=conn), \
              patch('app.main.read_lots', return_value=[]), \
              patch('app.main.read_plans', return_value=[dict(PLAN)]), \
-             patch('app.main.read_mapping', return_value=('Prestige Common', '13')), \
-             patch('app.main.read_products', return_value=master_products), \
+             patch('app.main.read_mapping', return_value=(4, '13')), \
              patch('app.main.next_running_no', return_value=1), \
              patch('app.main.lot_prefix', return_value='P013'):
             response = production_page(request(), 'p1', production_date=DAY)
@@ -110,14 +116,18 @@ class ProductionTests(unittest.TestCase):
         self.assertIn('.plan-trigger{display:inline-flex;width:max-content;max-width:min(460px,100%);', text)
 
     def test_mapping_confirmation(self):
-        conn=MagicMock(); cursor=conn.cursor.return_value
-        cursor.fetchone.side_effect=[(0,),('06',),None,('NeuFit / NeuStile','06'),(1,)]
-        cursor.fetchall.return_value=[('06','Product')]
-        with patch('app.main.get_connection',return_value=conn),patch('app.main.read_lots',return_value=[]),patch('app.main.read_plans',return_value=[dict(PLAN)]):
-            response=production_page(request(),'p1','06',confirm=True,production_date=DAY,product_family='NeuFit / NeuStile')
+        conn=MagicMock()
+        with patch('app.main.get_connection',return_value=conn), \
+             patch('app.main.read_lots',return_value=[]), \
+             patch('app.main.read_plans',return_value=[dict(PLAN)]), \
+             patch('app.main.confirm_mapping',return_value=(1,'06')) as confirm, \
+             patch('app.main.read_mapping',return_value=(1,'06')), \
+             patch('app.main.lot_prefix',return_value='B066909'), \
+             patch('app.main.next_running_no',return_value=1):
+            response=production_page(request(),'p1','06',confirm=True,production_date=DAY,product_family=1)
         self.assertEqual(response.status_code,200)
-        self.assertTrue(any('INSERT INTO dbo.MaterialProductMap' in c.args[0] for c in cursor.execute.call_args_list))
-        conn.commit.assert_called_once()
+        confirm.assert_called_once()
+        self.assertEqual(confirm.call_args.args[2:],(1,'06'))
 
 class TransactionTests(unittest.TestCase):
     def test_reorder_lot_swaps_persisted_sequence(self):
@@ -144,8 +154,8 @@ class TransactionTests(unittest.TestCase):
         conn.commit.assert_called_once()
     def test_create_history_and_lock(self):
         conn=MagicMock(); cursor=conn.cursor.return_value
-        cursor.fetchone.side_effect=[(0,),('06',),('NeuFit / NeuStile','06'),None,(1,),(1,),(7,)]
-        self.assertEqual(insert_lot(conn,PLAN,'06','B066909',1,product_family='NeuFit / NeuStile'),7)
+        cursor.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),None,(1,),(1,),(7,)]
+        self.assertEqual(insert_test_lot(conn),7)
         sqls=[c.args[0] for c in cursor.execute.call_args_list]
         self.assertIn('sp_getapplock',sqls[0])
         self.assertTrue(any('UPDLOCK,HOLDLOCK' in sql for sql in sqls))
@@ -153,14 +163,14 @@ class TransactionTests(unittest.TestCase):
         conn.commit.assert_called_once()
 
     def test_duplicate_plan_rollback(self):
-        conn=MagicMock(); conn.cursor.return_value.fetchone.side_effect=[(0,),('06',),('NeuFit / NeuStile','06'),('used',)]
-        with self.assertRaisesRegex(ValueError,'already assigned'): insert_lot(conn,PLAN,'06','B066909',1,product_family='NeuFit / NeuStile')
+        conn=MagicMock(); conn.cursor.return_value.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),('used',)]
+        with self.assertRaisesRegex(ValueError,'already assigned'): insert_test_lot(conn)
         conn.rollback.assert_called_once(); conn.commit.assert_not_called()
 
     def test_stale_or_gap_number_rejected(self):
         for number in (1,3):
-            conn=MagicMock(); conn.cursor.return_value.fetchone.side_effect=[(0,),('06',),('NeuFit / NeuStile','06'),None,(2,)]
-            with self.assertRaisesRegex(ValueError,'Running number'): insert_lot(conn,PLAN,'06','B066909',number,product_family='NeuFit / NeuStile')
+            conn=MagicMock(); conn.cursor.return_value.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),None,(2,)]
+            with self.assertRaisesRegex(ValueError,'Running number'): insert_test_lot(conn,running_no=number)
             conn.commit.assert_not_called()
 
     def setup_update(self, next_no=2):
@@ -215,8 +225,8 @@ class TransactionTests(unittest.TestCase):
     def test_void_releases_plan_and_reuses_number(self):
         conn,cursor=self.setup_update()
         update_lot(conn,7,void=True)
-        cursor.fetchone.side_effect=[(0,),('06',),('NeuFit / NeuStile','06'),None,(1,),(1,),(8,)]
-        self.assertEqual(insert_lot(conn,PLAN,'06','B066909',1,product_family='NeuFit / NeuStile'),8)
+        cursor.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),None,(1,),(1,),(8,)]
+        self.assertEqual(insert_test_lot(conn),8)
         checks=[c.args[0] for c in cursor.execute.call_args_list if 'MAX(RunningNo)' in c.args[0] or 'SELECT LotNo' in c.args[0]]
         self.assertTrue(all('IsActive=1' in sql for sql in checks))
 
@@ -230,9 +240,8 @@ class TransactionTests(unittest.TestCase):
 
     def test_lock_timeout(self):
         conn=MagicMock(); conn.cursor.return_value.fetchone.return_value=(-1,)
-        with self.assertRaisesRegex(ValueError,'retry'): insert_lot(conn,PLAN,'06','B066909',1,product_family='NeuFit / NeuStile')
+        with self.assertRaisesRegex(ValueError,'retry'): insert_test_lot(conn)
         conn.commit.assert_not_called()
 
 if __name__=='__main__':
     unittest.main()
-

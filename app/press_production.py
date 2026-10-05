@@ -5,26 +5,26 @@ from app.lots import lock_lots, rows
 from app.production_clock import read_day_start_time, resolve_run_times, clock_display
 
 
-def read_eligible_presses(cursor, product_family, product_code):
-    if not product_family or not product_code:
+def read_eligible_presses(cursor, product_family_id, product_code):
+    if not product_family_id or not product_code:
         return []
     cursor.execute('''SELECT capability.PressCode, capability.PressName,
             capability.CurrentLine, capability.CurrentLineName, capability.StandardSpeed
         FROM dbo.vw_PressMcCapabilityMatrix AS capability
         JOIN dbo.EquipmentMaster AS equipment
           ON equipment.EquipmentCode=capability.PressCode
-        WHERE capability.ProductFamily=? AND capability.ProductCode=?
+        WHERE capability.ProductFamilyID=? AND capability.ProductCode=?
           AND capability.CanProduce=1 AND equipment.IsActive=1
           AND equipment.EquipmentType='PRESS'
-        ORDER BY equipment.DisplayOrder, capability.PressCode''', product_family, product_code)
+        ORDER BY equipment.DisplayOrder, capability.PressCode''', product_family_id, product_code)
     return rows(cursor)
 
 
-def read_eligible_moulds(cursor, product_family, product_code, production_date=None):
-    if not product_family or not product_code:
+def read_eligible_moulds(cursor, product_family_id, product_code, production_date=None):
+    if not product_family_id or not product_code:
         return []
     cursor.execute('''SELECT moulds.MouldID, moulds.MouldNo, moulds.MouldName,
-            moulds.ProductFamily, moulds.ProductCode,
+            moulds.ProductFamilyID,moulds.ProductFamily,moulds.ProductCode,
             CAST(CASE WHEN EXISTS (
                 SELECT 1
                 FROM dbo.PressProduction AS assigned_press
@@ -36,8 +36,8 @@ def read_eligible_moulds(cursor, product_family, product_code, production_date=N
             ) THEN 1 ELSE 0 END AS bit) AS AssignedOnProductionDate
         FROM dbo.vw_MouldList
         AS moulds
-        WHERE moulds.ProductFamily=? AND moulds.ProductCode=? AND moulds.Status='ACTIVE'
-        ORDER BY moulds.MouldNo''', production_date, product_family, product_code)
+        WHERE moulds.ProductFamilyID=? AND moulds.ProductCode=? AND moulds.Status='ACTIVE'
+        ORDER BY moulds.MouldNo''', production_date, product_family_id, product_code)
     return rows(cursor)
 
 
@@ -220,50 +220,50 @@ def validate_press_input(data, require_mould=True, production_date=None, day_sta
 
 
 def _require_active_lot(cursor, production_id):
-    cursor.execute('''SELECT ProductionID, ProductFamily, ProductCode
+    cursor.execute('''SELECT ProductionID, ProductFamilyID, ProductCode
         FROM dbo.ProductionLot WITH (UPDLOCK,HOLDLOCK)
         WHERE ProductionID=? AND IsActive=1''', production_id)
     found = cursor.fetchone()
     if not found:
         raise ValueError('This Production Lot is no longer active.')
-    if not found[1]:
+    if found[1] is None:
         raise ValueError('This legacy Lot has no confirmed Product Family. Resolve its product before assigning Press production.')
     return found[1], found[2]
 
 
-def _validate_press(cursor, product_family, product_code, machine_code):
+def _validate_press(cursor, product_family_id, product_code, machine_code):
     cursor.execute('''SELECT 1
         FROM dbo.vw_PressMcCapabilityMatrix AS capability
         JOIN dbo.EquipmentMaster AS equipment
           ON equipment.EquipmentCode=capability.PressCode
-        WHERE capability.PressCode=? AND capability.ProductFamily=?
+        WHERE capability.PressCode=? AND capability.ProductFamilyID=?
           AND capability.ProductCode=? AND capability.CanProduce=1
           AND equipment.IsActive=1 AND equipment.EquipmentType='PRESS' ''',
-        machine_code, product_family, product_code)
+        machine_code, product_family_id, product_code)
     if not cursor.fetchone():
         raise ValueError('This Press is inactive or is not enabled for the Lot Product.')
 
 
-def _lock_and_validate_mould(cursor, product_family, product_code, mould_id):
-    cursor.execute('''SELECT MouldID, Status, ProductFamily, ProductCode, CurrentReconditionNo
+def _lock_and_validate_mould(cursor, product_family_id, product_code, mould_id):
+    cursor.execute('''SELECT MouldID, Status, ProductFamilyID, ProductCode, CurrentReconditionNo
         FROM dbo.MouldMaster WITH (UPDLOCK,HOLDLOCK) WHERE MouldID=?''', mould_id)
     mould = cursor.fetchone()
     if not mould:
         raise ValueError('Mould not found.')
     if mould[1] != 'ACTIVE':
         raise ValueError('Only ACTIVE Moulds can be assigned to Press production.')
-    if (mould[2], mould[3]) != (product_family, product_code):
+    if (mould[2], mould[3]) != (product_family_id, product_code):
         raise ValueError('Mould Product must match the Production Lot Product.')
     return mould[4]
 
 
-def _lock_existing_usage_mould(cursor, product_family, product_code, mould_id):
-    cursor.execute('''SELECT MouldID, ProductFamily, ProductCode
+def _lock_existing_usage_mould(cursor, product_family_id, product_code, mould_id):
+    cursor.execute('''SELECT MouldID, ProductFamilyID, ProductCode
         FROM dbo.MouldMaster WITH (UPDLOCK,HOLDLOCK) WHERE MouldID=?''', mould_id)
     mould = cursor.fetchone()
     if not mould:
         raise ValueError('Mould not found.')
-    if (mould[1], mould[2]) != (product_family, product_code):
+    if (mould[1], mould[2]) != (product_family_id, product_code):
         raise ValueError('Mould Product must match the Production Lot Product.')
 
 
@@ -282,7 +282,7 @@ def save_press_production(conn, production_id, data, press_production_id=None):
     try:
         cursor = conn.cursor()
         lock_lots(cursor)
-        product_family, product_code = _require_active_lot(cursor, production_id)
+        product_family_id, product_code = _require_active_lot(cursor, production_id)
         try:
             production_date = date.fromisoformat(str(data.get('ProductionDate') or ''))
         except ValueError:
@@ -291,12 +291,12 @@ def save_press_production(conn, production_id, data, press_production_id=None):
         values = validate_press_input(data, require_mould=press_production_id is None,
                           production_date=production_date, day_start_time=day_start_time,
                           allow_incomplete=True)
-        _validate_press(cursor, product_family, product_code, values['MachineCode'])
+        _validate_press(cursor, product_family_id, product_code, values['MachineCode'])
 
         if press_production_id is None:
             _ensure_mould_available_on_date(cursor, production_date, values['MouldID'])
             current_recondition_no = _lock_and_validate_mould(
-                cursor, product_family, product_code, values['MouldID'])
+                cursor, product_family_id, product_code, values['MouldID'])
             cursor.execute('''SELECT PressProductionID FROM dbo.PressProduction WITH (UPDLOCK,HOLDLOCK)
                 WHERE ProductionID=? AND MachineCode=?''', production_id, values['MachineCode'])
             if cursor.fetchone():
@@ -336,11 +336,11 @@ def save_press_production(conn, production_id, data, press_production_id=None):
             if values['MouldID'] is None and (values['CounterQty'] or 0) > 0:
                 raise ValueError('An ACTIVE Mould is required when Counter Qty is greater than zero.')
             if has_usage and values['MouldID'] is not None:
-                _lock_existing_usage_mould(cursor, product_family, product_code, values['MouldID'])
+                _lock_existing_usage_mould(cursor, product_family_id, product_code, values['MouldID'])
                 current_recondition_no = usage[0]
             else:
                 current_recondition_no = (_lock_and_validate_mould(
-                    cursor, product_family, product_code, values['MouldID'])
+                    cursor, product_family_id, product_code, values['MouldID'])
                     if values['MouldID'] is not None else None)
             usage_recondition_no = usage[0] if has_usage else current_recondition_no
             cursor.execute('''UPDATE dbo.PressProduction SET MachineCode=?,DispatchQty=?,CounterQty=?,
@@ -437,16 +437,16 @@ def undo_release_press_production(conn, production_id, press_production_id):
 
 
 def build_press_production_context(cursor, lot):
-    product_family = lot.get('ProductFamily')
+    product_family_id = lot.get('ProductFamilyID')
     product_code = lot.get('ProductCode')
     rows_for_lot = read_press_production(cursor, lot['ProductionID'])
     day_start_time = read_day_start_time(cursor, lot['ProdDate'])
-    if not product_family:
+    if product_family_id is None:
         return dict(press_production=rows_for_lot, day_start_time=day_start_time,
                     eligible_presses=[], eligible_moulds=[],
                     press_product_error='This legacy Lot has no confirmed Product Family; Press/Mould assignment is unavailable.')
     return dict(press_production=rows_for_lot,
                 day_start_time=day_start_time,
-                eligible_presses=read_eligible_presses(cursor, product_family, product_code),
-                eligible_moulds=read_eligible_moulds(cursor, product_family, product_code, lot['ProdDate']),
+                eligible_presses=read_eligible_presses(cursor, product_family_id, product_code),
+                eligible_moulds=read_eligible_moulds(cursor, product_family_id, product_code, lot['ProdDate']),
                 press_product_error=None)

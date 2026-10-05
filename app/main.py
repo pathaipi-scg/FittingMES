@@ -32,7 +32,8 @@ from app.reject_pis_send import send_reject_single
 from app.depallet import (read_context as read_depallet_context, read_reasons as read_depallet_reasons,
                           read_curing_lots, read_daily_work, save_depallet, save_depallet_batch,
                           reorder_depallet_run)
-from app.products import FAMILIES, lot_prefix, read_products, read_mapping, confirm_mapping, selected_product, month_start
+from app.products import (read_families, lot_prefix, read_products, read_mapping,
+                          confirm_mapping, selected_product, month_start)
 from app.production_data import (read_production_data, save_production_data, calculate,
                                   read_shift_rules)
 from app.press_mc import (page_context as press_mc_context, add_press, update_press_name,
@@ -205,18 +206,18 @@ def read_plans(cursor, production_date):
 
 def product_selection_context(cursor, selected):
     products = read_products(cursor)
-    cursor.execute('''SELECT ProductFamily,ProductCode,MAX(RunningNo)+1
-        FROM dbo.ProductionLot WHERE IsActive=1 AND ProductFamily IS NOT NULL
-        AND SequenceMonth=? GROUP BY ProductFamily,ProductCode''',
+    cursor.execute('''SELECT ProductFamilyID,ProductCode,MAX(RunningNo)+1
+        FROM dbo.ProductionLot WHERE IsActive=1 AND ProductFamilyID IS NOT NULL
+        AND SequenceMonth=? GROUP BY ProductFamilyID,ProductCode''',
         month_start(day(selected["StartTime"])))
     running = {(r[0], r[1]): int(r[2]) for r in cursor.fetchall()}
     previews = {}
     for product in products:
-        family, code = product["ProductFamily"], product["ProductCode"]
-        number = running.get((family, code), 1)
-        stem = lot_prefix(family, code, selected["StartTime"])
-        previews[family + "|" + code] = dict(
-            ProductFamily=family, ProductCode=code, LotPrefix=stem,
+        family_id, code = product["ProductFamilyID"], product["ProductCode"]
+        number = running.get((family_id, code), 1)
+        stem = lot_prefix(cursor, family_id, code, selected["StartTime"])
+        previews[str(family_id) + "|" + code] = dict(
+            ProductFamily=product["ProductFamily"], ProductFamilyID=family_id, ProductCode=code, LotPrefix=stem,
             RunningNo=number, LotNo=f"{stem}{number:02d}")
     return dict(products=products, product_previews=previews)
 
@@ -225,7 +226,7 @@ def production_page(request, plan_id=None, product_code=None, confirm=False, map
                     create=False, running_no=None, production_date=None, production_id=None, edit=False, save=False, void=False, production_input=None, data_saved=False, product_family=None, product_choices=None, press_message=None, press_message_type=None, wet_reject_message=None, wet_reject_message_type=None):
     requested_date = production_date
     production_date = production_date or date.today()
-    context = dict(families=FAMILIES, product_family=None, product_previews={}, production_data={}, calculated=calculate(None, None), data_saved=data_saved, production_date=production_date, lots=[], lots_for_date=[], production_data_by_lot={}, calculated_by_lot={}, current=None, edit=edit, edit_plans=[], plans=[], selected=None, products=[], material_prefix=None,
+    context = dict(families=[], product_family=None, product_family_id=None, product_previews={}, production_data={}, calculated=calculate(None, None), data_saved=data_saved, production_date=production_date, lots=[], lots_for_date=[], production_data_by_lot={}, calculated_by_lot={}, current=None, edit=edit, edit_plans=[], plans=[], selected=None, products=[], material_prefix=None,
                    product_code=None, lot=None, error=None, lots_load_failed=False, running_no=None, created_lot=None,
                    press_production=[], day_start_time=None, eligible_presses=[], eligible_moulds=[], press_product_error=None,
                    press_message=press_message, press_message_type=press_message_type,
@@ -316,6 +317,7 @@ def production_page(request, plan_id=None, product_code=None, confirm=False, map
                     return RedirectResponse("/" if void else f"/?production_id={production_id}", status_code=303)
             context["plans"] = mark_used(read_plans(cursor, production_date), context["lots"])
             if plan_id:
+                context["families"] = read_families(cursor)
                 selected = choose_plan(context["plans"], plan_id)
                 if selected is None:
                     raise ValueError("This plan changed or is no longer active. Select a current plan.")
@@ -339,16 +341,24 @@ def production_page(request, plan_id=None, product_code=None, confirm=False, map
                 if mapped:
                     if mapping_edit:
                         context.update(product_selection_context(cursor, selected))
-                        context["product_family"], context["product_code"] = mapped
+                        context["product_family_id"], context["product_code"] = mapped
                         context["mapping_edit"] = True
                     else:
-                        context["product_family"], context["product_code"] = mapped
-                        context["lot"] = lot_prefix(mapped[0], mapped[1], selected["StartTime"])
+                        context["product_family_id"], context["product_code"] = mapped
+                        cursor.execute('''SELECT pf.ProductFamily,pcm.ProductName
+                            FROM dbo.ProductCodeMaster pcm
+                            JOIN dbo.ProductFamilyMaster pf ON pf.ProductFamilyID=pcm.ProductFamilyID
+                            WHERE pcm.ProductFamilyID=? AND pcm.ProductCode=?''', *mapped)
+                        family = cursor.fetchone()
+                        if not family:
+                            raise ValueError('The mapped family/product is no longer available in the product master.')
+                        context["product_family"], context["product_name"] = family[0], family[1]
+                        context["lot"] = lot_prefix(cursor, mapped[0], mapped[1], selected["StartTime"])
                         context["running_no"] = next_running_no(cursor, context["lot"],
                             mapped[0], mapped[1], selected["StartTime"])
                         if create:
                             new_id = insert_lot(conn, selected, mapped[1], context["lot"], running_no,
-                                                product_family=mapped[0])
+                                                product_family_id=mapped[0])
                             return RedirectResponse(f"/?production_id={new_id}&production_date={production_date}", status_code=303)
                 else:
                     context.update(product_selection_context(cursor, selected))
@@ -380,12 +390,23 @@ def home(request: Request, plan_id: str | None = None, production_date: date | N
 
 
 @app.post("/", response_class=HTMLResponse)
-def confirm_product(request: Request, plan_id: str = Form(...), production_date: date = Form(...),
-                    neufit: str = Form(""), oriental: str = Form(""),
-                    special_ridge: str = Form(""), prestige_common: str = Form(""),
-                    mapping_edit: bool = Form(False)):
-    return production_page(request, plan_id, confirm=True, mapping_edit=mapping_edit, production_date=production_date,
-                           product_choices=[neufit, oriental, special_ridge, prestige_common])
+async def confirm_product(request: Request):
+    form = await request.form()
+    try:
+        production_date = date.fromisoformat(str(form.get('production_date') or ''))
+    except ValueError:
+        return JSONResponse({'error': 'Select a valid Production Date.'}, status_code=400)
+    plan_id = str(form.get('plan_id') or '').strip()
+    if not plan_id:
+        return JSONResponse({'error': 'Select a current Production Plan.'}, status_code=400)
+    choices = []
+    for key, value in form.items():
+        if key.startswith('family_'):
+            choices.append((key[len('family_'):], value))
+    return production_page(request, plan_id, confirm=True,
+                           mapping_edit=str(form.get('mapping_edit') or '').lower() == 'true',
+                           production_date=production_date,
+                           product_choices=choices)
 
 
 @app.post("/lots", response_class=HTMLResponse)
@@ -641,7 +662,7 @@ def depallet_page(request: Request, production_date: date | None = None,
                   production_id: int | None = None, depallet_id: int | None = None):
     production_date = production_date or date.today()
     context = dict(page_title="DEPALLET", active_tab="depallet", production_date=production_date,
-                   lots=[], products=[], families=FAMILIES, entries={}, runs=[], current=None,
+                   lots=[], products=[], families=[], entries={}, runs=[], current=None,
                    current_run_id=depallet_id, error=None, r99_name="", daily_totals={},
                    day_start_time=None)
     status = 200
@@ -650,6 +671,7 @@ def depallet_page(request: Request, production_date: date | None = None,
             cursor = conn.cursor()
             context["lots"] = read_curing_lots(cursor)
             context["products"] = read_products(cursor)
+            context["families"] = read_families(cursor)
             (context["entries"], context["runs"], context["reject_reasons"],
              context["daily_totals"], context["day_start_time"]) = read_daily_work(
                 cursor, production_date, context["lots"])
@@ -1186,17 +1208,18 @@ async def press_mc_capability_route(press_code: str, request: Request):
 
 @app.get('/mould', response_class=HTMLResponse)
 def mould_page(request: Request, production_date: date | None = None, q: str = '',
-               product: str = '', status: str = '', mould_id: int | None = None,
+               family: str = '', product: str = '', status: str = '', mould_id: int | None = None,
                message: str | None = None, message_type: str | None = None):
     production_date = production_date or date.today()
     context = dict(page_title='Mould', active_tab='mould', production_date=production_date,
-                   search=q, product_filter=product, status_filter=status, moulds=[], products=[],
+                   search=q, family_filter=family, product_filter=product, status_filter=status,
+                   moulds=[], products=[], families=[],
                    selected=None, status_history=[], recondition_history=[], usage_history=[],
                    message=message, message_type=message_type, error=None)
     response_status = 200
     try:
         with closing(get_connection()) as conn:
-            context.update(mould_context(conn.cursor(), q, product, status, mould_id))
+            context.update(mould_context(conn.cursor(), q, family, product, status, mould_id))
     except ValueError as exc:
         context['error'] = str(exc)
         response_status = 400

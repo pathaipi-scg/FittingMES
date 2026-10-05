@@ -35,7 +35,8 @@ class MemoryConnection:
                      day_rules=[dict(RuleID=1,EffectiveFromDate=date(2026,1,1),DayStartTime=time(8),Remark='Initial')],
                      balances={LOT['ProductionID']:dict(ProductionID=LOT['ProductionID'],ProductionQty=10000,
                          DepalletQtyTotal=0,RemainingCuringQty=10000)},
-                     products=[dict(ProductFamily='NeuFit / NeuStile',ProductCode='06',ProductName='Fixture Product')],
+                     products=[dict(ProductFamilyID=1,ProductFamily='NeuFit / NeuStile',
+                                    ProductCode='06',ProductName='Fixture Product')],
                      depallets=[dict(SAVED)] if existing else [],
                      rejects={(10,'R01'):7,(10,'R99'):3} if existing else {})
         self.work=copy.deepcopy(self.db)
@@ -85,6 +86,8 @@ class MemoryCursor:
             self.set_rows(result)
         elif 'FROM dbo.ProductCodeMaster' in sql:
             self.set_rows(c.work['products'])
+        elif 'FROM dbo.ProductFamilyMaster' in sql:
+            self.set_rows([dict(ProductFamilyID=1,ProductFamily='NeuFit / NeuStile',LotPrefixLetter='B')])
         elif 'FROM dbo.ProductionLot' in sql:
             self.set_rows([lot for lot in c.work['lots'] if lot['ProductionID']==args[0]])
         elif 'FROM dbo.RejectReasonMaster' in sql:

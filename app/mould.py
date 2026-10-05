@@ -1,6 +1,6 @@
 CHANGED_BY = 'FittingMES'
 MOULD_COLUMNS = (
-    'MouldID', 'MouldNo', 'MouldName', 'ProductFamily', 'ProductCode',
+    'MouldID', 'MouldNo', 'MouldName', 'ProductFamilyID', 'ProductFamily', 'ProductCode',
     'ProductName', 'Status', 'CurrentReconditionNo', 'CurrentAge',
     'LifetimeAge', 'UsageRecordCount', 'LastUsageDateTime', 'Remark',
     'CreatedAt', 'UpdatedAt',
@@ -19,11 +19,13 @@ def _procedure_row(cursor):
 
 
 def read_products(cursor):
-    cursor.execute('''SELECT ProductFamily, ProductCode, ProductName
-        FROM dbo.ProductCodeMaster
-        WHERE IsActive=1
-        ORDER BY ProductFamily, ProductCode''')
-    return [dict(ProductFamily=row[0], ProductCode=row[1], ProductName=row[2])
+    cursor.execute('''SELECT pcm.ProductFamilyID,pf.ProductFamily,pcm.ProductCode,pcm.ProductName
+        FROM dbo.ProductCodeMaster pcm
+        JOIN dbo.ProductFamilyMaster pf ON pf.ProductFamilyID=pcm.ProductFamilyID
+        WHERE pcm.IsActive=1
+        ORDER BY pf.ProductFamily,pcm.ProductCode''')
+    return [dict(ProductFamilyID=row[0],ProductFamily=row[1],
+                 ProductCode=row[2],ProductName=row[3])
             for row in cursor.fetchall()]
 
 
@@ -34,31 +36,39 @@ def read_mould_list(cursor, search='', family='', product='', status=''):
     status = str(status or '').strip().upper()
     if status and status not in ('ACTIVE', 'RECONDITION', 'RETIRED', 'DENIED'):
         raise ValueError('Choose a valid Mould status.')
-    product_family = product_code = None
+    product_family_id = product_code = None
     if product:
         parts = product.split('|', 1)
         if len(parts) != 2 or not all(parts):
             raise ValueError('Choose a valid Product.')
-        product_family, product_code = parts
-    cursor.execute('''SELECT MouldID, MouldNo, MouldName, ProductFamily, ProductCode,
+        try:
+            product_family_id = int(parts[0])
+        except ValueError:
+            raise ValueError('Choose a valid Product.') from None
+        product_code = parts[1]
+    try:
+        family_id = int(family) if family else None
+    except ValueError:
+        raise ValueError('Choose a valid Product Family.') from None
+    cursor.execute('''SELECT MouldID, MouldNo, MouldName, ProductFamilyID,ProductFamily,ProductCode,
             ProductName, Status, CurrentReconditionNo, CurrentAge, LifetimeAge,
             UsageRecordCount, LastUsageDateTime, Remark, CreatedAt, UpdatedAt
         FROM dbo.vw_MouldList
         WHERE (? = '' OR MouldNo LIKE ? OR MouldName LIKE ?)
-                    AND (? = '' OR ProductFamily=?)
-          AND (? IS NULL OR (ProductFamily=? AND ProductCode=?))
+            AND (? IS NULL OR ProductFamilyID=?)
+            AND (? IS NULL OR (ProductFamilyID=? AND ProductCode=?))
           AND (? = '' OR Status=?)
         ORDER BY MouldNo''',
         search, '%' + search + '%', '%' + search + '%',
-        family, family,
-        product_family, product_family, product_code, status, status)
+        family_id, family_id,
+        product_family_id, product_family_id, product_code, status, status)
     return _rows(cursor)
 
 
 def read_mould_detail(cursor, mould_id):
     if not isinstance(mould_id, int) or mould_id < 1:
         raise ValueError('Invalid MouldID.')
-    cursor.execute('''SELECT MouldID, MouldNo, MouldName, ProductFamily, ProductCode,
+    cursor.execute('''SELECT MouldID, MouldNo, MouldName, ProductFamilyID,ProductFamily,ProductCode,
             ProductName, Status, CurrentReconditionNo, CurrentAge, LifetimeAge,
             UsageRecordCount, LastUsageDateTime, Remark, CreatedAt, UpdatedAt
         FROM dbo.vw_MouldList WHERE MouldID=?''', mould_id)
@@ -91,6 +101,8 @@ def read_mould_detail(cursor, mould_id):
 
 def page_context(cursor, search='', family='', product='', status='', mould_id=None):
     products = read_products(cursor)
+    cursor.execute('SELECT ProductFamilyID,ProductFamily FROM dbo.ProductFamilyMaster ORDER BY ProductFamily')
+    families = [dict(ProductFamilyID=row[0],ProductFamily=row[1]) for row in cursor.fetchall()]
     moulds = read_mould_list(cursor, search, family, product, status)
     selected = None
     detail = None
@@ -98,7 +110,7 @@ def page_context(cursor, search='', family='', product='', status='', mould_id=N
         detail = read_mould_detail(cursor, mould_id)
         if any(row['MouldID'] == mould_id for row in moulds):
             selected = detail['mould']
-    return dict(products=products, moulds=moulds, selected=selected,
+    return dict(products=products, families=families, moulds=moulds, selected=selected,
                 status_history=(detail or {}).get('status_history', []),
                 recondition_history=(detail or {}).get('recondition_history', []),
                 usage_history=(detail or {}).get('usage_history', []))
@@ -113,7 +125,7 @@ def _run_mutation(conn, sql, params, refresh_id=None):
         mould_id = refresh_id if refresh_id is not None else (procedure_row or {}).get('MouldID')
         if mould_id is None:
             raise RuntimeError('Mould procedure did not return the registered MouldID.')
-        cursor.execute('''SELECT MouldID, MouldNo, MouldName, ProductFamily, ProductCode,
+        cursor.execute('''SELECT MouldID, MouldNo, MouldName, ProductFamilyID,ProductFamily,ProductCode,
                 ProductName, Status, CurrentReconditionNo, CurrentAge, LifetimeAge,
                 UsageRecordCount, LastUsageDateTime, Remark, CreatedAt, UpdatedAt
             FROM dbo.vw_MouldList WHERE MouldID=?''', mould_id)
@@ -128,18 +140,21 @@ def _run_mutation(conn, sql, params, refresh_id=None):
 
 def register_mould(conn, mould_name, product_family, product_code, remark=''):
     mould_name = str(mould_name or '').strip()
-    product_family = str(product_family or '').strip()
+    try:
+        product_family_id = int(product_family)
+    except (TypeError, ValueError):
+        raise ValueError('Choose a valid Product Family and Product.') from None
     product_code = str(product_code or '').strip()
     remark = str(remark or '').strip()
     if not mould_name or len(mould_name) > 200:
         raise ValueError('MouldName is required and must be at most 200 characters.')
-    if not product_family or len(product_family) > 30 or len(product_code) != 2:
+    if product_family_id < 1 or len(product_code) != 2:
         raise ValueError('Choose a valid Product Family and Product.')
     if len(remark) > 2000:
         raise ValueError('Remark must be at most 2000 characters.')
     return _run_mutation(conn, '''EXEC dbo.sp_Mould_Register
-        @MouldName=?, @ProductFamily=?, @ProductCode=?, @Remark=?, @ChangedBy=?''',
-        (mould_name, product_family, product_code, remark or None, CHANGED_BY))
+        @MouldName=?, @ProductFamilyID=?, @ProductCode=?, @Remark=?, @ChangedBy=?''',
+        (mould_name, product_family_id, product_code, remark or None, CHANGED_BY))
 
 
 def update_mould_info(conn, mould_id, mould_name, remark=''):

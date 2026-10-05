@@ -17,13 +17,15 @@ def read_reasons(cursor, include_r99=False):
 
 
 def read_curing_lots(cursor):
-    cursor.execute("""SELECT b.ProductionID,b.ProdDate,b.Shift,b.PlanName,p.ProductFamily,
+    cursor.execute("""SELECT b.ProductionID,b.ProdDate,b.Shift,b.PlanName,p.ProductFamilyID,
+        pf.ProductFamily,
         b.MaterialCode,b.MaterialName,b.ProductCode,b.LotPrefix,b.LotNo,
         b.ProductionQty,b.DepalletQtyTotal,b.RemainingCuringQty,b.DepalletCount,
         b.FirstDepalletDate,b.LastDepalletDate,p.RunningNo AS RunNo,pm.ProductName
         FROM dbo.vw_DepalletCuringBalance b
         JOIN dbo.ProductionLot p ON p.ProductionID=b.ProductionID AND p.IsActive=1
-        LEFT JOIN dbo.ProductCodeMaster pm ON pm.ProductFamily=p.ProductFamily
+        LEFT JOIN dbo.ProductFamilyMaster pf ON pf.ProductFamilyID=p.ProductFamilyID
+        LEFT JOIN dbo.ProductCodeMaster pm ON pm.ProductFamilyID=p.ProductFamilyID
             AND pm.ProductCode=b.ProductCode
         ORDER BY b.ProdDate DESC,p.RunningNo DESC,b.ProductionID DESC""")
     return rows(cursor)
@@ -34,7 +36,7 @@ def read_daily_work(cursor, production_date, lots):
     day_start_time = read_day_start_time(cursor, production_date)
     cursor.execute("""SELECT v.*,d.RunSequence,d.StartDateTime,d.EndDateTime,
         b.ProductionQty,b.DepalletQtyTotal,b.RemainingCuringQty,p.RunningNo AS RunNo,
-        pm.ProductName,p.ProductFamily,
+        pm.ProductName,p.ProductFamilyID,pf.ProductFamily AS CurrentProductFamily,
                 ISNULL((SELECT SUM(prior.DepalletQty) FROM dbo.Depallet prior
             WHERE prior.ProductionID=d.ProductionID
               AND (prior.DepalletDate<d.DepalletDate
@@ -44,7 +46,8 @@ def read_daily_work(cursor, production_date, lots):
         JOIN dbo.Depallet d ON d.DepalletID=v.DepalletID
         LEFT JOIN dbo.vw_DepalletCuringBalance b ON b.ProductionID=v.ProductionID
         LEFT JOIN dbo.ProductionLot p ON p.ProductionID=v.ProductionID
-        LEFT JOIN dbo.ProductCodeMaster pm ON pm.ProductFamily=p.ProductFamily AND pm.ProductCode=v.ProductCode
+        LEFT JOIN dbo.ProductFamilyMaster pf ON pf.ProductFamilyID=p.ProductFamilyID
+        LEFT JOIN dbo.ProductCodeMaster pm ON pm.ProductFamilyID=p.ProductFamilyID AND pm.ProductCode=v.ProductCode
         WHERE v.DepalletDate=? ORDER BY d.RunSequence,d.DepalletID""", production_date)
     saved = rows(cursor)
 
@@ -72,7 +75,7 @@ def read_daily_work(cursor, production_date, lots):
         saved_for_lot = [entry for entry in saved if entry['ProductionID'] == lot['ProductionID']]
         for entry in saved_for_lot:
             entry.update(LotNo=lot['LotNo'],ProductCode=lot['ProductCode'],
-                         ProductFamily=lot.get('ProductFamily'),ProductName=lot.get('ProductName'),
+                         ProductName=lot.get('ProductName'),
                          PlanName=lot.get('PlanName'),MaterialName=lot.get('MaterialName'))
             rejects = rejects_by_depallet.get(entry['DepalletID'], {})
             entry.update(summary(entry['DepalletQty'], entry['GoodQty'], rejects))

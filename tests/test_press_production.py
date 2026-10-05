@@ -38,10 +38,10 @@ class PressProductionCursor:
             mould = self.conn.moulds.get(args[0])
             if not mould:
                 self.result = []
-            elif 'SELECT MouldID, ProductFamily, ProductCode' in sql:
-                self.result = [(args[0], mould['ProductFamily'], mould['ProductCode'])]
+            elif 'SELECT MouldID, ProductFamilyID, ProductCode' in sql:
+                self.result = [(args[0], mould['ProductFamilyID'], mould['ProductCode'])]
             else:
-                self.result = [(args[0], mould['Status'], mould['ProductFamily'], mould['ProductCode'], mould['CurrentReconditionNo'])]
+                self.result = [(args[0], mould['Status'], mould['ProductFamilyID'], mould['ProductCode'], mould['CurrentReconditionNo'])]
         elif 'FROM dbo.PressProduction WITH' in sql and 'MachineCode=?' in sql:
             found = any(row['ProductionID'] == args[0] and row['MachineCode'] == args[1] for row in self.conn.press_rows.values())
             self.result = [(1,)] if found else []
@@ -139,18 +139,18 @@ class PressProductionCursor:
 class PressProductionConnection:
     def __init__(self):
         self.production_id = 7
-        self.family = 'Special Ridge'
+        self.family = 3
         self.code = '02'
         self.press_code = 'F2'
         self.press_valid = True
         self.lot_active = True
         self.moulds = {
-            4: dict(Status='ACTIVE', ProductFamily='Special Ridge', ProductCode='02', CurrentReconditionNo=2),
-            5: dict(Status='RECONDITION', ProductFamily='Special Ridge', ProductCode='02', CurrentReconditionNo=1),
-            6: dict(Status='RETIRED', ProductFamily='Special Ridge', ProductCode='02', CurrentReconditionNo=0),
-            7: dict(Status='DENIED', ProductFamily='Special Ridge', ProductCode='02', CurrentReconditionNo=0),
-            8: dict(Status='ACTIVE', ProductFamily='Oriental', ProductCode='02', CurrentReconditionNo=0),
-            9: dict(Status='ACTIVE', ProductFamily='Special Ridge', ProductCode='02', CurrentReconditionNo=2),
+            4: dict(Status='ACTIVE', ProductFamilyID=3, ProductFamily='Special Ridge', ProductCode='02', CurrentReconditionNo=2),
+            5: dict(Status='RECONDITION', ProductFamilyID=3, ProductFamily='Special Ridge', ProductCode='02', CurrentReconditionNo=1),
+            6: dict(Status='RETIRED', ProductFamilyID=3, ProductFamily='Special Ridge', ProductCode='02', CurrentReconditionNo=0),
+            7: dict(Status='DENIED', ProductFamilyID=3, ProductFamily='Special Ridge', ProductCode='02', CurrentReconditionNo=0),
+            8: dict(Status='ACTIVE', ProductFamilyID=2, ProductFamily='Oriental', ProductCode='02', CurrentReconditionNo=0),
+            9: dict(Status='ACTIVE', ProductFamilyID=3, ProductFamily='Special Ridge', ProductCode='02', CurrentReconditionNo=2),
         }
         self.press_rows = {}
         self.usage_rows = {}
@@ -347,29 +347,29 @@ class PressProductionTests(unittest.TestCase):
 
     def test_eligible_press_query_reuses_pressmc_capability_and_requires_active_press(self):
         cursor = ReadCursor([dict(PressCode='F2', PressName='Press 2', CurrentLine='LINE1', CurrentLineName='Line 1')])
-        result = read_eligible_presses(cursor, 'Special Ridge', '02')
+        result = read_eligible_presses(cursor, 3, '02')
         self.assertEqual(result[0]['PressCode'], 'F2')
         self.assertIn('dbo.vw_PressMcCapabilityMatrix', cursor.sql)
         self.assertIn('capability.CanProduce=1', cursor.sql)
         self.assertIn('equipment.IsActive=1', cursor.sql)
         self.assertIn("equipment.EquipmentType='PRESS'", cursor.sql)
-        self.assertEqual(cursor.args, ('Special Ridge', '02'))
+        self.assertEqual(cursor.args, (3, '02'))
 
     def test_eligible_mould_query_uses_authoritative_view_active_status_and_product(self):
         cursor = ReadCursor([dict(MouldID=4, MouldNo='M000001', MouldName='Ridge',
-                                  ProductFamily='Special Ridge', ProductCode='02')])
-        result = read_eligible_moulds(cursor, 'Special Ridge', '02')
+                                  ProductFamilyID=3,ProductFamily='Special Ridge', ProductCode='02')])
+        result = read_eligible_moulds(cursor, 3, '02')
         self.assertEqual(result[0]['MouldID'], 4)
         self.assertIn('dbo.vw_MouldList', cursor.sql)
         self.assertIn("Status='ACTIVE'", cursor.sql)
-        self.assertEqual(cursor.args, (None, 'Special Ridge', '02'))
+        self.assertEqual(cursor.args, (None, 3, '02'))
         self.assertEqual(read_eligible_moulds(cursor, None, '02'), [])
 
     def test_mould_assignment_is_scoped_to_production_date(self):
         cursor = ReadCursor([dict(MouldID=4, MouldNo='M000001', MouldName='Ridge',
                                   ProductFamily='Special Ridge', ProductCode='02',
                                   AssignedOnProductionDate=True)])
-        result = read_eligible_moulds(cursor, 'Special Ridge', '02', DAY)
+        result = read_eligible_moulds(cursor, 3, '02', DAY)
         self.assertTrue(result[0]['AssignedOnProductionDate'])
 
     def test_direct_post_rejects_same_date_duplicate_without_modifying_existing_rows(self):

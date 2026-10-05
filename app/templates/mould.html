@@ -38,15 +38,15 @@
   <form class="mould-toolbar" method="get" action="/mould">
     {% if production_date %}<input type="hidden" name="production_date" value="{{ production_date }}">{% endif %}
     <label for="mould-search">Mould No. / Name<input id="mould-search" type="search" name="q" value="{{ search }}" placeholder="Search Mould"></label>
-    <label for="mould-family-filter">Product Family<select id="mould-family-filter" name="family"><option value="">All families</option>{% for family in products|map(attribute='ProductFamily')|unique %}<option value="{{ family }}" {% if family_filter == family %}selected{% endif %}>{{ family }}</option>{% endfor %}</select></label>
-    <label for="mould-product-filter">Product<select id="mould-product-filter" name="product"><option value="">All products</option>{% for item in products %}<option value="{{ item.ProductFamily }}|{{ item.ProductCode }}" data-family="{{ item.ProductFamily }}" {% if product_filter == item.ProductFamily ~ '|' ~ item.ProductCode %}selected{% endif %}>{{ item.ProductCode }} / {{ item.ProductName }}</option>{% endfor %}</select></label>
+    <label for="mould-family-filter">Product Family<select id="mould-family-filter" name="family"><option value="">All families</option>{% for family in families %}<option value="{{ family.ProductFamilyID }}" {% if family_filter == family.ProductFamilyID|string %}selected{% endif %}>{{ family.ProductFamily }}</option>{% endfor %}</select></label>
+    <label for="mould-product-filter">Product<select id="mould-product-filter" name="product"><option value="">All products</option>{% for item in products %}<option value="{{ item.ProductFamilyID }}|{{ item.ProductCode }}" data-family="{{ item.ProductFamilyID }}" {% if product_filter == item.ProductFamilyID|string ~ '|' ~ item.ProductCode %}selected{% endif %}>{{ item.ProductCode }} / {{ item.ProductName }}</option>{% endfor %}</select></label>
     <label for="mould-status-filter">Status<select id="mould-status-filter" name="status"><option value="">All statuses</option>{% for state in ['ACTIVE','RECONDITION','RETIRED','DENIED'] %}<option value="{{ state }}" {% if status_filter == state %}selected{% endif %}>{{ state }}</option>{% endfor %}</select></label>
     <button class="primary" type="submit">Filter</button><a id="mould-clear" class="button" href="/mould?clear=1{{ mould_date_query }}">Clear</a>
   </form>
   <div class="table-scroll"><table class="mould-table"><thead><tr>
     <th>Mould No.</th><th>Mould Name</th><th>Product</th><th>Status</th><th>Current Age</th><th>Lifetime Age</th>
   </tr></thead><tbody>
-  {% for row in moulds %}<tr aria-selected="{{ 'true' if selected and selected.MouldID == row.MouldID else 'false' }}" data-family="{{ row.ProductFamily }}" data-product="{{ row.ProductFamily }}|{{ row.ProductCode }}">
+  {% for row in moulds %}<tr aria-selected="{{ 'true' if selected and selected.MouldID == row.MouldID else 'false' }}" data-family="{{ row.ProductFamilyID }}" data-product="{{ row.ProductFamilyID }}|{{ row.ProductCode }}">
     <td><a class="mould-select" href="/mould?family={{ family_filter|urlencode }}&amp;product={{ product_filter|urlencode }}&amp;status={{ status_filter|urlencode }}&amp;q={{ search|urlencode }}&amp;mould_id={{ row.MouldID }}{{ mould_date_query }}">{{ row.MouldNo }}</a></td>
     <td><a class="mould-select" href="/mould?family={{ family_filter|urlencode }}&amp;product={{ product_filter|urlencode }}&amp;status={{ status_filter|urlencode }}&amp;q={{ search|urlencode }}&amp;mould_id={{ row.MouldID }}{{ mould_date_query }}">{{ row.MouldName }}</a></td>
     <td>{{ row.ProductName or '' }}</td><td class="mould-state" data-state="{{ row.Status }}">{{ row.Status }}</td>
@@ -60,7 +60,7 @@
   <h2>Register New Mould</h2>
   <form method="post" action="/mould/register" class="mould-form mould-register-form">{{ mould_navigation_fields() }}
     <label for="new-mould-name">Mould Name<input id="new-mould-name" name="mould_name" maxlength="200" required></label>
-    <label for="new-mould-product">Product Family / Product<select id="new-mould-product" required><option value="">Choose product</option>{% for item in products %}<option value="{{ item.ProductFamily }}|{{ item.ProductCode }}">{{ item.ProductFamily }} / {{ item.ProductCode }} / {{ item.ProductName }}</option>{% endfor %}</select></label>
+    <label for="new-mould-product">Product Family / Product<select id="new-mould-product" required><option value="">Choose product</option>{% for item in products %}<option value="{{ item.ProductFamilyID }}|{{ item.ProductCode }}">{{ item.ProductFamily }} / {{ item.ProductCode }} / {{ item.ProductName }}</option>{% endfor %}</select></label>
     <input type="hidden" name="product_family" id="new-mould-family"><input type="hidden" name="product_code" id="new-mould-code">
     <button class="primary" type="submit">Register Mould</button>
   </form>

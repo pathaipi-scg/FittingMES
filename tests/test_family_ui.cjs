@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const html = fs.readFileSync('app/templates/production.html', 'utf8');
 const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(match => match[1]);
 for (const source of scripts) new vm.Script(source);
-const families = ['NeuFit / NeuStile', 'Oriental', 'Special Ridge', 'Prestige Common'];
+const families = ['1', '2', '3', '4'];
 const selects = families.map(family => ({
   dataset: { family }, value: '', disabled: false, handlers: {},
   setCustomValidity(value) { this.error = value; },
@@ -13,7 +13,8 @@ const selects = families.map(family => ({
 }));
 const outputs = ['ProductFamily', 'ProductCode', 'LotPrefix', 'RunningNo', 'LotNo'].map(key => ({ dataset: { preview: key }, textContent: '' }));
 const previews = Object.fromEntries(families.map((family,index) => [family + '|06', {
-  ProductFamily: family, ProductCode: '06', LotPrefix: (index < 2 ? 'B' : 'I') + '066909',
+  ProductFamily: ['NeuFit / NeuStile', 'Oriental', 'Special Ridge', 'Prestige Common'][index],
+  ProductFamilyID: Number(family), ProductCode: '06', LotPrefix: (index < 2 ? 'B' : 'I') + '066909',
   RunningNo: 1, LotNo: (index < 2 ? 'B' : 'I') + '06690901'
 }]));
 const preview = { hidden: true, querySelectorAll: () => outputs };
