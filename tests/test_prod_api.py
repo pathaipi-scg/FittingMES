@@ -89,8 +89,8 @@ class ProdApiTests(unittest.TestCase):
     def test_prod_route_displays_saved_values_and_navigation(self):
         status, body, _ = self.page('production_date=2026-09-22')
         self.assertEqual(status,200)
-        for text in ['B006690902','07:30:00','15:30:00','12345678XX','Saved product',
-                     'NeuFit / NeuStile','>100<','>90<','Saved &lt;remark&gt;', 'NOT SENT']:
+        for text in ['B006690902','07:30','15:30','12345678XX','Saved product',
+                     'NeuFit / NeuStile','>100<','>90<', 'NOT SENT']:
             self.assertIn(text,body)
         self.assertIn('PRODUCTION SEND: DISABLED',body)
         self.assertEqual(body.count('aria-current="page"'),1)
@@ -449,13 +449,13 @@ class ProdApiTests(unittest.TestCase):
                     ReadOnlyConnection([dict(RECORD,PlanQty=value)]))
                 self.assertEqual(status,200)
                 self.assertIn('<th>Product</th><th>Plan Qty</th><th>Counter</th><th>Curing</th>'
-                              '<th>Wet Reject</th><th>Remark</th><th>Ready</th><th>Local status</th>',body)
+                              '<th>Wet Reject</th><th>Ready</th><th>Local status</th>',body)
                 table=re.search(r'<table>(.*?)</table>',body,re.S)[1]
                 cells=re.findall(r'<td[^>]*>(.*?)</td>',table,re.S)
                 self.assertEqual(cells[10],display)
                 self.assertEqual(cells[11],'100')
         _,body,_=self.page('production_date=2020-01-01')
-        self.assertIn('colspan="17"',body)
+        self.assertIn('colspan="16"',body)
 
     def test_lot_readiness_uses_only_confirmed_required_fields(self):
         ready = dict(RECORD, **resolve_plan(RECORD, [PLAN_SOURCE]))

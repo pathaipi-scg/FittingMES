@@ -1,0 +1,301 @@
+{% extends 'api_base.html' %}
+{% block content %}
+<style>
+.reject-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.reject-toolbar h1{margin-right:4px}
+.reject-context,.reject-entry-form{display:flex;align-items:end;gap:6px;flex-wrap:wrap}
+.reject-context label,.reject-entry-form label{display:grid;gap:2px;font-weight:600}
+.reject-context select{min-width:135px;max-width:min(360px,90vw)}
+.reject-context label:last-child select{min-width:240px}
+.reject-entry-form label:first-child input{width:72px;text-align:right}
+.reject-entry-form label:nth-child(2) select{min-width:150px}
+.reject-entry-form label:nth-child(3) select{min-width:300px;max-width:min(520px,90vw)}
+.reject-actions{display:flex;align-items:center;gap:5px}
+.reject-error{background:#fff0ef;color:#9d2525;padding:4px;margin-bottom:5px;white-space:pre-line}
+.reject-success{background:#e7f4eb;color:#25643b;padding:4px;margin-bottom:5px}
+.reject-note{color:#718096;margin:4px 0}
+.reject-table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+.reject-table th,.reject-table td{padding:3px 5px;border:1px solid #c7d2df;text-align:left;vertical-align:top}
+.reject-table th{background:#eaf0f6}
+.reject-table .select-cell{text-align:center;width:48px}
+.reject-table .qty-cell{text-align:right}
+.reject-cal-link{margin-left:auto}
+@media(max-width:640px){
+ .reject-context label,.reject-context label:last-child,.reject-entry-form label{width:100%}
+ .reject-context select,.reject-context label:last-child select,.reject-entry-form label:nth-child(2) select,.reject-entry-form label:nth-child(3) select{width:100%;min-width:0;max-width:100%}
+ .reject-cal-link{margin-left:0}
+}
+</style>
+<div class="reject-toolbar"><h1>REJECT</h1>
+{% if cal_url %}<a class="button reject-cal-link" href="{{ cal_url }}">REJECT CAL</a>{% endif %}
+</div>
+{% if error %}<div class="reject-error" role="alert">{{ error }}</div>{% endif %}
+{% if saved %}<div class="reject-success" role="status">REJECT entry saved.</div>{% endif %}
+<p class="reject-note">New Fitting REJECT quantities are separate from legacy Wet Reject and Depallet totals.</p>
+
+<section class="panel" aria-label="REJECT entry">
+<form id="reject-form" class="reject-context" method="post" action="/reject/save">
+<input type="hidden" name="production_date" value="{{ production_date }}">
+<input type="hidden" name="workflow" id="reject-workflow-value" value="{{ workflow }}">
+<input type="hidden" name="entry_id" id="reject-entry-id" value="{{ entry_id }}">
+<input type="hidden" name="reject_source_scope_id" id="reject-source-scope-id" value="{{ selected_scope_id }}">
+<label>Shift
+<select name="shift_id" id="reject-shift" required>
+{% for item in shifts %}<option value="{{ item.ShiftID }}" data-shift-code="{{ item.ShiftCode }}" {% if selected_shift_id|string == item.ShiftID|string %}selected{% endif %}>{{ item.ShiftName }}</option>{% endfor %}
+</select></label>
+<label>Reject Of
+<select id="reject-workflow" {% if entry_id %}disabled{% endif %}>
+<option value="production" {% if workflow == 'production' %}selected{% endif %}>Production</option>
+<option value="depallet" {% if workflow == 'depallet' %}selected{% endif %}>Depallet</option>
+</select></label>
+<label>Line
+<select name="line_equipment_id" id="reject-line" required>
+{% for item in lines %}<option value="{{ item.EquipmentID }}" data-code="{{ item.EquipmentCode }}" {% if selected_line_id|string == item.EquipmentID|string %}selected{% endif %}>{{ item.EquipmentCode }}</option>{% endfor %}
+</select></label>
+<label>Product / Lot
+<select name="production_id" id="reject-production" required>
+<option value="">Select Product / Lot</option>
+{% for item in lots %}
+<option value="{{ item.ProductionID }}" data-family-id="{{ item.ProductFamilyID }}" data-shift-code="{{ item.ShiftCode }}" {% if selected_production_id|string == item.ProductionID|string %}selected{% endif %}>{{ item.LotNo }} · {{ item.ProductName or item.ProductFamily }}</option>
+{% endfor %}
+</select></label>
+<div class="reject-entry-form">
+<label>Qty<input name="qty" id="reject-qty" type="number" min="1" max="2147483647" step="1" required value="{{ qty }}"></label>
+<label>Source<select name="source_equipment_id" id="reject-source" required>
+<option value="">Select Source</option>
+{% for item in source_options %}
+<option value="{{ item.EquipmentID }}" data-equipment-type="{{ item.EquipmentType }}" {% if selected_source_id|string == item.EquipmentID|string %}selected{% endif %}>{{ item.EquipmentCode }}</option>
+{% endfor %}
+</select></label>
+<label>Reject Reason<select name="reject_reason_id" id="reject-reason" required>
+<option value="">Select Reject Reason</option>
+{% for item in reasons %}
+<option value="{{ item.RejectReasonID }}" data-scope-id="{{ item.RejectSourceScopeID }}" data-scope-code="{{ item.SourceScopeCode }}" {% if selected_reason_id|string == item.RejectReasonID|string %}selected{% endif %}>{{ item.ReasonCode }} · {{ item.ReasonNameTH }}</option>
+{% endfor %}
+</select></label>
+<div class="reject-actions"><button class="primary" id="reject-save" type="submit">{% if entry_id %}SAVE EDIT{% else %}SAVE{% endif %}</button><button id="reject-cancel" type="button" {% if not entry_id %}hidden{% endif %}>CANCEL</button></div>
+</div>
+</form>
+</section>
+
+<section class="panel" aria-label="Saved REJECT entries">
+<h2>Saved {{ 'Depallet' if workflow == 'depallet' else 'Production' }} REJECT entries · {{ production_date }}</h2>
+{% if entries %}
+<div class="table-scroll"><table class="reject-table">
+<thead><tr><th>Select</th><th>Source</th><th>Line</th><th>Shift</th><th>Product / Lot</th><th>Code</th><th>Reject Reason</th><th>Qty</th></tr></thead>
+<tbody>
+{% for item in entries %}
+<tr>
+<td class="select-cell"><input type="radio" name="reject-selected-row" data-reject-entry='{{ {"entry_id":item.EntryID,"workflow":workflow,"shift_id":item.ShiftID,"line_equipment_id":item.LineEquipmentID,"production_id":item.ProductionID,"source_equipment_id":item.SourceEquipmentID,"reject_reason_id":item.RejectReasonID,"reject_source_scope_id":item.RejectSourceScopeID,"qty":item.Qty}|tojson }}' aria-label="Select REJECT entry {{ item.EntryID }}"></td>
+<td>{{ item.SourceLabel }}</td><td>{{ item.LineLabel }}</td><td>{{ item.ShiftCode }}</td>
+<td>{{ item.LotNo }} · {{ item.ProductName or item.ProductFamily }}</td>
+<td>{{ item.ReasonCode }}</td><td>{{ item.ReasonNameTH }}</td><td class="qty-cell">{{ item.Qty }}</td>
+</tr>
+{% endfor %}
+</tbody></table></div>
+{% else %}<p class="muted">No saved entries for this workflow and Production Date.</p>{% endif %}
+</section>
+
+<script>
+function rejectReasonOptions(reasons, familyId, scopeCode = null) {
+  return reasons.filter(item =>
+    String(item.ProductFamilyID) === String(familyId) &&
+    (!scopeCode || item.SourceScopeCode === scopeCode));
+}
+
+function rejectSourceOptions(sources, lineId, scopeCode = null) {
+  return sources.filter(item =>
+    String(item.LineEquipmentID) === String(lineId) &&
+    (!scopeCode || item.EquipmentType === scopeCode));
+}
+
+(() => {
+  const page = {{ reject_client_data|tojson }};
+  const form = document.getElementById('reject-form');
+  const workflow = document.getElementById('reject-workflow');
+  const workflowValue = document.getElementById('reject-workflow-value');
+  const shift = document.getElementById('reject-shift');
+  const line = document.getElementById('reject-line');
+  const lot = document.getElementById('reject-production');
+  const source = document.getElementById('reject-source');
+  const reason = document.getElementById('reject-reason');
+  const scopeId = document.getElementById('reject-source-scope-id');
+  const entryId = document.getElementById('reject-entry-id');
+  const qty = document.getElementById('reject-qty');
+  const save = document.getElementById('reject-save');
+  const cancel = document.getElementById('reject-cancel');
+  const originalWorkflow = workflow.value;
+
+  const option = (value, label, data = {}) => {
+    const item = new Option(label, String(value));
+    for (const [key, value] of Object.entries(data)) item.dataset[key] = String(value);
+    return item;
+  };
+  const currentLot = () => page.lots.find(item => String(item.ProductionID) === lot.value);
+  const sourceLabel = item => {
+    const suffix = workflow.value === 'depallet' && item.EquipmentType === 'LINE'
+      ? ' (DRY)' : '';
+    return `${item.EquipmentCode}${suffix}`;
+  };
+  const currentReason = () => page.reasons.find(
+    item => String(item.RejectReasonID) === reason.value);
+  const currentSource = () => page.sources.find(
+    item => String(item.EquipmentID) === source.value);
+
+  function updateWorkflowLabels() {
+    for (const item of line.options) {
+      if (item.value) {
+        item.textContent = `${item.dataset.code}${workflow.value === 'depallet' ? ' (DRY)' : ''}`;
+      }
+    }
+  }
+
+  function updateLots(preferredId = '') {
+    const shiftOption = shift.selectedOptions[0];
+    const shiftCode = shiftOption ? shiftOption.dataset.shiftCode : '';
+    const candidates = page.lots.filter(item => String(item.ShiftCode) === shiftCode);
+    lot.replaceChildren(option('', 'Select Product / Lot'));
+    for (const item of candidates) {
+      lot.add(option(item.ProductionID,
+        `${item.LotNo} · ${item.ProductName || item.ProductFamily}`,
+        {familyId: item.ProductFamilyID, shiftCode: item.ShiftCode}));
+    }
+    const requested = String(preferredId || '');
+    lot.value = candidates.some(item => String(item.ProductionID) === requested)
+      ? requested : (candidates.length ? String(candidates[0].ProductionID) : '');
+  }
+
+  function updateReasons(scopeCode = null, preferredId = '') {
+    const selectedLot = currentLot();
+    const candidates = selectedLot
+      ? rejectReasonOptions(page.reasons, selectedLot.ProductFamilyID, scopeCode)
+      : [];
+    reason.replaceChildren(option('', 'Select Reject Reason'));
+    for (const item of candidates) {
+      reason.add(option(item.RejectReasonID,
+        `${item.ReasonCode} · ${item.ReasonNameTH}`,
+        {scopeId: item.RejectSourceScopeID, scopeCode: item.SourceScopeCode}));
+    }
+    const requested = String(preferredId || '');
+    reason.value = candidates.some(item => String(item.RejectReasonID) === requested)
+      ? requested : '';
+    const selected = currentReason();
+    scopeId.value = selected ? selected.RejectSourceScopeID : '';
+  }
+
+  function updateSources(scopeCode = null, preferredId = '') {
+    const candidates = rejectSourceOptions(page.sources, line.value, scopeCode);
+    source.replaceChildren(option('', 'Select Source'));
+    for (const item of candidates) {
+      source.add(option(item.EquipmentID, sourceLabel(item),
+        {equipmentType: item.EquipmentType}));
+    }
+    const requested = String(preferredId || '');
+    source.value = candidates.some(item => String(item.EquipmentID) === requested)
+      ? requested : '';
+  }
+
+  function resetEntryFields() {
+    qty.value = '';
+    scopeId.value = '';
+    updateReasons();
+    updateSources();
+  }
+
+  function syncForReason(preferredSource = source.value) {
+    const selected = currentReason();
+    scopeId.value = selected ? selected.RejectSourceScopeID : '';
+    const scopeCode = selected ? selected.SourceScopeCode : null;
+    const candidates = rejectSourceOptions(page.sources, line.value, scopeCode);
+    const preferredId = String(preferredSource || '');
+    const preferredIsValid = candidates.some(
+      item => String(item.EquipmentID) === preferredId);
+    const sourceId = selected && !preferredIsValid && candidates.length === 1
+      ? candidates[0].EquipmentID : preferredSource;
+    updateSources(scopeCode, sourceId);
+  }
+
+  function syncForSource(preferredReason = reason.value) {
+    const selected = currentSource();
+    updateReasons(selected ? selected.EquipmentType : null, preferredReason);
+  }
+
+  function clearEdit() {
+    entryId.value = '';
+    workflow.disabled = false;
+    workflow.value = originalWorkflow;
+    workflowValue.value = workflow.value;
+    save.textContent = 'SAVE';
+    cancel.hidden = true;
+    qty.value = '';
+    updateWorkflowLabels();
+    updateLots();
+    updateReasons();
+    updateSources();
+    scopeId.value = '';
+    for (const radio of document.querySelectorAll('[data-reject-entry]')) {
+      radio.checked = false;
+    }
+  }
+
+  shift.addEventListener('change', () => {
+    updateLots();
+    resetEntryFields();
+  });
+  line.addEventListener('change', () => {
+    resetEntryFields();
+  });
+  lot.addEventListener('change', () => {
+    updateReasons();
+    updateSources();
+    scopeId.value = '';
+  });
+  workflow.addEventListener('change', () => {
+    workflowValue.value = workflow.value;
+    updateWorkflowLabels();
+    resetEntryFields();
+  });
+  reason.addEventListener('change', () => syncForReason());
+  source.addEventListener('change', () => syncForSource());
+  form.addEventListener('submit', () => {
+    workflowValue.value = workflow.value;
+  });
+  cancel.addEventListener('click', clearEdit);
+
+  document.querySelectorAll('[data-reject-entry]').forEach(radio => {
+    radio.addEventListener('change', () => {
+      if (!radio.checked) return;
+      const row = JSON.parse(radio.dataset.rejectEntry);
+      workflow.value = row.workflow;
+      workflowValue.value = row.workflow;
+      workflow.disabled = true;
+      updateWorkflowLabels();
+      shift.value = String(row.shift_id);
+      updateLots(row.production_id);
+      line.value = String(row.line_equipment_id);
+      updateReasons();
+      updateSources();
+      entryId.value = String(row.entry_id);
+      qty.value = String(row.qty);
+      reason.value = String(row.reject_reason_id);
+      syncForReason(String(row.source_equipment_id));
+      scopeId.value = String(row.reject_source_scope_id);
+      save.textContent = 'SAVE EDIT';
+      cancel.hidden = false;
+      qty.focus();
+    });
+  });
+
+  updateWorkflowLabels();
+  updateLots(lot.value);
+  const selectedReason = currentReason();
+  if (selectedReason) {
+    syncForReason(source.value);
+  } else {
+    const selected = currentSource();
+    if (selected) syncForSource();
+  }
+  workflowValue.value = workflow.value;
+})();
+</script>
+{% endblock %}

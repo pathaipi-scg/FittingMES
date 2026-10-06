@@ -36,6 +36,7 @@ class Element {
   replaceChildren(...items) { this.children = []; this.textContent = ''; if (items.length) this.append(...items); }
   setAttribute(key, value) { this.attrs[key] = String(value); }
   getAttribute(key) { return this.attrs[key]; }
+  setCustomValidity(value) { this.validationMessage = String(value); }
   addEventListener(name, callback) { this.handlers[name] = callback; }
   matches(selector) {
     if (/^[a-z]+$/.test(selector)) return this.tag === selector;
@@ -101,9 +102,11 @@ const document = {
 };
 const window = {location:{href:'http://local/depallet?production_date=2026-09-26',assign:url => navigations.push(String(url))},
   history:{replaceState:(_,__,url) => urlChanges.push(String(url))}};
-vm.runInNewContext(source, {document,window,URL,Intl,fetch:async (url,options) => {
+const context = {document,window,URL,Intl,fetch:async (url,options) => {
   requests.push({url,options}); return {ok:true,json:async () => ({rows:[],message:'Saved'})};
-}});
+}};
+vm.runInNewContext(fs.readFileSync('app/static/time-input.js','utf8'),context);
+vm.runInNewContext(source,context);
 
 (async () => {
   const family = nodes['depallet-family'], product = nodes['depallet-product'];

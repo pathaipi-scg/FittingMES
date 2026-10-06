@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 from contextlib import closing
 from uuid import uuid4
 from pathlib import Path
@@ -57,6 +58,10 @@ from app.logger_page import (cause_suggestion, logger_form_input,
                              logger_page_context, normalize_form_selection)
 from app.logger_master import read_logger_master_review
 from app.logger_summary import read_logger_time_summary, read_logger_press_guide
+from app.reject import (RejectValidationError, read_reject_entries,
+                        read_reject_page_data, save_reject_entry)
+from app.reject_page import reject_page_context
+from app.reject_summary import read_reject_cal
 
 app = FastAPI(title="FittingMES", version="0.1.0")
 app.mount('/static', StaticFiles(directory=Path(__file__).parent / 'static'), name='static')
@@ -194,6 +199,205 @@ async def save_logger_route(request: Request):
     except Exception:
         return JSONResponse({'error': 'Unable to save LOGGER entry. Please retry.'},
                             status_code=503)
+
+
+def reject_load_context(production_date, workflow="production", shift_id=None,
+                        line_equipment_id=None, production_id=None, saved=False,
+                        error=None, form=None):
+    with closing(get_connection()) as conn:
+        cursor = conn.cursor()
+        data = read_reject_page_data(cursor, production_date)
+        entries = read_reject_entries(cursor, production_date, workflow)
+    return reject_page_context(
+        data, production_date, workflow=workflow, shift_id=shift_id,
+        line_equipment_id=line_equipment_id, production_id=production_id,
+        entries=entries, saved=saved, error=error, form=form,
+    )
+
+
+@app.get("/reject", response_class=HTMLResponse)
+def reject_page(request: Request, production_date: date | None = None,
+                workflow: str = "production", shift_id: int | None = None,
+                line_equipment_id: int | None = None,
+                production_id: int | None = None, saved: bool = False):
+    production_date = production_date or date.today()
+    status = 200
+    try:
+        context = reject_load_context(
+            production_date, workflow, shift_id, line_equipment_id,
+            production_id, saved=saved,
+        )
+    except ValueError as exc:
+        context = reject_page_context(
+            {}, production_date, workflow=workflow, shift_id=shift_id,
+            line_equipment_id=line_equipment_id, production_id=production_id,
+            error=str(exc),
+        )
+        status = 400
+    except Exception:
+        logging.exception("Unable to load REJECT page for %s", production_date)
+        context = reject_page_context(
+            {}, production_date, workflow=workflow, shift_id=shift_id,
+            line_equipment_id=line_equipment_id, production_id=production_id,
+            error="Unable to load REJECT data. Please retry.",
+        )
+        status = 503
+    return templates.TemplateResponse(
+        request=request, name="reject.html", context=context,
+        status_code=status, headers={"Cache-Control": "no-store"},
+    )
+
+
+def save_reject_form(form):
+    with closing(get_connection()) as conn:
+        return save_reject_entry(conn, form)
+
+
+@app.post("/reject/save", response_class=HTMLResponse)
+async def save_reject_route(request: Request):
+    form = await request.form()
+    if any(len(form.getlist(key)) != 1 for key in form):
+        return JSONResponse(
+            {"error": "Duplicate REJECT fields are not allowed."},
+            status_code=400,
+        )
+    values = dict(form)
+    try:
+        await run_in_threadpool(save_reject_form, values)
+        production_date = date.fromisoformat(
+            str(values.get("production_date") or "")
+        )
+        query = urlencode({
+            "production_date": production_date.isoformat(),
+            "workflow": values.get("workflow", "production"),
+            "shift_id": values.get("shift_id", ""),
+            "line_equipment_id": values.get("line_equipment_id", ""),
+            "production_id": values.get("production_id", ""),
+            "saved": "true",
+        })
+        return RedirectResponse(f"/reject?{query}", status_code=303)
+    except RejectValidationError as exc:
+        try:
+            selected_date = date.fromisoformat(
+                str(values.get("production_date") or "")
+            )
+        except ValueError:
+            selected_date = date.today()
+        try:
+            context = await run_in_threadpool(
+                reject_load_context, selected_date,
+                values.get("workflow", "production"),
+                values.get("shift_id"), values.get("line_equipment_id"),
+                values.get("production_id"), False, str(exc), values,
+            )
+        except Exception:
+            logging.exception("Unable to rebuild REJECT form after validation")
+            context = reject_page_context(
+                {}, selected_date, workflow=values.get("workflow"),
+                error=str(exc), form=values,
+            )
+        return templates.TemplateResponse(
+            request=request, name="reject.html", context=context,
+            status_code=400, headers={"Cache-Control": "no-store"},
+        )
+    except Exception:
+        logging.exception("Unable to save REJECT entry")
+        try:
+            selected_date = date.fromisoformat(
+                str(values.get("production_date") or "")
+            )
+        except ValueError:
+            selected_date = date.today()
+        try:
+            context = await run_in_threadpool(
+                reject_load_context, selected_date,
+                values.get("workflow", "production"),
+                values.get("shift_id"), values.get("line_equipment_id"),
+                values.get("production_id"), False,
+                "Unable to save REJECT entry. No changes were saved; please retry.",
+                values,
+            )
+        except Exception:
+            logging.exception("Unable to reload REJECT page after save failure")
+            context = reject_page_context(
+                {}, selected_date, workflow=values.get("workflow"),
+                error="Unable to save REJECT entry. No changes were saved; please retry.",
+                form=values,
+            )
+        return templates.TemplateResponse(
+            request=request, name="reject.html", context=context,
+            status_code=503, headers={"Cache-Control": "no-store"},
+        )
+
+
+@app.get("/reject/cal", response_class=HTMLResponse)
+def reject_cal_page(request: Request, production_date: date | None = None,
+                    workflow: str = "production", shift_id: int | None = None,
+                    production_id: int | None = None):
+    production_date = production_date or date.today()
+    context = dict(
+        page_title="REJECT CAL", active_tab="reject-cal",
+        production_date=production_date, workflow=workflow,
+        workflow_label="Depallet" if workflow == "depallet" else "Production",
+        shift=None, lot=None, totals=[], total_qty=0, entry_count=0,
+        error=None,
+    )
+    status = 200
+    try:
+        with closing(get_connection()) as conn:
+            cursor = conn.cursor()
+            data = read_reject_page_data(cursor, production_date)
+            selected_shift = next(
+                (item for item in data["shifts"]
+                 if str(item["ShiftID"]) == str(shift_id)),
+                None,
+            )
+            if selected_shift is None and shift_id is None and data["shifts"]:
+                selected_shift = data["shifts"][0]
+            selected_lot = next(
+                (item for item in data["lots"]
+                 if str(item["ProductionID"]) == str(production_id)
+                 and selected_shift is not None
+                 and str(item["ShiftID"]) == str(selected_shift["ShiftID"])),
+                None,
+            )
+            if selected_lot is None and production_id is None and selected_shift:
+                selected_lot = next(
+                    (item for item in data["lots"]
+                     if str(item["ShiftID"]) == str(selected_shift["ShiftID"])),
+                    None,
+                )
+            if selected_shift is None:
+                raise RejectValidationError(
+                    "INVALID_CAL_CONTEXT", "Select an active Shift for REJECT CAL."
+                )
+            if selected_lot is None:
+                raise RejectValidationError(
+                    "INVALID_CAL_CONTEXT",
+                    "Select an active Product / Lot for this Production Date and Shift.",
+                )
+            summary = read_reject_cal(
+                cursor, production_date, workflow, selected_shift["ShiftID"],
+                selected_lot["ProductionID"],
+            )
+        context.update(
+            workflow=summary["workflow"],
+            workflow_label="Depallet" if summary["workflow"] == "depallet" else "Production",
+            shift=selected_shift, lot=selected_lot,
+            totals=summary["totals"], total_qty=summary["total_qty"],
+            entry_count=summary["entry_count"],
+        )
+    except ValueError as exc:
+        context["error"] = str(exc)
+        status = 400
+    except Exception:
+        logging.exception("Unable to load REJECT CAL for %s", production_date)
+        context["error"] = "Unable to load REJECT CAL. Please retry."
+        status = 503
+    return templates.TemplateResponse(
+        request=request, name="reject_summary.html", context=context,
+        status_code=status, headers={"Cache-Control": "no-store"},
+    )
 
 
 def read_plans(cursor, production_date):
