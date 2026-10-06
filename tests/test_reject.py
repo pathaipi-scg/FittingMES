@@ -507,11 +507,19 @@ class RejectPageRenderTests(unittest.TestCase):
             lots=[dict(ProductionID=17701, ProductionDate=production_date,
                        ShiftID=734, ShiftCode="2", ProductFamilyID=842,
                        ProductCode="06", LotNo="LOT-1",
-                       ProductFamily="NeuFit / NeuStile", ProductName="Tile 6")],
+                       ProductFamily="NeuFit / NeuStile", ProductName="Tile 6"),
+                  dict(ProductionID=17702, ProductionDate=production_date,
+                       ShiftID=733, ShiftCode="1", ProductFamilyID=843,
+                       ProductCode="07", LotNo="LOT-2",
+                       ProductFamily="Other family", ProductName="Tile 7")],
             reasons=[dict(ProductFamilyID=842, RejectReasonID=901,
                           ReasonCode="R319", ReasonNameTH="Configured line reason",
                           SortOrder=19, RejectSourceScopeID=95,
-                          SourceScopeCode="LINE", CatalogCode="R3")],
+                          SourceScopeCode="LINE", CatalogCode="R3"),
+                     dict(ProductFamilyID=843, RejectReasonID=902,
+                          ReasonCode="R401", ReasonNameTH="Other family reason",
+                          SortOrder=20, RejectSourceScopeID=96,
+                          SourceScopeCode="PRESS", CatalogCode="R3")],
         )
         page = reject_page_context(
             data, production_date, shift_id=734, line_equipment_id=620,
@@ -520,10 +528,24 @@ class RejectPageRenderTests(unittest.TestCase):
         page_body = templates.get_template("reject.html").render(
             request=None, **page
         )
-        self.assertIn("name=\"production_date\" value=\"2026-10-06\"", page_body)
+        self.assertIn(
+            'name="production_date" id="reject-production-date" value="2026-10-06"',
+            page_body,
+        )
         self.assertEqual(page_body.count('type="date"'), 1)
         self.assertIn("Reject Of", page_body)
         self.assertIn("REJECT CAL", page_body)
+        self.assertEqual(
+            [item["RejectReasonID"] for item in page["reject_client_data"]["reasons"]],
+            [901, 902],
+        )
+        self.assertEqual(
+            [item["ProductionID"] for item in page["reject_client_data"]["lots"]],
+            [17701, 17702],
+        )
+        self.assertIn('id="reject-cal" type="button"', page_body)
+        self.assertNotIn("<h1>REJECT</h1>", page_body)
+        self.assertNotIn("New Fitting REJECT quantities are separate", page_body)
 
         cal_body = templates.get_template("reject_summary.html").render(
             request=None, page_title="REJECT CAL", active_tab="reject-cal",
@@ -536,6 +558,10 @@ class RejectPageRenderTests(unittest.TestCase):
                          Qty=6, EntryCount=2)],
             total_qty=6, entry_count=2, error=None,
         )
+        self.assertIn("REJECT CAL · Production</h1>", cal_body)
+        self.assertIn("LOT-1 · Tile 6 · Shift 2 · 2026-10-06", cal_body)
+        self.assertIn('id="reject-cal-back" type="button"', cal_body)
+        self.assertNotIn("<h2>LOT-1", cal_body)
         self.assertIn("ProductionRejectEntry", cal_body)
         self.assertIn("Legacy Wet Reject / Depallet reject totals are not included.", cal_body)
 

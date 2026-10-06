@@ -1,8 +1,9 @@
 {% extends 'api_base.html' %}
 {% block content %}
 <style>
-.reject-cal-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.reject-cal-toolbar h1{margin-right:auto}
+.reject-cal-header{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.reject-cal-header h1{margin:0}
+.reject-cal-context{white-space:nowrap}
 .reject-cal-table{border-collapse:collapse;width:min(760px,100%);font-variant-numeric:tabular-nums}
 .reject-cal-table th,.reject-cal-table td{padding:3px 5px;border:1px solid #c7d2df;text-align:left}
 .reject-cal-table th{background:#eaf0f6}
@@ -11,14 +12,14 @@
 .reject-cal-note{margin:4px 0;color:#596a80}
 .reject-cal-error{background:#fff0ef;color:#9d2525;padding:4px;margin-bottom:5px}
 </style>
-<div class="reject-cal-toolbar"><h1>REJECT CAL · {{ workflow_label }}</h1>
+<div class="reject-cal-header"><h1>REJECT CAL · {{ workflow_label }}</h1>
 {% if shift and lot %}
-<a class="button" href="/reject?production_date={{ production_date }}&amp;workflow={{ workflow }}&amp;shift_id={{ shift.ShiftID }}&amp;production_id={{ lot.ProductionID }}">BACK TO REJECT</a>
-{% else %}<a class="button" href="/reject?production_date={{ production_date }}">BACK TO REJECT</a>{% endif %}
+<span class="reject-cal-context">{{ lot.LotNo }} · {{ lot.ProductName or lot.ProductFamily }} · {{ shift.ShiftName }} · {{ production_date }}</span>
+<button class="button reject-cal-back" id="reject-cal-back" type="button" data-return-url="/reject?production_date={{ production_date }}&amp;workflow={{ workflow }}&amp;shift_id={{ shift.ShiftID }}&amp;production_id={{ lot.ProductionID }}">BACK TO REJECT</button>
+{% else %}<button class="button reject-cal-back" id="reject-cal-back" type="button" data-return-url="/reject?production_date={{ production_date }}">BACK TO REJECT</button>{% endif %}
 </div>
 {% if error %}<div class="reject-cal-error" role="alert">{{ error }}</div>{% else %}
 <section class="panel" aria-label="New Fitting REJECT quantity summary">
-<h2>{{ lot.LotNo }} · {{ lot.ProductName or lot.ProductFamily }} · {{ shift.ShiftName }} · {{ production_date }}</h2>
 <p class="reject-cal-note">This summary reads only the new {{ 'DepalletRejectEntry' if workflow == 'depallet' else 'ProductionRejectEntry' }} table. Legacy Wet Reject / Depallet reject totals are not included.</p>
 {% if totals %}
 <div class="table-scroll"><table class="reject-cal-table">
@@ -29,4 +30,10 @@
 {% else %}<p class="muted">No new REJECT entries match this date, Shift, and Product / Lot.</p>{% endif %}
 </section>
 {% endif %}
+<script>
+const rejectCalBack = document.getElementById('reject-cal-back');
+rejectCalBack.addEventListener('click', () => {
+  window.location.href = rejectCalBack.dataset.returnUrl;
+});
+</script>
 {% endblock %}

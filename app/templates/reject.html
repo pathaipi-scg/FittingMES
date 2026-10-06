@@ -1,8 +1,6 @@
 {% extends 'api_base.html' %}
 {% block content %}
 <style>
-.reject-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.reject-toolbar h1{margin-right:4px}
 .reject-context,.reject-entry-form{display:flex;align-items:end;gap:6px;flex-wrap:wrap}
 .reject-context label,.reject-entry-form label{display:grid;gap:2px;font-weight:600}
 .reject-context select{min-width:135px;max-width:min(360px,90vw)}
@@ -19,23 +17,17 @@
 .reject-table th{background:#eaf0f6}
 .reject-table .select-cell{text-align:center;width:48px}
 .reject-table .qty-cell{text-align:right}
-.reject-cal-link{margin-left:auto}
 @media(max-width:640px){
  .reject-context label,.reject-context label:last-child,.reject-entry-form label{width:100%}
  .reject-context select,.reject-context label:last-child select,.reject-entry-form label:nth-child(2) select,.reject-entry-form label:nth-child(3) select{width:100%;min-width:0;max-width:100%}
- .reject-cal-link{margin-left:0}
 }
 </style>
-<div class="reject-toolbar"><h1>REJECT</h1>
-{% if cal_url %}<a class="button reject-cal-link" href="{{ cal_url }}">REJECT CAL</a>{% endif %}
-</div>
 {% if error %}<div class="reject-error" role="alert">{{ error }}</div>{% endif %}
 {% if saved %}<div class="reject-success" role="status">REJECT entry saved.</div>{% endif %}
-<p class="reject-note">New Fitting REJECT quantities are separate from legacy Wet Reject and Depallet totals.</p>
 
 <section class="panel" aria-label="REJECT entry">
 <form id="reject-form" class="reject-context" method="post" action="/reject/save">
-<input type="hidden" name="production_date" value="{{ production_date }}">
+<input type="hidden" name="production_date" id="reject-production-date" value="{{ production_date }}">
 <input type="hidden" name="workflow" id="reject-workflow-value" value="{{ workflow }}">
 <input type="hidden" name="entry_id" id="reject-entry-id" value="{{ entry_id }}">
 <input type="hidden" name="reject_source_scope_id" id="reject-source-scope-id" value="{{ selected_scope_id }}">
@@ -74,6 +66,7 @@
 {% endfor %}
 </select></label>
 <div class="reject-actions"><button class="primary" id="reject-save" type="submit">{% if entry_id %}SAVE EDIT{% else %}SAVE{% endif %}</button><button id="reject-cancel" type="button" {% if not entry_id %}hidden{% endif %}>CANCEL</button></div>
+{% if cal_url %}<button class="button" id="reject-cal" type="button">REJECT CAL</button>{% endif %}
 </div>
 </form>
 </section>
@@ -124,7 +117,11 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
   const qty = document.getElementById('reject-qty');
   const save = document.getElementById('reject-save');
   const cancel = document.getElementById('reject-cancel');
+  const cal = document.getElementById('reject-cal');
+  const productionDate = document.getElementById('reject-production-date');
   const originalWorkflow = workflow.value;
+  const rejectContextStorageKey = 'fittingmes.reject.context.v1';
+  let contextInitialized = false;
 
   const option = (value, label, data = {}) => {
     const item = new Option(label, String(value));
@@ -141,6 +138,61 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
     item => String(item.RejectReasonID) === reason.value);
   const currentSource = () => page.sources.find(
     item => String(item.EquipmentID) === source.value);
+  const hasOption = (select, value) =>
+    select.options.some(item => item.value === String(value));
+
+  function readRememberedContext() {
+    let serialized;
+    try {
+      serialized = sessionStorage.getItem(rejectContextStorageKey);
+    } catch (error) {
+      console.warn('Unable to read temporary REJECT context from sessionStorage.', error);
+      return null;
+    }
+    if (!serialized) return null;
+    try {
+      return JSON.parse(serialized);
+    } catch (error) {
+      console.warn('Ignoring invalid temporary REJECT context in sessionStorage.', error);
+      return null;
+    }
+  }
+
+  function rememberContext() {
+    if (!contextInitialized || entryId.value) return;
+    const context = {
+      productionDate: productionDate.value,
+      shiftId: shift.value,
+      workflow: workflow.value,
+      lineId: line.value,
+      productionId: lot.value,
+    };
+    try {
+      sessionStorage.setItem(rejectContextStorageKey, JSON.stringify(context));
+    } catch (error) {
+      console.warn('Unable to save temporary REJECT context to sessionStorage.', error);
+    }
+  }
+
+  function restoreContext(context = readRememberedContext()) {
+    if (entryId.value) return false;
+    if (!context || context.productionDate !== productionDate.value) return false;
+
+    if (hasOption(workflow, context.workflow)) {
+      workflow.value = context.workflow;
+      workflowValue.value = workflow.value;
+    }
+
+    if (hasOption(shift, context.shiftId)) shift.value = context.shiftId;
+    if (hasOption(line, context.lineId)) line.value = context.lineId;
+    updateWorkflowLabels();
+    updateLots(context.productionId);
+    updateReasons(null, reason.value);
+    updateSources(null, source.value);
+    return true;
+  }
+
+  const startupContext = readRememberedContext();
 
   function updateWorkflowLabels() {
     for (const item of line.options) {
@@ -228,10 +280,11 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
     save.textContent = 'SAVE';
     cancel.hidden = true;
     qty.value = '';
-    updateWorkflowLabels();
-    updateLots();
-    updateReasons();
-    updateSources();
+    if (!restoreContext()) {
+      updateWorkflowLabels();
+      updateLots();
+    }
+    resetEntryFields();
     scopeId.value = '';
     for (const radio of document.querySelectorAll('[data-reject-entry]')) {
       radio.checked = false;
@@ -241,26 +294,42 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
   shift.addEventListener('change', () => {
     updateLots();
     resetEntryFields();
+    rememberContext();
   });
   line.addEventListener('change', () => {
     resetEntryFields();
+    rememberContext();
   });
   lot.addEventListener('change', () => {
     updateReasons();
     updateSources();
     scopeId.value = '';
+    rememberContext();
   });
   workflow.addEventListener('change', () => {
     workflowValue.value = workflow.value;
     updateWorkflowLabels();
     resetEntryFields();
+    rememberContext();
   });
   reason.addEventListener('change', () => syncForReason());
   source.addEventListener('change', () => syncForSource());
   form.addEventListener('submit', () => {
     workflowValue.value = workflow.value;
+    rememberContext();
   });
   cancel.addEventListener('click', clearEdit);
+  if (cal) {
+    cal.addEventListener('click', () => {
+      const params = new URLSearchParams({
+        production_date: productionDate.value,
+        workflow: workflow.value,
+        shift_id: shift.value,
+        production_id: lot.value,
+      });
+      window.location.href = `/reject/cal?${params}`;
+    });
+  }
 
   document.querySelectorAll('[data-reject-entry]').forEach(radio => {
     radio.addEventListener('change', () => {
@@ -287,7 +356,7 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
   });
 
   updateWorkflowLabels();
-  updateLots(lot.value);
+  if (!restoreContext(startupContext)) updateLots(lot.value);
   const selectedReason = currentReason();
   if (selectedReason) {
     syncForReason(source.value);
@@ -296,6 +365,8 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
     if (selected) syncForSource();
   }
   workflowValue.value = workflow.value;
+  contextInitialized = true;
+  rememberContext();
 })();
 </script>
 {% endblock %}

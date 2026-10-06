@@ -61,7 +61,12 @@ assert.deepEqual(
 assert.ok(html.indexOf('id="reject-qty"') < html.indexOf('id="reject-source"'));
 assert.ok(html.indexOf('id="reject-source"') < html.indexOf('id="reject-reason"'));
 assert.ok(html.indexOf('id="reject-reason"') < html.indexOf('id="reject-save"'));
+assert.ok(html.indexOf('id="reject-save"') < html.indexOf('id="reject-cal"'));
+assert.match(html, /id="reject-cal" type="button">REJECT CAL<\/button>/);
+assert.doesNotMatch(html, /<h1>REJECT<\/h1>|New Fitting REJECT quantities are separate/);
+assert.doesNotMatch(html, /<a[^>]*reject-cal-link/);
 assert.match(html, /data-reject-entry=/);
+assert.match(source, /window\.location\.href = `\/reject\/cal\?/);
 assert.match(source, /save\.textContent = 'SAVE EDIT'/);
 assert.match(source, /cancel\.addEventListener\('click', clearEdit\)/);
 assert.match(source, /workflow\.disabled = true/);
@@ -131,6 +136,20 @@ const pageData = {
     LotNo: 'LOT-1',
     ProductName: 'Test product',
     ProductFamily: 'Test family',
+  }, {
+    ProductionID: 1002,
+    ShiftCode: '2',
+    ProductFamilyID: 842,
+    LotNo: 'LOT-2',
+    ProductName: 'Second product',
+    ProductFamily: 'Test family',
+  }, {
+    ProductionID: 1003,
+    ShiftCode: '2',
+    ProductFamilyID: 843,
+    LotNo: 'LOT-3',
+    ProductName: 'Third product',
+    ProductFamily: 'Other family',
   }],
   reasons: [
     {
@@ -182,6 +201,7 @@ const pageData = {
 function makeElement(value = '') {
   return {
     value,
+    dataset: {},
     disabled: false,
     hidden: false,
     textContent: '',
@@ -193,7 +213,8 @@ function makeElement(value = '') {
   };
 }
 
-function runPageScript() {
+function runPageScript({storage = createSessionStorage(), date = '2026-10-06',
+  entryId = ''} = {}) {
   const elements = {
     'reject-form': makeElement(),
     'reject-workflow': new FakeSelect([
@@ -201,9 +222,14 @@ function runPageScript() {
       new FakeOption('Depallet', 'depallet'),
     ], 'production'),
     'reject-workflow-value': makeElement(),
+    'reject-production-date': makeElement(date),
+    'reject-cal': makeElement(),
     'reject-shift': new FakeSelect([
       Object.assign(new FakeOption('Shift 1', '1'), {
         dataset: {shiftCode: '1'},
+      }),
+      Object.assign(new FakeOption('Shift 2', '2'), {
+        dataset: {shiftCode: '2'},
       }),
     ], '1'),
     'reject-line': new FakeSelect([
@@ -230,7 +256,7 @@ function runPageScript() {
         new FakeOption(`${item.ReasonCode} · ${item.ReasonNameTH}`, item.RejectReasonID)),
     ]),
     'reject-source-scope-id': makeElement(),
-    'reject-entry-id': makeElement(),
+    'reject-entry-id': makeElement(entryId),
     'reject-qty': makeElement(),
     'reject-save': makeElement(),
     'reject-cancel': makeElement(),
@@ -238,6 +264,9 @@ function runPageScript() {
   const context = {
     page: pageData,
     Option: FakeOption,
+    URLSearchParams,
+    sessionStorage: storage,
+    window: {location: {href: ''}},
     document: {
       getElementById: id => elements[id],
       querySelectorAll: () => [],
@@ -247,8 +276,112 @@ function runPageScript() {
     clientTemplate.replace('{{ reject_client_data|tojson }}', JSON.stringify(pageData)),
     context,
   );
+  elements.window = context.window;
+  elements.storage = storage;
   return elements;
 }
+
+function createSessionStorage(initial = {}) {
+  const values = new Map(Object.entries(initial));
+  const operations = [];
+  return {
+    operations,
+    getItem(key) {
+      operations.push({type: 'get', key});
+      return values.has(key) ? values.get(key) : null;
+    },
+    setItem(key, value) {
+      operations.push({type: 'set', key, value: String(value)});
+      values.set(key, String(value));
+    },
+  };
+}
+
+const contextKey = 'fittingmes.reject.context.v1';
+const persistentStorage = createSessionStorage();
+const savingContextPage = runPageScript({storage: persistentStorage});
+savingContextPage['reject-workflow'].value = 'depallet';
+savingContextPage['reject-workflow'].dispatch('change');
+savingContextPage['reject-shift'].value = '2';
+savingContextPage['reject-shift'].dispatch('change');
+savingContextPage['reject-line'].value = '621';
+savingContextPage['reject-line'].dispatch('change');
+savingContextPage['reject-production'].value = '1003';
+savingContextPage['reject-production'].dispatch('change');
+savingContextPage['reject-qty'].value = '17';
+savingContextPage['reject-source'].value = '715';
+savingContextPage['reject-reason'].value = '9201';
+const savedContext = JSON.parse(persistentStorage.getItem(contextKey));
+assert.deepEqual(savedContext, {
+  productionDate: '2026-10-06',
+  shiftId: '2',
+  workflow: 'depallet',
+  lineId: '621',
+  productionId: '1003',
+});
+
+const storageOperations = persistentStorage.operations;
+storageOperations.length = 0;
+const restoredContextPage = runPageScript({storage: persistentStorage});
+assert.equal(storageOperations[0].type, 'get');
+assert.ok(storageOperations.every(operation =>
+  operation.type !== 'set' ||
+  JSON.parse(operation.value).lineId === savedContext.lineId));
+assert.equal(restoredContextPage['reject-shift'].value, '2');
+assert.equal(restoredContextPage['reject-workflow'].value, 'depallet');
+assert.equal(restoredContextPage['reject-line'].value, '621');
+assert.equal(restoredContextPage['reject-production'].value, '1003');
+assert.equal(restoredContextPage['reject-qty'].value, '');
+assert.equal(restoredContextPage['reject-source'].value, '');
+assert.equal(restoredContextPage['reject-reason'].value, '');
+
+const staleDatePage = runPageScript({
+  storage: persistentStorage,
+  date: '2026-10-07',
+});
+assert.equal(staleDatePage['reject-shift'].value, '1');
+assert.equal(staleDatePage['reject-workflow'].value, 'production');
+assert.equal(staleDatePage['reject-line'].value, '620');
+assert.equal(staleDatePage['reject-production'].value, '1001');
+
+const invalidStorage = createSessionStorage({
+  [contextKey]: JSON.stringify({
+    productionDate: '2026-10-06',
+    shiftId: 'missing-shift',
+    workflow: 'missing-workflow',
+    lineId: 'missing-line',
+    productionId: 'missing-lot',
+    qty: '17',
+    sourceId: '715',
+    reasonId: '9201',
+  }),
+});
+const invalidOptionsPage = runPageScript({storage: invalidStorage});
+assert.equal(invalidOptionsPage['reject-shift'].value, '1');
+assert.equal(invalidOptionsPage['reject-workflow'].value, 'production');
+assert.equal(invalidOptionsPage['reject-line'].value, '620');
+assert.equal(invalidOptionsPage['reject-production'].value, '1001');
+assert.equal(invalidOptionsPage['reject-qty'].value, '');
+assert.equal(invalidOptionsPage['reject-source'].value, '');
+assert.equal(invalidOptionsPage['reject-reason'].value, '');
+
+const editingStorage = createSessionStorage({
+  [contextKey]: JSON.stringify(savedContext),
+});
+const editPage = runPageScript({storage: editingStorage, entryId: '44'});
+assert.equal(editPage['reject-shift'].value, '1');
+assert.equal(editPage['reject-workflow'].value, 'production');
+assert.equal(editPage['reject-line'].value, '620');
+assert.equal(editPage['reject-production'].value, '1001');
+editPage['reject-shift'].value = '2';
+editPage['reject-shift'].dispatch('change');
+assert.deepEqual(JSON.parse(editingStorage.getItem(contextKey)), savedContext);
+editPage['reject-cancel'].listeners.click();
+assert.equal(editPage['reject-shift'].value, '2');
+assert.equal(editPage['reject-workflow'].value, 'depallet');
+assert.equal(editPage['reject-line'].value, '621');
+assert.equal(editPage['reject-production'].value, '1003');
+assert.deepEqual(JSON.parse(editingStorage.getItem(contextKey)), savedContext);
 
 const multipleSourcePage = runPageScript();
 multipleSourcePage['reject-reason'].value = '9201';
@@ -281,6 +414,16 @@ assert.deepEqual(
     .filter(item => item.value)
     .map(item => item.value),
   ['9201'],
+);
+
+const calPage = runPageScript();
+calPage['reject-workflow'].value = 'depallet';
+calPage['reject-shift'].value = '1';
+calPage['reject-production'].value = '1001';
+calPage['reject-cal'].listeners.click();
+assert.equal(
+  calPage.window.location.href,
+  '/reject/cal?production_date=2026-10-06&workflow=depallet&shift_id=1&production_id=1001',
 );
 
 singleSourcePage['reject-reason'].value = '9201';
