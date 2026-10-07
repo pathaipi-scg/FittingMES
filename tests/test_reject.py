@@ -1,3 +1,4 @@
+import json
 import unittest
 from datetime import date
 from unittest.mock import MagicMock, patch
@@ -10,14 +11,14 @@ from app.reject import (
 )
 from app.reject_page import reject_page_context
 from app.reject_summary import read_reject_cal
-from app.main import app, reject_cal_page, templates
+from app.main import app, reject_cal_page, reject_page, templates
 
 
 class FakeCursor:
     def __init__(self, scope="LINE", reason_family=842, reason_exists=True,
                  source_valid=True, existing_ids=None, lot_family=842,
                  active_shifts=None, lot_valid=True, lot_date=None,
-                 lot_shift_code="2"):
+                 lot_shift_code="2", depallet_shift_code="2"):
         self.scope = scope
         self.reason_family = reason_family
         self.reason_exists = reason_exists
@@ -28,6 +29,7 @@ class FakeCursor:
         self.lot_valid = lot_valid
         self.lot_date = lot_date or date(2026, 10, 6)
         self.lot_shift_code = lot_shift_code
+        self.depallet_shift_code = depallet_shift_code
         self.calls = []
         self.description = []
         self.result = []
@@ -59,6 +61,17 @@ class FakeCursor:
                 ("ProductionID", "ProductFamilyID", "LotShiftCode"),
                 [(17701, self.lot_family, self.lot_shift_code)]
                 if lot_matches else [],
+            )
+        elif "FROM dbo.Depallet AS run WITH" in query:
+            run_matches = (
+                params[:3] == (16001, 17701, self.lot_date)
+                and params[3] == self.depallet_shift_code
+                and self.lot_valid
+            )
+            self._set(
+                ("ProductionID", "ProductFamilyID", "LotShiftCode"),
+                [(17701, self.lot_family, self.lot_shift_code)]
+                if run_matches else [],
             )
         elif "FROM dbo.RejectReason AS reason" in query:
             family_id = params[-1]
@@ -151,7 +164,10 @@ class RejectEntryTests(unittest.TestCase):
                 cursor = FakeCursor()
                 connection = FakeConnection(cursor)
                 entry_id = save_reject_entry(
-                    connection, valid_form(workflow=workflow)
+                    connection, valid_form(
+                        workflow=workflow,
+                        depallet_id="16001" if workflow == "depallet" else "",
+                    )
                 )
                 insert = next(
                     query for query, _ in cursor.calls
@@ -159,9 +175,43 @@ class RejectEntryTests(unittest.TestCase):
                 )
                 self.assertIn(f"dbo.{table}", insert)
                 self.assertNotIn("RejectOf", insert)
-                self.assertNotIn("DepalletID", insert)
+                if workflow == "depallet":
+                    self.assertIn("DepalletID", insert)
+                else:
+                    self.assertNotIn("DepalletID", insert)
                 self.assertEqual(entry_id, 16003)
                 self.assertEqual(connection.commits, 1)
+
+    def test_depallet_source_may_be_unknown_but_production_source_is_required(self):
+        cursor = FakeCursor()
+        save_reject_entry(
+            FakeConnection(cursor),
+            valid_form(workflow="depallet", depallet_id="16001",
+                       source_equipment_id=""),
+        )
+        insert_params = next(
+            params for query, params in cursor.calls
+            if query.lstrip().startswith("INSERT INTO dbo.DepalletRejectEntry")
+        )
+        self.assertIsNone(insert_params[4])
+
+        known_source_cursor = FakeCursor(scope="PRESS")
+        save_reject_entry(
+            FakeConnection(known_source_cursor),
+            valid_form(workflow="depallet", depallet_id="16001",
+                       source_equipment_id="711"),
+        )
+        known_source_params = next(
+            params for query, params in known_source_cursor.calls
+            if query.lstrip().startswith("INSERT INTO dbo.DepalletRejectEntry")
+        )
+        self.assertEqual(known_source_params[4], 711)
+
+        with self.assertRaisesRegex(RejectValidationError, "active Source"):
+            save_reject_entry(
+                FakeConnection(FakeCursor()),
+                valid_form(source_equipment_id=""),
+            )
 
     def test_production_shift_does_not_have_to_match_lot_shift(self):
         cursor = FakeCursor()
@@ -226,18 +276,19 @@ class RejectEntryTests(unittest.TestCase):
             for query, _ in cursor.calls
         ))
 
-    def test_depallet_lot_shift_matching_is_unchanged(self):
-        cursor = FakeCursor(lot_shift_code="1")
+    def test_depallet_run_shift_matching_is_required(self):
+        cursor = FakeCursor(depallet_shift_code="1")
         with self.assertRaisesRegex(RejectValidationError, "active Product / Lot"):
             save_reject_entry(
                 FakeConnection(cursor),
-                valid_form(workflow="depallet", shift_id="734"),
+                valid_form(workflow="depallet", depallet_id="16001", shift_id="734"),
             )
         lot_query = next(
             query for query, _ in cursor.calls
-            if "FROM dbo.ProductionLot AS lot WITH" in query
+            if "FROM dbo.Depallet AS run WITH" in query
         )
-        self.assertIn("LTRIM(RTRIM(lot.Shift))=?", lot_query)
+        self.assertIn("run.DepalletDate=?", lot_query)
+        self.assertIn("LTRIM(RTRIM(run.Shift))=?", lot_query)
 
     def test_family_and_reason_applicability_use_product_family_ids(self):
         cursor = FakeCursor()
@@ -367,7 +418,10 @@ class RejectEntryTests(unittest.TestCase):
                 with self.assertRaisesRegex(RejectValidationError, "does not belong"):
                     save_reject_entry(
                         FakeConnection(cursor),
-                        valid_form(workflow=workflow, entry_id="44"),
+                        valid_form(
+                            workflow=workflow, entry_id="44",
+                            depallet_id="16001" if workflow == "depallet" else "",
+                        ),
                     )
                 self.assertFalse(any(
                     query.lstrip().startswith("UPDATE dbo.")
@@ -403,6 +457,8 @@ class RejectEntryTests(unittest.TestCase):
                         (17701, date(2026, 10, 6), "2", 734, "2",
                          842, "06", "LOT-1", "NeuFit / NeuStile", "Tile 6"),
                     ])
+                elif "FROM dbo.Depallet AS d" in query:
+                    self.set((), [])
                 elif "FROM dbo.RejectReason AS reason" in query:
                     self.set(("ProductFamilyID", "RejectReasonID", "ReasonCode",
                               "ReasonNameTH", "SortOrder", "RejectSourceScopeID",
@@ -556,6 +612,43 @@ class RejectEntryTests(unittest.TestCase):
         self.assertEqual(depallet["lots"], [])
         self.assertEqual(depallet["selected_production_id"], "")
 
+    def test_depallet_selector_preserves_run_identity_for_shared_production(self):
+        production_date = date(2026, 10, 6)
+        run_template = dict(
+            ProductionID=13, DepalletDate=production_date, ShiftID=734,
+            ShiftCode="2", Shift="2", ProductFamilyID=842,
+            LotNo="LOT-13", ProductFamily="Family", ProductName="Product",
+        )
+        base = dict(
+            shifts=[dict(ShiftID=734, ShiftCode="2", ShiftName="Shift 2")],
+            lines=[], presses=[], lots=[], reasons=[],
+            depallet_runs=[
+                dict(run_template, DepalletID=7, RunSequence=1),
+                dict(run_template, DepalletID=8, RunSequence=2),
+            ],
+        )
+        context = reject_page_context(
+            base, production_date, workflow="depallet", shift_id=734,
+            depallet_id=8,
+        )
+        self.assertEqual(
+            [item["DepalletID"] for item in context["lots"]], [7, 8]
+        )
+        self.assertEqual(context["selected_depallet_id"], "8")
+        self.assertEqual(context["selected_production_id"], "13")
+        self.assertEqual(context["cal_url"].split("depallet_id=")[-1], "8")
+
+        invalid_shift = reject_page_context(
+            dict(base, shifts=[
+                dict(ShiftID=733, ShiftCode="1", ShiftName="Shift 1"),
+                base["shifts"][0],
+            ]),
+            production_date, workflow="depallet", shift_id=733,
+            depallet_id=8,
+        )
+        self.assertEqual(invalid_shift["selected_depallet_id"], "")
+        self.assertEqual(invalid_shift["selected_production_id"], "")
+
     def test_no_numeric_id_or_reason_range_business_rules(self):
         from pathlib import Path
 
@@ -625,7 +718,7 @@ class RejectCalTests(unittest.TestCase):
                     cal.call_args.args[3:], (shift_id, 13)
                 )
 
-    def test_depallet_cal_route_still_requires_lot_shift_match(self):
+    def test_depallet_cal_route_requires_selected_run_shift_match(self):
         production_date = date(2026, 10, 1)
         data = dict(
             shifts=[
@@ -637,6 +730,11 @@ class RejectCalTests(unittest.TestCase):
                      ShiftID=11, ShiftCode="1", ProductFamilyID=84,
                      ProductCode="06", LotNo="I11691001",
                      ProductFamily="Angle Ridge", ProductName="Angle Ridge"),
+            ],
+            depallet_runs=[
+                dict(DepalletID=71, ProductionID=13,
+                     ShiftID=11, ShiftCode="1", Shift="1",
+                     DepalletDate=production_date, RunSequence=1),
             ],
         )
         with patch("app.main.get_connection", return_value=MagicMock()), \
@@ -737,9 +835,11 @@ class RejectCalTests(unittest.TestCase):
                 self.description = []
                 self.result = []
                 self.query = ""
+                self.params = None
 
             def execute(self, query, *params):
                 self.query = query
+                self.params = params
                 self.description = [
                     ("RejectReasonID",), ("ReasonCode",),
                     ("ReasonNameTH",), ("SortOrder",),
@@ -753,15 +853,133 @@ class RejectCalTests(unittest.TestCase):
 
         cursor = CalCursor()
         result = read_reject_cal(
-            cursor, date(2026, 10, 6), "depallet", 734, 17701
+        cursor, date(2026, 10, 6), "depallet", 734, 17701, 16001
         )
         self.assertIn("FROM dbo.DepalletRejectEntry AS entry", cursor.query)
+        self.assertIn("entry.DepalletID=?", cursor.query)
         self.assertNotIn("ProductionRejectEntry", cursor.query)
+        self.assertEqual(
+            cursor.params, (date(2026, 10, 6), 734, 17701, 16001)
+        )
         self.assertEqual(result["total_qty"], 6)
         self.assertEqual(result["entry_count"], 2)
 
 
 class RejectPageRenderTests(unittest.TestCase):
+    @staticmethod
+    def request(path="/reject", query_string=b"production_date=2026-10-01"):
+        return Request({
+            "type": "http", "asgi": {"version": "3.0"},
+            "http_version": "1.1", "method": "GET", "scheme": "http",
+            "path": path, "raw_path": path.encode(),
+            "query_string": query_string, "headers": [],
+            "server": ("localhost", 80), "client": ("127.0.0.1", 12345),
+            "root_path": "",
+        })
+
+    def test_reject_get_serializes_depallet_dates_and_keeps_both_workflows(self):
+        production_date = date(2026, 10, 1)
+        data = dict(
+            shifts=[dict(ShiftID=11, ShiftCode="1", ShiftName="Shift 1")],
+            lines=[dict(EquipmentID=620, EquipmentCode="LINE1",
+                        EquipmentName="Line 1", DisplayOrder=1)],
+            presses=[],
+            lots=[dict(ProductionID=13, ProductionDate=production_date,
+                       ShiftID=11, ShiftCode="1", ProductFamilyID=84,
+                       ProductCode="06", LotNo="I11691001",
+                       ProductFamily="Prestige", ProductName="Angle Ridge")],
+            depallet_runs=[dict(
+                DepalletID=71, ProductionID=13, DepalletDate=production_date,
+                ShiftID=11, ShiftCode="1", Shift="1", RunSequence=1,
+                ProductFamilyID=84, LotNo="I11691001",
+                ProductFamily="Prestige", ProductName="Angle Ridge",
+            ), dict(
+                DepalletID=72, ProductionID=13, DepalletDate=production_date,
+                ShiftID=11, ShiftCode="1", Shift="1", RunSequence=2,
+                ProductFamilyID=84, LotNo="I11691001",
+                ProductFamily="Prestige", ProductName="Angle Ridge",
+            )],
+            reasons=[dict(
+                ProductFamilyID=84, RejectReasonID=901, ReasonCode="R201",
+                ReasonNameTH="Press reason", SortOrder=1,
+                RejectSourceScopeID=95, SourceScopeCode="PRESS",
+                CatalogCode="R2",
+            )],
+        )
+
+        def build_context(selected_date, workflow="production", shift_id=None,
+                          line_equipment_id=None, production_id=None,
+                          depallet_id=None, saved=False):
+            return reject_page_context(
+                data, selected_date, workflow=workflow, shift_id=shift_id,
+                line_equipment_id=line_equipment_id,
+                production_id=production_id, depallet_id=depallet_id,
+                entries=[], saved=saved,
+            )
+
+        with patch("app.main.reject_load_context", side_effect=build_context):
+            production_response = reject_page(
+                self.request(), production_date=production_date,
+            )
+            depallet_response = reject_page(
+                self.request(query_string=b"production_date=2026-10-01&workflow=depallet"),
+                production_date=production_date, workflow="depallet",
+            )
+
+        self.assertEqual(production_response.status_code, 200)
+        production_html = production_response.body.decode()
+        production_client_data = json.loads(
+            production_html.split("const page = ", 1)[1].split(";", 1)[0]
+        )
+        self.assertEqual(production_client_data["lots"][0]["ProductionID"], 13)
+        self.assertEqual(production_client_data["reasons"][0]["ReasonCode"], "R201")
+        production_source_markup = production_html.split(
+            'id="reject-source"', 1
+        )[1].split(">", 1)[0]
+        self.assertIn("required", production_source_markup)
+        def assert_json_safe(value):
+            if isinstance(value, dict):
+                return all(
+                    isinstance(key, str) and assert_json_safe(child)
+                    for key, child in value.items()
+                )
+            if isinstance(value, list):
+                return all(assert_json_safe(child) for child in value)
+            return value is None or isinstance(value, (bool, int, float, str))
+        self.assertTrue(assert_json_safe(production_client_data))
+        self.assertTrue(assert_json_safe(production_client_data))
+
+        self.assertEqual(depallet_response.status_code, 200)
+        depallet_html = depallet_response.body.decode()
+        depallet_client_data = json.loads(
+            depallet_html.split("const page = ", 1)[1].split(";", 1)[0]
+        )
+        self.assertTrue(assert_json_safe(depallet_client_data))
+        self.assertEqual(
+            depallet_client_data["depalletRuns"][0]["DepalletDate"],
+            "2026-10-01",
+        )
+        self.assertEqual(
+            [item["DepalletID"] for item in depallet_client_data["depalletRuns"]],
+            [71, 72],
+        )
+        lot_select = depallet_html.split('id="reject-production"', 1)[1].split(
+            "</select>", 1
+        )[0]
+        self.assertIn('value="71"', lot_select)
+        self.assertIn('value="72"', lot_select)
+        self.assertIn("RUN 71", lot_select)
+        self.assertIn("RUN 72", lot_select)
+        self.assertNotIn("RUN 1", lot_select)
+        self.assertNotIn('id="reject-depallet-run"', depallet_html)
+        self.assertIn('name="production_id" id="reject-production-id"', depallet_html)
+        self.assertIn('name="depallet_id" id="reject-depallet-id"', depallet_html)
+        depallet_source_markup = depallet_html.split(
+            'id="reject-source"', 1
+        )[1].split(">", 1)[0]
+        self.assertNotIn("required", depallet_source_markup)
+        self.assertIn(">Select Source</option>", depallet_html)
+
     def test_reject_and_cal_templates_render_without_inner_production_date(self):
         production_date = date(2026, 10, 6)
         data = dict(
@@ -840,6 +1058,20 @@ class RejectPageRenderTests(unittest.TestCase):
         self.assertNotIn("<h2>LOT-1", cal_body)
         self.assertIn("ProductionRejectEntry", cal_body)
         self.assertIn("Legacy Wet Reject / Depallet reject totals are not included.", cal_body)
+
+        depallet_cal_body = templates.get_template("reject_summary.html").render(
+            request=None, page_title="REJECT CAL", active_tab="reject-cal",
+            production_date=production_date, workflow="depallet",
+            workflow_label="Depallet",
+            shift=dict(ShiftID=734, ShiftName="Shift 2"),
+            lot=dict(ProductionID=17701, LotNo="LOT-1",
+                     ProductName="Tile 6", ProductFamily="NeuFit / NeuStile"),
+            depallet_run=dict(DepalletID=71, RunSequence=1),
+            totals=[], total_qty=0, entry_count=0, error=None,
+        )
+        self.assertIn("LOT-1 · Tile 6 · RUN 71 · Shift 2 · 2026-10-06",
+                      depallet_cal_body)
+        self.assertNotIn("RUN 1", depallet_cal_body)
 
     def test_reject_routes_are_registered_separately_from_reject_api(self):
         paths = {route.path for route in app.routes}

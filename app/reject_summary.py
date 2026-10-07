@@ -19,7 +19,8 @@ def _positive_id(value, label, maximum=9223372036854775807):
     return parsed
 
 
-def read_reject_cal(cursor, production_date, workflow, shift_id, production_id):
+def read_reject_cal(cursor, production_date, workflow, shift_id, production_id,
+                    depallet_id=None):
     """Aggregate only the selected workflow's CAL-indexed transaction table."""
     workflow = str(workflow or "").strip().lower()
     if workflow not in WORKFLOW_TABLES:
@@ -35,6 +36,13 @@ def read_reject_cal(cursor, production_date, workflow, shift_id, production_id):
             ) from None
     shift_id = _positive_id(shift_id, "Shift")
     production_id = _positive_id(production_id, "Product / Lot")
+    if workflow == "depallet":
+        depallet_id = _positive_id(
+            depallet_id, "Depallet Run"
+        )
+        depallet_filter = " AND entry.DepalletID=?"
+    else:
+        depallet_filter = ""
     table = WORKFLOW_TABLES[workflow]
     cursor.execute(f"""
         SELECT reason.id AS RejectReasonID,reason.ReasonCode,
@@ -45,10 +53,15 @@ def read_reject_cal(cursor, production_date, workflow, shift_id, production_id):
           ON reason.id=entry.RejectReasonID
         WHERE entry.ProductionDate=? AND entry.ShiftID=?
           AND entry.ProductionID=?
+          {depallet_filter}
         GROUP BY reason.id,reason.ReasonCode,reason.ReasonNameTH,
                  reason.SortOrder
         ORDER BY reason.SortOrder,reason.ReasonCode
-    """, production_date, shift_id, production_id)
+    """, *((
+        production_date, shift_id, production_id, depallet_id
+    ) if workflow == "depallet" else (
+        production_date, shift_id, production_id
+    )))
     totals = [
         dict(zip(
             [column[0] for column in cursor.description],
@@ -62,6 +75,7 @@ def read_reject_cal(cursor, production_date, workflow, shift_id, production_id):
         production_date=production_date,
         shift_id=shift_id,
         production_id=production_id,
+        depallet_id=depallet_id,
         totals=totals,
         total_qty=sum(int(row["Qty"] or 0) for row in totals),
         entry_count=sum(int(row["EntryCount"] or 0) for row in totals),

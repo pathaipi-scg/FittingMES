@@ -14,8 +14,8 @@
 </style>
 <div class="reject-cal-header"><h1>REJECT CAL · {{ workflow_label }}</h1>
 {% if shift and lot %}
-<span class="reject-cal-context">{{ lot.LotNo }} · {{ lot.ProductName or lot.ProductFamily }} · {{ shift.ShiftName }} · {{ production_date }}</span>
-<button class="button reject-cal-back" id="reject-cal-back" type="button" data-return-url="/reject?production_date={{ production_date }}&amp;workflow={{ workflow }}&amp;shift_id={{ shift.ShiftID }}&amp;production_id={{ lot.ProductionID }}">BACK TO REJECT</button>
+<span class="reject-cal-context">{{ lot.LotNo }} · {{ lot.ProductName or lot.ProductFamily }}{% if depallet_run %} · RUN {{ depallet_run.DepalletID }}{% endif %} · {{ shift.ShiftName }} · {{ production_date }}</span>
+<button class="button reject-cal-back" id="reject-cal-back" type="button" data-return-url="/reject?production_date={{ production_date }}&amp;workflow={{ workflow }}&amp;shift_id={{ shift.ShiftID }}&amp;production_id={{ lot.ProductionID }}{% if depallet_run %}&amp;depallet_id={{ depallet_run.DepalletID }}{% endif %}">BACK TO REJECT</button>
 {% else %}<button class="button reject-cal-back" id="reject-cal-back" type="button" data-return-url="/reject?production_date={{ production_date }}">BACK TO REJECT</button>{% endif %}
 </div>
 {% if error %}<div class="reject-cal-error" role="alert">{{ error }}</div>{% else %}

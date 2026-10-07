@@ -35,6 +35,7 @@ def read_daily_work(cursor, production_date, lots):
     reasons = read_reasons(cursor, include_r99=True)
     day_start_time = read_day_start_time(cursor, production_date)
     cursor.execute("""SELECT v.*,d.RunSequence,d.StartDateTime,d.EndDateTime,
+        shift.id AS ShiftID,
         b.ProductionQty,b.DepalletQtyTotal,b.RemainingCuringQty,p.RunningNo AS RunNo,
         pm.ProductName,p.ProductFamilyID,pf.ProductFamily AS CurrentProductFamily,
                 ISNULL((SELECT SUM(prior.DepalletQty) FROM dbo.Depallet prior
@@ -44,6 +45,8 @@ def read_daily_work(cursor, production_date, lots):
             AS AlreadyDepalletedBeforeRun
         FROM dbo.vw_DepalletValidation v
         JOIN dbo.Depallet d ON d.DepalletID=v.DepalletID
+        LEFT JOIN dbo.ShiftMaster AS shift
+          ON shift.ShiftCode=LTRIM(RTRIM(d.Shift)) AND shift.IsActive=1
         LEFT JOIN dbo.vw_DepalletCuringBalance b ON b.ProductionID=v.ProductionID
         LEFT JOIN dbo.ProductionLot p ON p.ProductionID=v.ProductionID
         LEFT JOIN dbo.ProductFamilyMaster pf ON pf.ProductFamilyID=p.ProductFamilyID

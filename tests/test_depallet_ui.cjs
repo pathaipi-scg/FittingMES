@@ -18,6 +18,32 @@ assert.doesNotMatch(html, />Remaining Curing</);
 assert.doesNotMatch(html, />Depallet Qty</);
 assert.doesNotMatch(html, />Good Qty</);
 assert.match(html, /Qty\/Day/);
+assert.match(html, /id="depallet-reject-cal"/);
+assert.match(html, /id="depallet-reject-save"/);
+assert.doesNotMatch(html, /REJECT CAL reads RAW for this Depallet RUN only\./);
+const saveDepalletIndex = html.indexOf('id="save-depallet"');
+const rejectDetailIndex = html.indexOf('id="reject-detail-title"');
+assert.ok(saveDepalletIndex > html.indexOf('class="depallet-lots-heading"'));
+assert.ok(saveDepalletIndex < rejectDetailIndex,
+  'SAVE DEPALLET remains with the Depallet operational section');
+const rejectHeaderStart = html.indexOf('class="reject-detail-heading"');
+const rejectHeader = html.slice(rejectHeaderStart,
+  html.indexOf('id="depallet-final-status"', rejectHeaderStart));
+for (const id of ['reject-detail-title','depallet-reject-remark',
+  'depallet-reject-save','depallet-reject-cal','depallet-total-reject',
+  'depallet-reject-calculated','depallet-reject-final-classified',
+  'depallet-difference']) {
+  assert.ok(rejectHeader.includes(`id="${id}"`), `${id} remains in the compact header`);
+}
+assert.ok(rejectHeader.indexOf('id="depallet-reject-save"') <
+  rejectHeader.indexOf('id="depallet-total-reject"'));
+assert.match(html, /#depallet-rejects\{display:grid;grid-template-columns:repeat\(3,minmax\(0,1fr\)\)/);
+assert.doesNotMatch(html, /#depallet-detail\{max-width:/);
+assert.match(source, /row\.dataset\.depalletId \? ' \/ RUN ' \+ row\.dataset\.depalletId/);
+assert.match(source, /Math\.floor\(source\.length \/ 3\)/);
+assert.match(source, /data-reject-reason-id/);
+assert.match(source, /\/depallet\/\$\{depalletId\}\/reject-final/);
+assert.match(source, /Save to persist FINAL/);
 assert.match(html, /#depallet-lots tr\[aria-selected=true\]/);
 assert.match(html, /SEQ \{\{ run\.RunSequence \}\} \/ RUN \{\{ run\.DepalletID \}\}/);
 assert.match(html, /data-move="up"/);
@@ -63,8 +89,10 @@ class Element {
 
 const ids = ['depallet-input','depallet-fields','depallet-date','depallet-family','depallet-product',
   'depallet-production-lot','create-depallet-lot','depallet-rejects','save-depallet',
-  'reject-detail-title','depallet-status','depallet-warning','depallet-reject-qty','depallet-difference',
-  'depallet-total-reject','depallet-balance','depallet-lots-data','depallet-products-data','depallet-entries','depallet-runs-data',
+  'depallet-reject-save','depallet-reject-cal','depallet-final-status','depallet-reject-remark',
+  'reject-detail-title','depallet-status','depallet-warning','depallet-reject-calculated',
+  'depallet-reject-final-classified','depallet-difference','depallet-total-reject',
+  'depallet-balance','depallet-lots-data','depallet-products-data','depallet-entries','depallet-runs-data',
   'depallet-reasons-data','depallet-daily-totals','depallet-day-start-time'];
 const nodes = Object.fromEntries(ids.map(id => [id, new Element(id.includes('select') || id.includes('family') || id.includes('product') ? 'select' : 'div')]));
 const body = new Element('tbody');
@@ -133,50 +161,8 @@ vm.runInNewContext(source,context);
   const secondFirstLotRun = body.children[1];
   field(secondFirstLotRun,'depallet_qty').value = '300'; field(secondFirstLotRun,'good_qty').value = '290';
   field(secondFirstLotRun,'start').value = '21:00'; field(secondFirstLotRun,'end').value = '22:00';
-  const allInputs = () => nodes['depallet-rejects'].querySelectorAll('[data-reject-code]');
-  const reject = code => allInputs().find(input => input.dataset.rejectCode === code);
-  const r99 = nodes['depallet-rejects'].querySelectorAll('input').find(input => input.id === 'depallet-r99');
-  assert.equal(r99.readOnly,true,'R99 is system-calculated and read-only');
-  reject('R01').value = '3'; nodes['depallet-rejects'].handlers.input({target:reject('R01')});
-  reject('R02').value = '3'; nodes['depallet-rejects'].handlers.input({target:reject('R02')});
-  assert.equal(nodes['depallet-reject-qty'].value,'6');
-  assert.equal(nodes['depallet-total-reject'].value,'10');
-  assert.equal(nodes['depallet-difference'].value,'4');
-  assert.equal(r99.value,'4');
-  assert.equal(nodes['depallet-rejects'].querySelectorAll('[data-daily-total="R01"]')[0].textContent,11);
-  assert.notEqual(nodes['depallet-reject-qty'].value,
-    nodes['depallet-rejects'].querySelectorAll('[data-daily-total="R01"]')[0].textContent,
-    'Qty/Day must not be included in selected-run Classified Reject');
-  reject('R02').value = '7'; nodes['depallet-rejects'].handlers.input({target:reject('R02')});
-  assert.equal(nodes['depallet-reject-qty'].value,'10');
-  assert.equal(r99.value,'0');
-  field(secondFirstLotRun,'good_qty').value = '289'; body.handlers.input({target:field(secondFirstLotRun,'good_qty')});
-  assert.equal(nodes['depallet-total-reject'].value,'11');
-  assert.equal(nodes['depallet-difference'].value,'1','Good Qty changes Total Reject and R99 immediately');
-  field(secondFirstLotRun,'depallet_qty').value = '301'; body.handlers.input({target:field(secondFirstLotRun,'depallet_qty')});
-  assert.equal(nodes['depallet-total-reject'].value,'12');
-  assert.equal(nodes['depallet-difference'].value,'2','Depallet Qty changes Total Reject and R99 immediately');
-  field(secondFirstLotRun,'depallet_qty').value = '300'; body.handlers.input({target:field(secondFirstLotRun,'depallet_qty')});
-  field(secondFirstLotRun,'good_qty').value = '290'; body.handlers.input({target:field(secondFirstLotRun,'good_qty')});
-  reject('R02').value = '3'; nodes['depallet-rejects'].handlers.input({target:reject('R02')});
-  reject('R03').value = '5'; nodes['depallet-rejects'].handlers.input({target:reject('R03')});
-  assert.equal(nodes['depallet-reject-qty'].value,'11');
-  assert.equal(nodes['depallet-difference'].value,'-1');
-  assert.equal(r99.value,'0');
-  assert.match(nodes['depallet-balance'].value,/Classified Reject 11 exceeds Total Reject 10/);
-  assert.equal(nodes['save-depallet'].disabled,true);
-  const beforeInvalidSubmit=requests.length;
-  await form.handlers.submit({preventDefault(){}});
-  assert.equal(requests.length,beforeInvalidSubmit,'invalid classification blocks SAVE');
-  reject('R03').value = ''; reject('R02').value = '3';
-  nodes['depallet-rejects'].handlers.input({target:reject('R03')});
-  assert.equal(nodes['depallet-reject-qty'].value,'6');
-  assert.equal(nodes['depallet-difference'].value,'4');
-  assert.equal(r99.value,'4');
-  reject('R01').value = '5'; nodes['depallet-rejects'].handlers.input({target:reject('R01')});
-  assert.equal(nodes['depallet-rejects'].querySelectorAll('[data-daily-total="R01"]')[0].textContent,13);
-  assert.equal(nodes['depallet-reject-qty'].value,'8');
-  assert.equal(nodes['depallet-rejects'].querySelectorAll('[data-daily-total="R99"]')[0].textContent,53);
+  assert.equal(nodes['depallet-rejects'].querySelectorAll('[data-reject-reason-id]').length,0,
+    'an unsaved run has no run-level FINAL reasons loaded');
 
   lotChoice.value = '100'; lotChoice.handlers.change(); create.handlers.click();
   assert.equal(body.children.length,3);
@@ -185,12 +171,8 @@ vm.runInNewContext(source,context);
   field(third,'start').value = '22:00'; field(third,'end').value = '23:00';
   body.handlers.click({target:third.children[0].children[0]});
   assert.equal(nodes['reject-detail-title'].textContent,'REJECT DETAIL - NEW-R1 / NEW RUN');
-  reject('R01').value = '4'; body.handlers.input({target:reject('R01')});
-  assert.equal(nodes['depallet-reject-qty'].value,'4');
-  assert.equal(nodes['depallet-rejects'].querySelectorAll('[data-daily-total="R01"]')[0].textContent,17);
   body.handlers.click({target:secondFirstLotRun.children[0].children[0]});
   assert.equal(nodes['reject-detail-title'].textContent,'REJECT DETAIL - NEW-R2 / NEW RUN');
-  assert.equal(reject('R01').value,'5','rejects stay isolated by unsaved run key');
 
   field(first,'good_qty').value = '500';
   field(secondFirstLotRun,'good_qty').value = '292';
@@ -205,10 +187,10 @@ vm.runInNewContext(source,context);
   const payload = JSON.parse(requests[0].options.body);
   assert.deepEqual(payload.rows.map(row => row.ProductionID),[101,101,100]);
   assert.deepEqual(payload.rows.map(row => row.DepalletID),[null,null,null]);
-  assert.deepEqual(payload.rows.map(row => row.rejects.R01),['','5','4']);
+  assert.deepEqual(payload.rows.map(row => row.rejects),[{}, {}, {}]);
   assert.ok(!payload.rows.some(row => Object.hasOwn(row,'Qty/Day')));
   assert.equal(payload.rows[0].Start,'20:00');
   assert.equal(payload.depallet_date,'2026-09-26');
   assert.equal(navigations.length,1);
-  console.log('Depallet cascades, disabled lots, repeated same-lot runs, run-scoped rejects, live totals, clock inputs, and batch payload passed.');
+  console.log('Depallet cascades, disabled lots, repeated same-lot runs, and batch payload passed.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

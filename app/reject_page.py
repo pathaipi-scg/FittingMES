@@ -1,17 +1,30 @@
 """Context preparation for the quantity-based REJECT operator page."""
+from datetime import date, datetime
 from urllib.parse import urlencode
 
 from app.reject import WORKFLOW_TABLES
 
 
+def _client_date(value):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    raise TypeError("DepalletDate must be a date, datetime, or None.")
+
+
 def reject_page_context(data, production_date, workflow=None, shift_id=None,
-                        line_equipment_id=None, production_id=None, entries=None,
+                        line_equipment_id=None, production_id=None,
+                        depallet_id=None, entries=None,
                         saved=False, error=None, form=None):
     form = dict(form or {})
     shifts = list(data.get("shifts") or [])
     lines = list(data.get("lines") or [])
     presses = list(data.get("presses") or [])
     all_lots = list(data.get("lots") or [])
+    all_depallet_runs = list(data.get("depallet_runs") or [])
     all_reasons = list(data.get("reasons") or [])
 
     chosen_workflow = str(
@@ -40,27 +53,55 @@ def reject_page_context(data, production_date, workflow=None, shift_id=None,
         None,
     )
 
-    lots = all_lots if chosen_workflow == "production" else [
-        item for item in all_lots
+    run_candidates = [
+        item for item in all_depallet_runs
         if selected_shift is not None
-        and str(item["ShiftID"]) == str(selected_shift["ShiftID"])
-    ]
+        and str(item.get("ShiftID") or "") == str(selected_shift["ShiftID"])
+    ] if chosen_workflow == "depallet" else []
     requested_production = form.get("production_id") or production_id
-    lot_ids = {str(item["ProductionID"]) for item in lots}
-    selected_production_id = str(requested_production or "")
-    if selected_production_id not in lot_ids:
-        selected_production_id = (
-            str(lots[0]["ProductionID"]) if lots else ""
-        )
-    selected_lot = next(
-        (
-            item for item in lots
-            if str(item["ProductionID"]) == selected_production_id
-        ),
+    requested_run = (
+        form.get("depallet_id") if "depallet_id" in form else depallet_id
+    )
+    selected_run = next(
+        (item for item in run_candidates
+         if str(item["DepalletID"]) == str(requested_run)),
         None,
     )
+    if (chosen_workflow == "depallet" and selected_run is None
+            and not requested_run and "depallet_id" not in form):
+        selected_run = next(
+            (item for item in run_candidates
+             if str(item["ProductionID"]) == str(requested_production)),
+            None,
+        )
+    if (chosen_workflow == "depallet" and selected_run is None
+            and not requested_run and not requested_production
+            and "depallet_id" not in form and run_candidates):
+        selected_run = run_candidates[0]
+    if selected_run is not None:
+        requested_production = selected_run["ProductionID"]
+    if chosen_workflow == "depallet":
+        lots = run_candidates
+        selected_production_id = (
+            str(selected_run["ProductionID"]) if selected_run is not None else ""
+        )
+        selected_lot = selected_run
+    else:
+        lots = all_lots
+        lot_ids = {str(item["ProductionID"]) for item in lots}
+        selected_production_id = str(requested_production or "")
+        if selected_production_id not in lot_ids:
+            selected_production_id = str(lots[0]["ProductionID"]) if lots else ""
+        selected_lot = next(
+            (item for item in lots
+             if str(item["ProductionID"]) == selected_production_id),
+            None,
+        )
     family_id = (
         selected_lot["ProductFamilyID"] if selected_lot is not None else None
+    )
+    selected_run_id = (
+        str(selected_run["DepalletID"]) if selected_run is not None else ""
     )
     reasons = [
         item for item in all_reasons
@@ -103,22 +144,43 @@ def reject_page_context(data, production_date, workflow=None, shift_id=None,
 
     cal_url = ""
     if selected_shift_id and selected_production_id:
-        cal_url = "/reject/cal?" + urlencode({
+        cal_values = {
             "production_date": production_date,
             "workflow": chosen_workflow,
             "shift_id": selected_shift_id,
             "production_id": selected_production_id,
-        })
+        }
+        if selected_run_id:
+            cal_values["depallet_id"] = selected_run_id
+        cal_url = "/reject/cal?" + urlencode(cal_values)
 
-    client_data = dict(
-        lots=[{
+    client_lots = {
+        str(item["ProductionID"]): {
             "ProductionID": item["ProductionID"],
             "ShiftCode": item["ShiftCode"],
             "ProductFamilyID": item["ProductFamilyID"],
             "LotNo": item["LotNo"],
             "ProductFamily": item["ProductFamily"],
             "ProductName": item["ProductName"],
-        } for item in all_lots],
+        }
+        for item in all_lots
+    }
+
+    client_data = dict(
+        lots=list(client_lots.values()),
+        depalletRuns=[{
+            "DepalletID": item["DepalletID"],
+            "ProductionID": item["ProductionID"],
+            "DepalletDate": _client_date(item["DepalletDate"]),
+            "ShiftID": item.get("ShiftID"),
+            "ShiftCode": item.get("ShiftCode"),
+            "Shift": item["Shift"],
+            "RunSequence": item["RunSequence"],
+            "ProductFamilyID": item["ProductFamilyID"],
+            "LotNo": item["LotNo"],
+            "ProductFamily": item["ProductFamily"],
+            "ProductName": item["ProductName"],
+        } for item in all_depallet_runs],
         reasons=[{
             "ProductFamilyID": item["ProductFamilyID"],
             "RejectReasonID": item["RejectReasonID"],
@@ -143,12 +205,15 @@ def reject_page_context(data, production_date, workflow=None, shift_id=None,
         shifts=shifts,
         lines=lines,
         lots=lots,
+        depallet_runs=run_candidates,
         reasons=reasons,
         source_options=source_options,
         entries=list(entries or []),
         selected_shift_id=selected_shift_id,
         selected_line_id=selected_line_id,
         selected_production_id=selected_production_id,
+        selected_depallet_id=selected_run_id,
+        submitted_depallet_id=selected_run_id,
         selected_family_id=family_id,
         selected_source_id=str(requested_source or ""),
         selected_reason_id=str(requested_reason or ""),

@@ -132,11 +132,34 @@ def read_reject_page_data(cursor, production_date):
     """)
     reasons = rows(cursor)
 
+    cursor.execute("""
+        SELECT d.DepalletID,d.ProductionID,d.DepalletDate,d.Shift,
+               d.RunSequence,shift.id AS ShiftID,shift.ShiftCode,
+               lot.ProductFamilyID,lot.LotNo,lot.ProductCode,lot.MaterialName,
+               family.ProductFamily,
+               COALESCE(product.ProductName,product.ProductNameTH,lot.MaterialName)
+                   AS ProductName
+        FROM dbo.Depallet AS d
+        JOIN dbo.ProductionLot AS lot
+          ON lot.ProductionID=d.ProductionID AND lot.IsActive=1
+        JOIN dbo.ProductFamilyMaster AS family
+          ON family.ProductFamilyID=lot.ProductFamilyID
+        LEFT JOIN dbo.ShiftMaster AS shift
+          ON shift.ShiftCode=LTRIM(RTRIM(d.Shift)) AND shift.IsActive=1
+        LEFT JOIN dbo.ProductCodeMaster AS product
+          ON product.ProductFamilyID=lot.ProductFamilyID
+         AND product.ProductCode=lot.ProductCode
+        WHERE d.DepalletDate=?
+        ORDER BY d.RunSequence,d.DepalletID
+    """, production_date)
+    depallet_runs = rows(cursor)
+
     return dict(
         shifts=shifts,
         lines=lines,
         presses=presses,
         lots=lots_for_date,
+        depallet_runs=depallet_runs,
         reasons=reasons,
     )
 
@@ -146,26 +169,38 @@ def read_reject_entries(cursor, production_date, workflow):
     production_date = _production_date(production_date)
     workflow = _workflow(workflow)
     table = WORKFLOW_TABLES[workflow]
+    run_columns = (
+        "entry.DepalletID,d.RunSequence"
+        if workflow == "depallet"
+        else "CAST(NULL AS int) AS DepalletID,CAST(NULL AS int) AS RunSequence"
+    )
+    run_join = (
+        "LEFT JOIN dbo.Depallet AS d ON entry.DepalletID=d.DepalletID"
+        if workflow == "depallet" else ""
+    )
     cursor.execute(f"""
         SELECT entry.id AS EntryID,entry.ProductionDate,entry.ShiftID,
                shift.ShiftCode,entry.LineEquipmentID,
                line.EquipmentCode AS LineCode,entry.SourceEquipmentID,
                source.EquipmentCode AS SourceCode,
                CASE WHEN source.EquipmentType='LINE' THEN 'LINE'
-                    ELSE 'PRESS' END AS SourceType,
+                    WHEN source.EquipmentType='PRESS' THEN 'PRESS'
+                    ELSE NULL END AS SourceType,
                entry.ProductionID,lot.LotNo,lot.ProductCode,
                lot.ProductFamilyID,family.ProductFamily,
                COALESCE(product.ProductName,product.ProductNameTH,
                         lot.MaterialName) AS ProductName,
+               {run_columns},
                entry.RejectReasonID,reason.ReasonCode,reason.ReasonNameTH,
                entry.RejectSourceScopeID,entry.Qty
         FROM dbo.{table} AS entry
         JOIN dbo.ShiftMaster AS shift ON shift.id=entry.ShiftID
         JOIN dbo.EquipmentMaster AS line ON line.id=entry.LineEquipmentID
-        JOIN dbo.EquipmentMaster AS source ON source.id=entry.SourceEquipmentID
+        LEFT JOIN dbo.EquipmentMaster AS source ON source.id=entry.SourceEquipmentID
         JOIN dbo.ProductionLot AS lot ON lot.ProductionID=entry.ProductionID
         JOIN dbo.ProductFamilyMaster AS family
           ON family.ProductFamilyID=lot.ProductFamilyID
+        {run_join}
         LEFT JOIN dbo.ProductCodeMaster AS product
           ON product.ProductFamilyID=lot.ProductFamilyID
          AND product.ProductCode=lot.ProductCode
@@ -179,7 +214,8 @@ def read_reject_entries(cursor, production_date, workflow):
             item["LineLabel"] = f'{item["LineCode"]} (DRY)'
             item["SourceLabel"] = (
                 f'{item["SourceCode"]} (DRY)'
-                if item["SourceType"] == "LINE" else item["SourceCode"]
+                if item["SourceType"] == "LINE"
+                else item["SourceCode"] if item["SourceCode"] else "—"
             )
     else:
         for item in result:
@@ -200,7 +236,14 @@ def _validate_entry(cursor, raw):
     source_id = _positive_int(
         raw.get("source_equipment_id"), "INVALID_SOURCE", "Source",
         maximum=9223372036854775807,
-    )
+    ) if str(raw.get("source_equipment_id") or "").strip() else None
+    if source_id is None and workflow == "production":
+        _invalid("INVALID_SOURCE", "Select an active Source.")
+    depallet_id = None
+    if workflow == "depallet":
+        depallet_id = _positive_int(
+            raw.get("depallet_id"), "INVALID_DEPALLET_RUN", "Depallet Run",
+        )
     reason_id = _positive_int(
         raw.get("reject_reason_id"), "INVALID_REASON", "Reject Reason",
         maximum=9223372036854775807,
@@ -230,18 +273,24 @@ def _validate_entry(cursor, raw):
     if shift is None:
         _invalid("INVALID_SHIFT", "The selected Shift is no longer active.")
 
-    lot_shift_match = ""
-    lot_params = (production_id, production_date)
     if workflow == "depallet":
-        lot_shift_match = "\n          AND LTRIM(RTRIM(lot.Shift))=?"
-        lot_params += (shift["ShiftCode"],)
-    cursor.execute(f"""
-        SELECT lot.ProductionID,lot.ProductFamilyID,
-               LTRIM(RTRIM(lot.Shift)) AS LotShiftCode
-        FROM dbo.ProductionLot AS lot WITH (UPDLOCK,HOLDLOCK)
-        WHERE lot.ProductionID=? AND lot.ProdDate=? AND lot.IsActive=1
-          {lot_shift_match}
-    """, *lot_params)
+        cursor.execute("""
+            SELECT lot.ProductionID,lot.ProductFamilyID,
+                   LTRIM(RTRIM(run.Shift)) AS LotShiftCode
+            FROM dbo.Depallet AS run WITH (UPDLOCK,HOLDLOCK)
+            JOIN dbo.ProductionLot AS lot WITH (UPDLOCK,HOLDLOCK)
+              ON lot.ProductionID=run.ProductionID
+            WHERE run.DepalletID=? AND run.ProductionID=?
+              AND run.DepalletDate=? AND LTRIM(RTRIM(run.Shift))=?
+              AND lot.IsActive=1
+        """, depallet_id, production_id, production_date, shift["ShiftCode"])
+    else:
+        cursor.execute("""
+            SELECT lot.ProductionID,lot.ProductFamilyID,
+                   LTRIM(RTRIM(lot.Shift)) AS LotShiftCode
+            FROM dbo.ProductionLot AS lot WITH (UPDLOCK,HOLDLOCK)
+            WHERE lot.ProductionID=? AND lot.ProdDate=? AND lot.IsActive=1
+        """, production_id, production_date)
     lot = _fetch_one(cursor)
     if lot is None:
         _invalid(
@@ -289,13 +338,18 @@ def _validate_entry(cursor, raw):
         _invalid("INVALID_LINE", "The selected Line is no longer active.")
 
     scope_code = reason["SourceScopeCode"]
-    if scope_code == "LINE":
+    if scope_code not in ("LINE", "PRESS"):
+        _invalid(
+            "INVALID_SOURCE_SCOPE",
+            "The selected Reject Reason has an unsupported Source Scope.",
+        )
+    if source_id is not None and scope_code == "LINE":
         if source_id != line_id:
             _invalid(
                 "INVALID_SOURCE",
                 "A LINE-scope reason must use the selected Line as its Source.",
             )
-    elif scope_code == "PRESS":
+    elif source_id is not None and scope_code == "PRESS":
         cursor.execute("""
             SELECT press.id AS EquipmentID
             FROM dbo.vw_PressMcPressList AS press_view
@@ -314,11 +368,6 @@ def _validate_entry(cursor, raw):
                 "INVALID_SOURCE",
                 "Select an active Press configured for the selected Line.",
             )
-    else:
-        _invalid(
-            "INVALID_SOURCE_SCOPE",
-            "The selected Reject Reason has an unsupported Source Scope.",
-        )
 
     return dict(
         workflow=workflow,
@@ -329,6 +378,7 @@ def _validate_entry(cursor, raw):
         source_equipment_id=source_id,
         reject_source_scope_id=reason["RejectSourceScopeID"],
         production_id=production_id,
+        depallet_id=depallet_id,
         reject_reason_id=reason_id,
         qty=qty,
         entry_id=entry_id,
@@ -342,16 +392,30 @@ def save_reject_entry(conn, raw):
         values = _validate_entry(cursor, raw)
         table = values["table"]
         if values["entry_id"] is None:
-            cursor.execute(f"""
-                INSERT INTO dbo.{table}
-                    (ProductionDate,ShiftID,LineEquipmentID,SourceEquipmentID,
-                     RejectSourceScopeID,ProductionID,RejectReasonID,Qty)
-                OUTPUT INSERTED.id
-                VALUES (?,?,?,?,?,?,?,?)
-            """, values["production_date"], values["shift_id"],
-                values["line_equipment_id"], values["source_equipment_id"],
-                values["reject_source_scope_id"], values["production_id"],
-                values["reject_reason_id"], values["qty"])
+            if values["workflow"] == "depallet":
+                cursor.execute("""
+                    INSERT INTO dbo.DepalletRejectEntry
+                        (ProductionDate,DepalletID,ShiftID,LineEquipmentID,
+                         SourceEquipmentID,RejectSourceScopeID,ProductionID,
+                         RejectReasonID,Qty)
+                    OUTPUT INSERTED.id
+                    VALUES (?,?,?,?,?,?,?,?,?)
+                """, values["production_date"], values["depallet_id"],
+                    values["shift_id"], values["line_equipment_id"],
+                    values["source_equipment_id"],
+                    values["reject_source_scope_id"], values["production_id"],
+                    values["reject_reason_id"], values["qty"])
+            else:
+                cursor.execute("""
+                    INSERT INTO dbo.ProductionRejectEntry
+                        (ProductionDate,ShiftID,LineEquipmentID,SourceEquipmentID,
+                         RejectSourceScopeID,ProductionID,RejectReasonID,Qty)
+                    OUTPUT INSERTED.id
+                    VALUES (?,?,?,?,?,?,?,?)
+                """, values["production_date"], values["shift_id"],
+                    values["line_equipment_id"], values["source_equipment_id"],
+                    values["reject_source_scope_id"], values["production_id"],
+                    values["reject_reason_id"], values["qty"])
             inserted = cursor.fetchone()
             if inserted is None:
                 raise RuntimeError("REJECT entry ID was not returned by the INSERT.")
@@ -367,17 +431,31 @@ def save_reject_entry(conn, raw):
                     "ENTRY_NOT_FOUND",
                     "The selected entry does not belong to this REJECT workflow and date.",
                 )
-            cursor.execute(f"""
-                UPDATE dbo.{table}
-                SET ProductionDate=?,ShiftID=?,LineEquipmentID=?,
-                    SourceEquipmentID=?,RejectSourceScopeID=?,ProductionID=?,
-                    RejectReasonID=?,Qty=?
-                WHERE id=? AND ProductionDate=?
-            """, values["production_date"], values["shift_id"],
-                values["line_equipment_id"], values["source_equipment_id"],
-                values["reject_source_scope_id"], values["production_id"],
-                values["reject_reason_id"], values["qty"], values["entry_id"],
-                values["production_date"])
+            if values["workflow"] == "depallet":
+                cursor.execute("""
+                    UPDATE dbo.DepalletRejectEntry
+                    SET ProductionDate=?,DepalletID=?,ShiftID=?,LineEquipmentID=?,
+                        SourceEquipmentID=?,RejectSourceScopeID=?,ProductionID=?,
+                        RejectReasonID=?,Qty=?
+                    WHERE id=? AND ProductionDate=?
+                """, values["production_date"], values["depallet_id"],
+                    values["shift_id"], values["line_equipment_id"],
+                    values["source_equipment_id"],
+                    values["reject_source_scope_id"], values["production_id"],
+                    values["reject_reason_id"], values["qty"], values["entry_id"],
+                    values["production_date"])
+            else:
+                cursor.execute("""
+                    UPDATE dbo.ProductionRejectEntry
+                    SET ProductionDate=?,ShiftID=?,LineEquipmentID=?,
+                        SourceEquipmentID=?,RejectSourceScopeID=?,ProductionID=?,
+                        RejectReasonID=?,Qty=?
+                    WHERE id=? AND ProductionDate=?
+                """, values["production_date"], values["shift_id"],
+                    values["line_equipment_id"], values["source_equipment_id"],
+                    values["reject_source_scope_id"], values["production_id"],
+                    values["reject_reason_id"], values["qty"], values["entry_id"],
+                    values["production_date"])
             if cursor.rowcount != 1:
                 _invalid("ENTRY_NOT_FOUND", "The selected REJECT entry no longer exists.")
             entry_id = values["entry_id"]

@@ -1,7 +1,9 @@
 {% extends 'api_base.html' %}
 {% block content %}
 <style>
-.reject-context,.reject-entry-form{display:flex;align-items:end;gap:6px;flex-wrap:wrap}
+.reject-context{display:grid;gap:6px}
+.reject-context-row{display:flex;align-items:end;gap:6px;flex-wrap:nowrap;min-width:0;overflow-x:auto}
+.reject-context-row>label{flex:0 0 auto}
 .reject-context label,.reject-entry-form label{display:grid;gap:2px;font-weight:600}
 .reject-context select{min-width:135px;max-width:min(360px,90vw)}
 .reject-context label:nth-of-type(4) select{min-width:240px}
@@ -18,8 +20,8 @@
 .reject-table .select-cell{text-align:center;width:48px}
 .reject-table .qty-cell{text-align:right}
 @media(max-width:640px){
- .reject-context label,.reject-context label:last-of-type,.reject-entry-form label{width:100%}
- .reject-context select,.reject-context label:last-of-type select,.reject-entry-form label:nth-child(2) select,.reject-entry-form label:nth-child(3) select{width:100%;min-width:0;max-width:100%}
+ .reject-context select{max-width:min(360px,75vw)}
+ .reject-entry-form label:nth-child(2) select{max-width:min(300px,75vw)}
 }
 </style>
 {% if error %}<div class="reject-error" role="alert">{{ error }}</div>{% endif %}
@@ -31,6 +33,9 @@
 <input type="hidden" name="workflow" id="reject-workflow-value" value="{{ workflow }}">
 <input type="hidden" name="entry_id" id="reject-entry-id" value="{{ entry_id }}">
 <input type="hidden" name="reject_source_scope_id" id="reject-source-scope-id" value="{{ selected_scope_id }}">
+<input type="hidden" name="production_id" id="reject-production-id" value="{{ selected_production_id }}">
+<input type="hidden" name="depallet_id" id="reject-depallet-id" value="{{ submitted_depallet_id }}">
+<div class="reject-context-row reject-primary-row">
 <label>Shift
 <select name="shift_id" id="reject-shift" required>
 {% for item in shifts %}<option value="{{ item.ShiftID }}" data-shift-code="{{ item.ShiftCode }}" {% if selected_shift_id|string == item.ShiftID|string %}selected{% endif %}>{{ item.ShiftName }}</option>{% endfor %}
@@ -45,19 +50,26 @@
 {% for item in lines %}<option value="{{ item.EquipmentID }}" data-code="{{ item.EquipmentCode }}" {% if selected_line_id|string == item.EquipmentID|string %}selected{% endif %}>{{ item.EquipmentCode }}</option>{% endfor %}
 </select></label>
 <label>Product / Lot
-<select name="production_id" id="reject-production" required>
+<select id="reject-production" required>
 <option value="">Select Product / Lot</option>
+{% if workflow == 'depallet' %}
+{% for item in depallet_runs %}
+<option value="{{ item.DepalletID }}" data-production-id="{{ item.ProductionID }}" data-family-id="{{ item.ProductFamilyID }}" data-shift-code="{{ item.ShiftCode }}" {% if selected_depallet_id|string == item.DepalletID|string %}selected{% endif %}>{{ item.LotNo }} · {{ item.ProductName or item.ProductFamily }} · RUN {{ item.DepalletID }}</option>
+{% endfor %}
+{% else %}
 {% for item in lots %}
 <option value="{{ item.ProductionID }}" data-family-id="{{ item.ProductFamilyID }}" data-shift-code="{{ item.ShiftCode }}" {% if selected_production_id|string == item.ProductionID|string %}selected{% endif %}>{{ item.LotNo }} · {{ item.ProductName or item.ProductFamily }}</option>
 {% endfor %}
+{% endif %}
 </select></label>
-<label>Source<select name="source_equipment_id" id="reject-source" required>
+<label>Source<select name="source_equipment_id" id="reject-source" {% if workflow == 'production' %}required{% endif %}>
 <option value="">Select Source</option>
 {% for item in source_options %}
 <option value="{{ item.EquipmentID }}" data-equipment-type="{{ item.EquipmentType }}" {% if selected_source_id|string == item.EquipmentID|string %}selected{% endif %}>{{ item.EquipmentCode }}</option>
 {% endfor %}
 </select></label>
-<div class="reject-entry-form">
+ </div>
+<div class="reject-context-row reject-entry-form">
 <label>Qty<input name="qty" id="reject-qty" type="number" min="1" max="2147483647" step="1" required value="{{ qty }}"></label>
 <label>Reject Reason<select name="reject_reason_id" id="reject-reason" required>
 <option value="">Select Reject Reason</option>
@@ -79,9 +91,9 @@
 <tbody>
 {% for item in entries %}
 <tr>
-<td class="select-cell"><input type="radio" name="reject-selected-row" data-reject-entry='{{ {"entry_id":item.EntryID,"workflow":workflow,"shift_id":item.ShiftID,"line_equipment_id":item.LineEquipmentID,"production_id":item.ProductionID,"source_equipment_id":item.SourceEquipmentID,"reject_reason_id":item.RejectReasonID,"reject_source_scope_id":item.RejectSourceScopeID,"qty":item.Qty}|tojson }}' aria-label="Select REJECT entry {{ item.EntryID }}"></td>
+<td class="select-cell"><input type="radio" name="reject-selected-row" data-reject-entry='{{ {"entry_id":item.EntryID,"workflow":workflow,"shift_id":item.ShiftID,"line_equipment_id":item.LineEquipmentID,"production_id":item.ProductionID,"depallet_id":item.DepalletID,"source_equipment_id":item.SourceEquipmentID,"reject_reason_id":item.RejectReasonID,"reject_source_scope_id":item.RejectSourceScopeID,"qty":item.Qty}|tojson }}' aria-label="Select REJECT entry {{ item.EntryID }}"></td>
 <td>{{ item.SourceLabel }}</td><td>{{ item.LineLabel }}</td><td>{{ item.ShiftCode }}</td>
-<td>{{ item.LotNo }} · {{ item.ProductName or item.ProductFamily }}</td>
+<td>{{ item.LotNo }} · {{ item.ProductName or item.ProductFamily }}{% if workflow == 'depallet' %} · RUN {{ item.DepalletID }}{% endif %}</td>
 <td>{{ item.ReasonCode }}</td><td>{{ item.ReasonNameTH }}</td><td class="qty-cell">{{ item.Qty }}</td>
 </tr>
 {% endfor %}
@@ -110,6 +122,8 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
   const shift = document.getElementById('reject-shift');
   const line = document.getElementById('reject-line');
   const lot = document.getElementById('reject-production');
+  const productionId = document.getElementById('reject-production-id');
+  const depalletId = document.getElementById('reject-depallet-id');
   const source = document.getElementById('reject-source');
   const reason = document.getElementById('reject-reason');
   const scopeId = document.getElementById('reject-source-scope-id');
@@ -128,7 +142,17 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
     for (const [key, value] of Object.entries(data)) item.dataset[key] = String(value);
     return item;
   };
-  const currentLot = () => page.lots.find(item => String(item.ProductionID) === lot.value);
+  const currentRun = () => workflow.value === 'depallet'
+    ? page.depalletRuns.find(item => String(item.DepalletID) === lot.value)
+    : null;
+  const currentLot = () => workflow.value === 'depallet'
+    ? currentRun()
+    : page.lots.find(item => String(item.ProductionID) === lot.value);
+  const syncSelectedIdentity = () => {
+    const run = currentRun();
+    productionId.value = run ? String(run.ProductionID) : lot.value;
+    depalletId.value = run ? String(run.DepalletID) : '';
+  };
   const sourceLabel = item => {
     const suffix = workflow.value === 'depallet' && item.EquipmentType === 'LINE'
       ? ' (DRY)' : '';
@@ -165,7 +189,8 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
       shiftId: shift.value,
       workflow: workflow.value,
       lineId: line.value,
-      productionId: lot.value,
+      productionId: productionId.value,
+      depalletRunId: depalletId.value,
       sourceId: source.value,
     };
     try {
@@ -187,7 +212,8 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
     if (hasOption(shift, context.shiftId)) shift.value = context.shiftId;
     if (hasOption(line, context.lineId)) line.value = context.lineId;
     updateWorkflowLabels();
-    updateLots(context.productionId);
+    updateLots(context.workflow === 'depallet'
+      ? context.depalletRunId : context.productionId);
     updateSources(null, context.sourceId);
     if (source.value) {
       syncForSource('');
@@ -200,6 +226,8 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
   const startupContext = readRememberedContext();
 
   function updateWorkflowLabels() {
+    const isDepallet = workflow.value === 'depallet';
+    source.required = !isDepallet;
     for (const item of line.options) {
       if (item.value) {
         item.textContent = `${item.dataset.code}${workflow.value === 'depallet' ? ' (DRY)' : ''}`;
@@ -212,16 +240,27 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
     const shiftCode = shiftOption ? shiftOption.dataset.shiftCode : '';
     const candidates = workflow.value === 'production'
       ? page.lots
-      : page.lots.filter(item => String(item.ShiftCode) === shiftCode);
+      : page.depalletRuns.filter(item => String(item.ShiftID) === shift.value);
     lot.replaceChildren(option('', 'Select Product / Lot'));
     for (const item of candidates) {
-      lot.add(option(item.ProductionID,
-        `${item.LotNo} · ${item.ProductName || item.ProductFamily}`,
-        {familyId: item.ProductFamilyID, shiftCode: item.ShiftCode}));
+      const isDepallet = workflow.value === 'depallet';
+      const identity = isDepallet ? item.DepalletID : item.ProductionID;
+      const label = `${item.LotNo} · ${item.ProductName || item.ProductFamily}` +
+        (isDepallet ? ` · RUN ${item.DepalletID}` : '');
+      lot.add(option(identity, label, {
+        familyId: item.ProductFamilyID,
+        shiftCode: item.ShiftCode,
+        productionId: item.ProductionID,
+      }));
     }
     const requested = String(preferredId || '');
-    lot.value = candidates.some(item => String(item.ProductionID) === requested)
-      ? requested : (candidates.length ? String(candidates[0].ProductionID) : '');
+    const key = item => String(workflow.value === 'depallet'
+      ? item.DepalletID : item.ProductionID);
+    lot.value = candidates.some(item => key(item) === requested)
+      ? requested
+      : (candidates.length && (workflow.value === 'production' || !requested)
+        ? key(candidates[0]) : '');
+    syncSelectedIdentity();
   }
 
   function updateReasons(scopeCode = null, preferredId = '') {
@@ -270,7 +309,8 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
     const preferredId = String(preferredSource || '');
     const preferredIsValid = candidates.some(
       item => String(item.EquipmentID) === preferredId);
-    const sourceId = selected && !preferredIsValid && candidates.length === 1
+    const sourceId = workflow.value === 'production' &&
+      selected && !preferredIsValid && candidates.length === 1
       ? candidates[0].EquipmentID : preferredSource;
     updateSources(scopeCode, sourceId);
   }
@@ -301,23 +341,26 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
   }
 
   shift.addEventListener('change', () => {
-    updateLots(workflow.value === 'production' ? lot.value : '');
-    resetEntryFields(workflow.value === 'production');
+    updateLots(lot.value);
+    resetEntryFields(true);
     rememberContext();
   });
   line.addEventListener('change', () => {
-    resetEntryFields();
+    resetEntryFields(workflow.value === 'depallet');
     rememberContext();
   });
   lot.addEventListener('change', () => {
+    syncSelectedIdentity();
     updateReasons();
-    updateSources();
+    updateSources(null, workflow.value === 'depallet' ? source.value : '');
     scopeId.value = '';
+    if (workflow.value === 'depallet' && source.value) syncForSource('');
     rememberContext();
   });
   workflow.addEventListener('change', () => {
     workflowValue.value = workflow.value;
     updateWorkflowLabels();
+    updateLots();
     resetEntryFields();
     rememberContext();
   });
@@ -337,8 +380,11 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
         production_date: productionDate.value,
         workflow: workflow.value,
         shift_id: shift.value,
-        production_id: lot.value,
+        production_id: productionId.value,
       });
+      if (workflow.value === 'depallet') {
+        if (depalletId.value) params.set('depallet_id', depalletId.value);
+      }
       window.location.href = `/reject/cal?${params}`;
     });
   }
@@ -352,7 +398,8 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
       workflow.disabled = true;
       updateWorkflowLabels();
       shift.value = String(row.shift_id);
-      updateLots(row.production_id);
+      updateLots(row.workflow === 'depallet' ? row.depallet_id : row.production_id);
+      syncSelectedIdentity();
       line.value = String(row.line_equipment_id);
       updateReasons();
       updateSources();

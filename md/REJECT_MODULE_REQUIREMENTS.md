@@ -31,6 +31,10 @@ Each SAVE creates one detailed row in exactly one of:
 The table is the workflow owner. The same ProductionID may have entries
 in both tables.
 
+Depallet entries additionally require the exact selected
+`Depallet.DepalletID`. A ProductionID may have multiple Depallet runs, so
+ProductionID alone is not a Depallet RAW or FINAL identity.
+
 ## 2. Production Date
 
 `Production Date` is already the global FittingMES context above the
@@ -70,8 +74,8 @@ Existing `ProductionLot.Shift`, `Depallet.Shift`, `LoggerEvent.ShiftID`,
 `EquipmentTimeEvent.ShiftID`, and `ProductionShiftRuleHistory.ShiftID`
 remain unchanged. Production REJECT validates that the transaction
 ShiftID is active but does not require it to match `ProductionLot.Shift`;
-the ProductionID is the whole-Lot identity. Depallet retains its existing
-Shift/Lot matching rule.
+the ProductionID is the whole-Lot identity. Depallet RAW must match the
+selected Depallet run's own Shift and date, not the ProductionLot.Shift.
 
 ### Reject Of
 
@@ -82,7 +86,12 @@ Shift/Lot matching rule.
 -   `Production` routes SAVE to `ProductionRejectEntry`.
 -   `Depallet` routes SAVE to `DepalletRejectEntry`.
 
-The selected mode does not require a Depallet run or DepalletID.
+In Production mode Product / Lot remains keyed by ProductionID. In
+Depallet mode the same Product / Lot selector lists the existing Depallet
+runs for the selected shared Production Date, with each option keyed by
+its DepalletID and its associated ProductionID retained for submission.
+Multiple runs for one ProductionID remain distinct; there is no separate
+Depallet Run selector. Production mode does not use or require DepalletID.
 
 ### Line
 
@@ -159,12 +168,16 @@ the corresponding equipment ID.
 
 ## 5. Entry fields
 
-Each entry requires only:
+Each entry requires:
 
 -   Qty
--   Source
 -   Reject Reason
 -   SAVE
+
+Production Source is required. Depallet Source is optional: blank means
+that the machine could not be identified and is stored as SQL NULL. Never
+create a placeholder EquipmentMaster row. Line and the exact Depallet run
+remain required for Depallet entries.
 
 Qty is reject quantity, not minutes.
 
@@ -178,8 +191,10 @@ workflow, following LOGGER's proven list/edit pattern where practical.
 Conceptual columns:
 
 ``` text
-Select | Source | Line | Shift | Product / Lot | Code | Reject Reason | Qty
+Select | Source | Line | Shift | Product / Lot | Run | Code | Reject Reason | Qty
 ```
+
+Display a NULL Depallet Source as `—`; do not persist that display label.
 
 Investigate and reuse LOGGER's Select/Edit/Cancel behavior where
 appropriate.
@@ -367,12 +382,16 @@ Read only `dbo.DepalletRejectEntry`, matching:
 
 -   global Production Date
 -   relevant Shift
--   relevant Product/Lot/Depallet context
-Calculate/load the Depallet/Dry Reject summary.
+-   ProductionID
+-   exact selected DepalletID
 
-Neither workflow uses a DepalletID owner relationship. A Depallet-side
-reject belongs to the selected Product/Lot context, not a specific
-Depallet run.
+Group by RejectReasonID and include both rows with known Source and rows
+whose SourceEquipmentID is NULL. Source is audit/detail context, not the
+CAL identity. The selected Shift must match the selected run's Shift.
+
+Each Depallet RAW row belongs to one exact Depallet run. The
+ProductionID-only grouping used by the old legacy Depallet reject matrix
+must not be reused for the new RAW or FINAL model.
 
 The standalone REJECT CAL and Production-page FINAL SAVE are separate
 operations. Standalone CAL is read-only and does not populate the
@@ -400,6 +419,40 @@ master or transaction tables for its Production REJECT entry area.
 -   Qty/Day is derived from saved FINAL detail for active Production Lots
     on the Production Date.
 -   RAW rows and legacy WetReject tables are never changed by FINAL SAVE.
+
+### Depallet-page run-level FINAL reconciliation
+
+The DEPALLET page uses `dbo.DepalletRejectFinal` and
+`dbo.DepalletRejectFinalDetail`.
+
+-   One FINAL header is keyed uniquely by DepalletID, not ProductionID.
+-   Detail is normalized by RejectReasonID, unique by
+    `(DepalletRejectFinalID, RejectReasonID)`.
+-   Applicable reasons come from the selected run's
+    `ProductionLot.ProductFamilyID` through
+    `RejectReasonProductFamily`, active RejectReason, catalog, and scope.
+-   LOAD displays saved FINAL values or zeros; it never refreshes FINAL
+    automatically from RAW.
+-   REJECT CAL reads fresh DepalletRejectEntry rows for exactly the
+    selected DepalletID and replaces only browser Qty values.
+-   Qty is editable. SAVE upserts the complete applicable-reason snapshot
+    with fresh RawQtyAtSave and operator FinalQty; it never writes
+    DepalletRejectEntry or legacy DepalletReject.
+-   Total Reject is `DepalletQty - GoodQty`; invalid negative values or
+    GoodQty greater than DepalletQty are rejected, not clamped.
+-   Final Classified Reject is the sum of FinalQty;
+    Difference/Unclassified is Total Reject minus Final Classified Reject.
+-   Qty/Day is derived from saved FINAL across all Depallet runs for the
+    selected DepalletDate, grouped by RejectReasonID.
+-   A Re-CAL only replaces current browser Qty from RAW. Refresh restores
+    the previously saved FINAL unless the operator saves again.
+-   Reason display uses three contiguous dynamic groups with
+    `Code | Reject Reason | Qty | Qty/Day`; reason ordering is preserved
+    and groups rebalance with reason count.
+
+Production Source remains required. Depallet Source may be NULL only when
+the machine is genuinely unknown; Line and DepalletID remain required.
+SourceEquipmentID is not copied into FINAL detail.
 
 ## 14. Paper/Excel relationship
 
@@ -517,10 +570,15 @@ New entries reference `ShiftMaster.id`.
 -   `Qty` with CHECK `Qty > 0`
 -   only approved audit/edit/void fields
 
+`DepalletRejectEntry` additionally stores required `DepalletID ->
+Depallet.DepalletID`. Its `SourceEquipmentID` is nullable; the
+ProductionRejectEntry Source remains NOT NULL and required.
+
 Foreign keys:
 
 -   `ShiftID -> ShiftMaster.id`
--   `LineEquipmentID` and `SourceEquipmentID -> EquipmentMaster.id`
+-   `LineEquipmentID -> EquipmentMaster.id`
+-   `SourceEquipmentID -> EquipmentMaster.id` (nullable only for Depallet)
 -   `RejectSourceScopeID -> RejectSourceScope.id`
 -   `ProductionID -> ProductionLot.ProductionID`
 -   `RejectReasonID -> RejectReason.id`
@@ -531,13 +589,16 @@ these tables. Validate ProductFamily applicability through
 `ProductionLot.ProductFamilyID -> RejectReasonProductFamily`. On Production
 SAVE, validate the authoritative ProductionDate, active Lot, ProductFamily,
 and active transaction Shift independently; do not require the selected
-transaction Shift to equal `ProductionLot.Shift`. Depallet retains its
-Shift/Lot validation.
+transaction Shift to equal `ProductionLot.Shift`. Depallet validates that the selected DepalletID belongs to the selected
+ProductionID and date, and that the transaction Shift matches that
+Depallet run's Shift.
 
 ProductionRejectEntry and DepalletRejectEntry are the workflow owners.
-Reject Of is not persisted. Do not add RejectOf, DepalletID, ProductCode,
+Reject Of is not persisted. Do not add RejectOf, ProductCode,
 ProductFamilyID, EquipmentCode, ReasonCode, SourceScope text, or Shift
-text to either entry table. The same ProductionID may have rows in both.
+text to either entry table. DepalletRejectEntry's DepalletID is the
+required run FK; the same ProductionID may have multiple Depallet runs
+and rows in both workflow tables.
 
 ### EquipmentMaster additive ID
 
@@ -576,9 +637,17 @@ REJECT should feel like a native sibling of LOGGER.
 
 ## 20. Implementation phase status and safety
 
-The read-only investigation, live safety audit, and design review are
-complete. This document is the authoritative implementation specification.
-Do not revise approved architecture during implementation without review.
+The Production FINAL implementation is complete and manually verified.
+The Depallet run-level implementation is complete and manually verified.
+Migration `025_production_reject_final.sql` and
+`026_depallet_reject_final.sql` have been deployed and verified on SB23.
+Do not rerun either migration. This document records the approved
+behavior; do not revise the Production workflow while maintaining
+Depallet.
+
+Migration 026 derives the DepalletID column type from `dbo.Depallet`
+metadata, supports `int` or `bigint`, and was deployed after live schema
+preflight. Its rollback has not been created or run.
 
 ### Safety
 
@@ -586,9 +655,11 @@ Do not revise approved architecture during implementation without review.
     without separate explicit authorization.
 -   Migration and rollback files must be reviewed before any execution.
 -   Do not modify unrelated application behavior or legacy reject code.
--   Do not commit or push.
+-   Do not push without explicit authorization. A local checkpoint commit
+    requires explicit authorization.
 -   Do not reset/clean unrelated worktree changes.
 -   Do not edit pre-023 migrations.
+-   Migration 026 has already been deployed; do not rerun it.
 
 Implementation must follow this specification, the database ID-first
 standard, and the approved migration/rollback/test review process. No
@@ -601,10 +672,10 @@ Global Production Date
         |
         v
 REJECT TAB
-Shift -> Reject Of (default Production) -> Line -> Product/Lot
+Shift -> Reject Of (default Production) -> Line -> Product / Lot
+             (ProductionID in Production; exact existing DepalletID in Depallet)
                            |
-                           v
-                  Qty -> Source -> Reason -> SAVE
+                 Qty -> [optional Source for Depallet] -> Reason -> SAVE
                            |
              +-------------+-------------+
              |                           |
@@ -617,7 +688,10 @@ Shift -> Reject Of (default Production) -> Line -> Product/Lot
      Production REJECT CAL       Depallet REJECT CAL
              |                           |
              v                           v
-     Production summary          Depallet reject summary
+     Production summary          exact Depallet RUN summary
+             |
+             v
+     Production FINAL             Depallet-page run FINAL
 ```
 
 Reject Of routes the save and is not persisted. Production and Depallet

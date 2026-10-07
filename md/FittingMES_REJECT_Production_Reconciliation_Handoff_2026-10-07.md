@@ -3,12 +3,12 @@
 **Date:** 2026-10-07
 **Project:** `D:\AI\FittingMES`
 **Database:** SB23
-**Status:** Production REJECT FINAL implementation complete and manually verified
+**Status:** Production and Depallet REJECT FINAL workflows complete; Depallet manually verified
 
 ## Purpose and current state
 
-The REJECT tab records detailed RAW transactions. The Production page
-separately loads, previews, edits, and saves a whole-Lot FINAL
+The REJECT tab records detailed RAW transactions. Production and Depallet
+each load, preview, edit, and save their own normalized FINAL
 reconciliation. RAW and FINAL are intentionally independent.
 
 ```text
@@ -19,9 +19,9 @@ operator edits -> SAVE REJECT -> normalized FINAL snapshot
 ```
 
 The implementation is complete in the current worktree. SQL migration
-`025_production_reject_final.sql` has already been applied and verified on
-live SB23. Do not rerun it. This handoff does not authorize any further
-database action.
+`025_production_reject_final.sql` and `026_depallet_reject_final.sql` have
+been applied and verified on live SB23. Do not rerun them. This handoff
+does not authorize any further database action.
 
 ## 1. RAW transactions and multi-shift behavior
 
@@ -219,10 +219,14 @@ normal remembered context. The browser compatibility fix uses
 
 ## 9. Migration and legacy boundary
 
-`sql/025_production_reject_final.sql` creates only the two normalized
-FINAL tables and constraints. It has been applied to SB23 and verified.
-Do not rerun it or create migration 026 as part of this implementation
-checkpoint. No data migration/backfill was performed.
+`sql/025_production_reject_final.sql` creates the normalized Production
+FINAL tables. `sql/026_depallet_reject_final.sql` creates the normalized
+Depallet FINAL tables, adds exact DepalletID identity to
+`DepalletRejectEntry`, and allows nullable Depallet Source. Both
+migrations were deployed to SB23 and verified. Migration 026 preflight
+found zero rows in the old DepalletRejectEntry table; it was recreated
+as designed. No legacy reject-data migration/backfill was performed.
+Do not rerun either migration.
 
 Legacy `WetReject`, `WetRejectReasonMaster`, legacy R01-R24/R99 behavior,
 and legacy REJECT API/PIS code remain separate and are not rewritten by
@@ -232,7 +236,8 @@ Production FINAL workflow.
 
 ## 10. Regression verification
 
-The checkpoint's focused results:
+The original Production-only checkpoint's focused results (before the
+Depallet implementation) were:
 
 ```text
 test_reject*.py: 76 passed
@@ -258,3 +263,94 @@ three-column dynamic reason layout, Qty/Day, and re-CAL/refresh separation
 are implemented and manually verified. There is no remaining Production
 FINAL implementation step in this block. Any future legacy API/PIS
 redesign or broader cutover requires a separate request and review.
+
+## 10. Depallet REJECT RAW / CAL / FINAL
+
+The exact Depallet-run identity is `dbo.Depallet.DepalletID`. `ProductionID`
+identifies the underlying Lot only; a Lot may have multiple runs.
+`RunSequence` is the ordering value displayed as `SEQ n`, never the RUN
+identity. The REJECT tab's Depallet Product / Lot selector is populated
+from existing Depallet runs for the selected shared Production Date. Each
+run remains a separate option keyed by DepalletID, with both that ID and
+its ProductionID submitted. There is no separate Depallet Run selector.
+REJECT and REJECT CAL RUN labels use the actual DepalletID.
+
+Production RAW Source is required and its behavior is unchanged. Depallet
+RAW Source is optional: SQL NULL means the machine was not identified.
+No placeholder EquipmentMaster record is used. Line, Shift, ProductionID,
+DepalletID, applicable reason/scope, and Qty remain validated.
+
+`DepalletRejectEntry` is immutable RAW detail. Depallet CAL reads fresh
+RAW for the exact selected DepalletID and groups by RejectReasonID; both
+known-Source and NULL-Source entries are included. CAL only replaces
+browser quantities and does not write FINAL. SAVE REJECT atomically
+upserts the single `DepalletRejectFinal` header keyed by DepalletID and
+replaces only that header's normalized reason details. Re-saving a run
+does not duplicate its FINAL or affect another run's FINAL. RAW is never
+rewritten by FINAL save. Load shows saved FinalQty and leaves Calculated
+Reject at `—` until CAL is performed.
+
+Depallet Total Reject remains `DepalletQty - GoodQty`.
+Final Classified Reject is the selected run's saved/current FinalQty sum;
+Difference / Unclassified is Total Reject less that sum. Qty/Day sums
+saved FINAL detail quantities by RejectReasonID across Depallet runs on
+the selected Depallet Date, while the current-run quantities remain
+isolated by DepalletID.
+
+The Depallet page's compact REJECT header contains the selected Lot/RUN,
+Remark, SAVE REJECT, REJECT CAL, and the four summaries. Its reason grid
+uses the existing RejectReason/ProductFamily mapping and preserves
+master order while dynamically splitting the applicable reasons into
+three contiguous balanced groups:
+
+```text
+Code | Reject Reason | Qty | Qty/Day
+```
+
+SAVE DEPALLET remains the separate operational batch action beside
+DEPALLET LOTS; it saves Depallet operational row values and is not the
+FINAL reject action. Legacy `WetReject`, `dbo.DepalletReject`, and
+legacy API/PIS behavior were not redesigned. Retiring or redesigning
+legacy APIs remains separate future work.
+
+## 11. Depallet manual verification and run isolation
+
+Manual verification was completed for Production Date `2026-10-01`,
+Lot `I11691001 · Angle Ridge`, DepalletID / RUN 7, Shift 1, LINE2 (DRY),
+with Source intentionally blank:
+
+```text
+RAW: R201=3, R208=2, R222=8, R223=41; total=54
+Total Reject=500
+After CAL: Calculated Reject=54, Final Classified Reject=54,
+           Difference / Unclassified=446
+CAL did not persist FINAL.
+After SAVE REJECT and reload: Calculated Reject=—,
+  Final Classified Reject=54, Difference / Unclassified=446
+  Qty and Qty/Day: R201=3, R208=2, R222=8, R223=41
+```
+
+Automated mock-backed coverage also uses RUN 71 and RUN 72 sharing one
+ProductionID. It verifies each run's CAL excludes the other's RAW,
+saving/re-saving one FINAL leaves the other run's header/details unchanged,
+current-run Qty is isolated, and daily Qty/Day aggregates saved FINAL
+across runs. Schema coverage verifies FINAL uniqueness by DepalletID, not
+ProductionID. No test data was inserted into SB23.
+
+All current REJECT/Depallet transaction data is test data, not real
+production data. No legacy reject-data migration is required.
+
+## 12. Current focused verification
+
+```text
+test_reject*.py: 79 passed
+test_depallet*.py: 67 passed
+node tests/test_reject_ui.cjs: passed
+node tests/test_depallet_ui.cjs: passed
+git diff --check: passed
+```
+
+These are focused code/test-double checks, not new database verification.
+Production RAW multi-shift behavior and Production CAL/FINAL/SAVE/Qty/Day
+remain complete and unchanged. No unrelated Mould changes are part of
+this implementation.

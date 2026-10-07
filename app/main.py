@@ -33,6 +33,9 @@ from app.reject_pis_send import send_reject_single
 from app.depallet import (read_context as read_depallet_context, read_reasons as read_depallet_reasons,
                           read_curing_lots, read_daily_work, save_depallet, save_depallet_batch,
                           reorder_depallet_run)
+from app.depallet_reject_final import (read_depallet_reject_cal,
+                                       read_depallet_reject_context,
+                                       save_depallet_reject_final)
 from app.products import (read_families, lot_prefix, read_products, read_mapping,
                           confirm_mapping, selected_product, month_start)
 from app.production_data import (read_production_data, save_production_data, calculate,
@@ -206,7 +209,7 @@ async def save_logger_route(request: Request):
 
 def reject_load_context(production_date, workflow="production", shift_id=None,
                         line_equipment_id=None, production_id=None, saved=False,
-                        error=None, form=None):
+                        error=None, form=None, depallet_id=None):
     with closing(get_connection()) as conn:
         cursor = conn.cursor()
         data = read_reject_page_data(cursor, production_date)
@@ -214,6 +217,7 @@ def reject_load_context(production_date, workflow="production", shift_id=None,
     return reject_page_context(
         data, production_date, workflow=workflow, shift_id=shift_id,
         line_equipment_id=line_equipment_id, production_id=production_id,
+        depallet_id=depallet_id,
         entries=entries, saved=saved, error=error, form=form,
     )
 
@@ -222,18 +226,20 @@ def reject_load_context(production_date, workflow="production", shift_id=None,
 def reject_page(request: Request, production_date: date | None = None,
                 workflow: str = "production", shift_id: int | None = None,
                 line_equipment_id: int | None = None,
-                production_id: int | None = None, saved: bool = False):
+                production_id: int | None = None, depallet_id: int | None = None,
+                saved: bool = False):
     production_date = production_date or date.today()
     status = 200
     try:
         context = reject_load_context(
             production_date, workflow, shift_id, line_equipment_id,
-            production_id, saved=saved,
+            production_id, depallet_id=depallet_id, saved=saved,
         )
     except ValueError as exc:
         context = reject_page_context(
             {}, production_date, workflow=workflow, shift_id=shift_id,
             line_equipment_id=line_equipment_id, production_id=production_id,
+            depallet_id=depallet_id,
             error=str(exc),
         )
         status = 400
@@ -242,6 +248,7 @@ def reject_page(request: Request, production_date: date | None = None,
         context = reject_page_context(
             {}, production_date, workflow=workflow, shift_id=shift_id,
             line_equipment_id=line_equipment_id, production_id=production_id,
+            depallet_id=depallet_id,
             error="Unable to load REJECT data. Please retry.",
         )
         status = 503
@@ -270,14 +277,17 @@ async def save_reject_route(request: Request):
         production_date = date.fromisoformat(
             str(values.get("production_date") or "")
         )
-        query = urlencode({
+        query_values = {
             "production_date": production_date.isoformat(),
             "workflow": values.get("workflow", "production"),
             "shift_id": values.get("shift_id", ""),
             "line_equipment_id": values.get("line_equipment_id", ""),
             "production_id": values.get("production_id", ""),
             "saved": "true",
-        })
+        }
+        if values.get("depallet_id"):
+            query_values["depallet_id"] = values["depallet_id"]
+        query = urlencode(query_values)
         return RedirectResponse(f"/reject?{query}", status_code=303)
     except RejectValidationError as exc:
         try:
@@ -292,11 +302,13 @@ async def save_reject_route(request: Request):
                 values.get("workflow", "production"),
                 values.get("shift_id"), values.get("line_equipment_id"),
                 values.get("production_id"), False, str(exc), values,
+                depallet_id=values.get("depallet_id"),
             )
         except Exception:
             logging.exception("Unable to rebuild REJECT form after validation")
             context = reject_page_context(
                 {}, selected_date, workflow=values.get("workflow"),
+                depallet_id=values.get("depallet_id"),
                 error=str(exc), form=values,
             )
         return templates.TemplateResponse(
@@ -318,12 +330,13 @@ async def save_reject_route(request: Request):
                 values.get("shift_id"), values.get("line_equipment_id"),
                 values.get("production_id"), False,
                 "Unable to save REJECT entry. No changes were saved; please retry.",
-                values,
+                values, depallet_id=values.get("depallet_id"),
             )
         except Exception:
             logging.exception("Unable to reload REJECT page after save failure")
             context = reject_page_context(
                 {}, selected_date, workflow=values.get("workflow"),
+                depallet_id=values.get("depallet_id"),
                 error="Unable to save REJECT entry. No changes were saved; please retry.",
                 form=values,
             )
@@ -336,7 +349,8 @@ async def save_reject_route(request: Request):
 @app.get("/reject/cal", response_class=HTMLResponse)
 def reject_cal_page(request: Request, production_date: date | None = None,
                     workflow: str = "production", shift_id: int | None = None,
-                    production_id: int | None = None):
+                    production_id: int | None = None,
+                    depallet_id: int | None = None):
     production_date = production_date or date.today()
     context = dict(
         page_title="REJECT CAL", active_tab="reject-cal",
@@ -362,25 +376,26 @@ def reject_cal_page(request: Request, production_date: date | None = None,
                 raise RejectValidationError(
                     "INVALID_WORKFLOW", "Select Production or Depallet for REJECT CAL."
                 )
-            selected_lot = next(
-                (item for item in data["lots"]
-                 if str(item["ProductionID"]) == str(production_id)
-                 and (
-                     cal_workflow == "production"
-                     or (
-                         selected_shift is not None
-                         and str(item["ShiftID"]) == str(selected_shift["ShiftID"])
-                     )
-                 )),
-                None,
-            )
-            if selected_lot is None and production_id is None and selected_shift:
-                selected_lot = next(
-                    (item for item in data["lots"]
-                     if cal_workflow == "production"
-                     or str(item["ShiftID"]) == str(selected_shift["ShiftID"])),
+            selected_run = None
+            if cal_workflow == "depallet":
+                selected_run = next(
+                    (item for item in data.get("depallet_runs", [])
+                     if str(item["DepalletID"]) == str(depallet_id)
+                     and str(item["ProductionID"]) == str(production_id)
+                     and selected_shift is not None
+                     and str(item.get("ShiftID") or "") == str(selected_shift["ShiftID"])),
                     None,
                 )
+                selected_lot = selected_run
+            else:
+                selected_lot = next(
+                    (item for item in data["lots"]
+                     if str(item["ProductionID"]) == str(production_id)),
+                    None,
+                )
+            if selected_lot is None and production_id is None and selected_shift:
+                if cal_workflow == "production":
+                    selected_lot = data["lots"][0] if data["lots"] else None
             if selected_shift is None:
                 raise RejectValidationError(
                     "INVALID_CAL_CONTEXT", "Select an active Shift for REJECT CAL."
@@ -393,11 +408,16 @@ def reject_cal_page(request: Request, production_date: date | None = None,
             summary = read_reject_cal(
                 cursor, production_date, workflow, selected_shift["ShiftID"],
                 selected_lot["ProductionID"],
+                depallet_id=(
+                    selected_run["DepalletID"]
+                    if cal_workflow == "depallet" and selected_run else None
+                ),
             )
         context.update(
             workflow=summary["workflow"],
             workflow_label="Depallet" if summary["workflow"] == "depallet" else "Production",
             shift=selected_shift, lot=selected_lot,
+            depallet_run=selected_run,
             totals=summary["totals"], total_qty=summary["total_qty"],
             entry_count=summary["entry_count"],
         )
@@ -998,7 +1018,11 @@ def depallet_page(request: Request, production_date: date | None = None,
     context = dict(page_title="DEPALLET", active_tab="depallet", production_date=production_date,
                    lots=[], products=[], families=[], entries={}, runs=[], current=None,
                    current_run_id=depallet_id, error=None, r99_name="", daily_totals={},
-                   day_start_time=None)
+                   day_start_time=None, depallet_reject_reasons=[],
+                   depallet_reject_total=None, depallet_reject_final_classified=0,
+                   depallet_reject_difference=None, depallet_reject_remark="",
+                   depallet_reject_message=None, depallet_reject_message_type=None,
+                   depallet_reject_calculated=None, depallet_reject_error=None)
     status = 200
     try:
         with closing(get_connection()) as conn:
@@ -1009,6 +1033,10 @@ def depallet_page(request: Request, production_date: date | None = None,
             (context["entries"], context["runs"], context["reject_reasons"],
              context["daily_totals"], context["day_start_time"]) = read_daily_work(
                 cursor, production_date, context["lots"])
+            for run in context["runs"]:
+                run["final_reject_context"] = read_depallet_reject_context(
+                    cursor, run["DepalletID"]
+                )
             if context["lots"]:
                 selected_run = next((run for run in context['runs']
                                      if run['DepalletID'] == depallet_id), None)
@@ -1018,6 +1046,8 @@ def depallet_page(request: Request, production_date: date | None = None,
                 if selected_run is None and production_id is None and depallet_id is None and context['runs']:
                     selected_run = context['runs'][0]
                 context['current_run_id'] = selected_run['DepalletID'] if selected_run else None
+                if selected_run:
+                    context.update(selected_run["final_reject_context"])
                 context["current"] = next((lot for lot in context["lots"]
                     if lot['ProductionID'] == (selected_run['ProductionID'] if selected_run else production_id)), None)
                 if context['current'] is None and context['lots']:
@@ -1040,6 +1070,79 @@ def depallet_page(request: Request, production_date: date | None = None,
     context['day_start_time_text'] = context['day_start_time'].strftime('%H:%M') \
         if isinstance(context['day_start_time'], time) else ''
     return templates.TemplateResponse(request=request, name="depallet.html", context=context, status_code=status)
+
+
+def depallet_reject_cal_response(depallet_id, production_date, shift_id):
+    try:
+        with closing(get_connection()) as conn:
+            result = read_depallet_reject_cal(
+                conn.cursor(), depallet_id, production_date, shift_id
+            )
+        return JSONResponse({
+            "depallet_id": result["depallet_id"],
+            "production_id": result["production_id"],
+            "depallet_date": result["depallet_date"].isoformat(),
+            "shift_id": result["shift_id"],
+            "quantities": {
+                str(reason_id): qty
+                for reason_id, qty in result["quantities"].items()
+            },
+            "raw_total": result["raw_total"],
+            "total_reject": result["total_reject"],
+        }, headers={"Cache-Control": "no-store"})
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception:
+        logging.exception("Unable to calculate Depallet REJECT for run %s", depallet_id)
+        return JSONResponse(
+            {"error": "Unable to calculate Depallet REJECT. Please retry."},
+            status_code=503,
+        )
+
+
+@app.get("/depallet/{depallet_id}/reject-cal")
+def depallet_reject_cal_route(depallet_id: int, production_date: date,
+                              shift_id: int):
+    return depallet_reject_cal_response(depallet_id, production_date, shift_id)
+
+
+def save_depallet_reject_final_response(depallet_id, data):
+    try:
+        with closing(get_connection()) as conn:
+            result = save_depallet_reject_final(conn, depallet_id, data)
+        return JSONResponse(jsonable_encoder({
+            "message": "Depallet REJECT saved.",
+            **result,
+        }))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception:
+        logging.exception("Unable to save Depallet REJECT FINAL for run %s", depallet_id)
+        return JSONResponse(
+            {"error": "Unable to save Depallet REJECT. No changes were saved; please retry."},
+            status_code=503,
+        )
+
+
+@app.post("/depallet/{depallet_id}/reject-final")
+async def save_depallet_reject_final_route(depallet_id: int, request: Request):
+    form = await request.form()
+    items = list(form.multi_items())
+    keys = [key for key, _ in items]
+    if len(keys) != len(set(keys)):
+        return JSONResponse(
+            {"error": "Duplicate Depallet REJECT fields are not allowed."},
+            status_code=400,
+        )
+    if any(key != "remark" and not key.startswith("qty_") for key in keys):
+        return JSONResponse({"error": "Invalid Depallet REJECT form."}, status_code=400)
+    data = dict(
+        Remark=form.get("remark", ""),
+        Quantities={key: value for key, value in items if key.startswith("qty_")},
+    )
+    return await run_in_threadpool(
+        save_depallet_reject_final_response, depallet_id, data
+    )
 
 
 @app.get("/lots/{production_id}/depallet")

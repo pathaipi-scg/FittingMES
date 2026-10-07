@@ -93,6 +93,22 @@ class MemoryCursor:
         elif 'FROM dbo.RejectReasonMaster' in sql:
             self.set_rows([{k:r[k] for k in ('ReasonCode','ReasonNameTH','SortOrder','IsActive')}
                            for r in sorted(c.work['reasons'],key=lambda r:r['SortOrder']) if r['IsActive']])
+        elif 'FROM dbo.Depallet AS d' in sql and 'WHERE d.DepalletID=?' in sql:
+            found=next((d for d in c.work['depallets'] if d['DepalletID']==args[0]),None)
+            lot=next((item for item in c.work['lots']
+                      if found and item['ProductionID']==found['ProductionID']),{})
+            self.set_rows([dict(DepalletID=found['DepalletID'],
+                ProductionID=found['ProductionID'],DepalletDate=found['DepalletDate'],
+                Shift=found['Shift'],DepalletQty=found['DepalletQty'],GoodQty=found['GoodQty'],
+                LotNo=found['LotNo'],ProductionLotDate=lot.get('ProdDate'),
+                ProductFamilyID=lot.get('ProductFamilyID'),IsActive=lot.get('IsActive',True),
+                ShiftID=2,ShiftCode=found['Shift'])] if found else [])
+        elif 'FROM dbo.RejectReason AS reason' in sql:
+            self.set_rows([])
+        elif 'FROM dbo.DepalletRejectFinal' in sql:
+            self.set_rows([])
+        elif 'FROM dbo.Depallet AS run' in sql:
+            self.set_rows([])
         elif 'FROM dbo.vw_DepalletValidation v' in sql:
             selected=[d for d in c.work['depallets'] if d['DepalletDate']==args[0]]
             result=[]
@@ -822,7 +838,6 @@ class DepalletTests(unittest.TestCase):
         self.assertIn('data-selected="true"',grid)
         self.assertIn('data-production-qty="10000"',grid)
         self.assertIn('Qty/Day',text)
-        self.assertIn('data-daily-total',text)
         self.assertIn('data-reject-code',text)
         self.assertIn('rejects.replaceChildren()',text)
 
@@ -859,11 +874,14 @@ class DepalletTests(unittest.TestCase):
             if reason['ReasonCode']=='R01': reason['IsActive']=False
         text=self.render_lot(conn,LOT).body.decode()
         self.assertIn("for (const text of ['Code','Reject Reason','Qty','Qty/Day'])",text)
-        self.assertIn('data-daily-total',text)
-        for rule in ('#depallet-detail{max-width:900px}', '.reject-code-column{width:38px}',
-                     '.reject-reason-column{width:auto}', '.reject-qty-column{width:50px}',
-                     '.reject-day-column{width:58px}', '-webkit-line-clamp:2', 'overflow-wrap:anywhere'):
+        self.assertIn('data-reject-reason-id',text)
+        self.assertIn('/reject-final',text)
+        for rule in ('#depallet-detail{width:100%;min-width:0}',
+                     '#depallet-detail th:nth-child(1),#depallet-detail td:nth-child(1){width:42px}',
+                     '#depallet-detail th:nth-child(3),#depallet-detail td:nth-child(3),#depallet-detail th:nth-child(4),#depallet-detail td:nth-child(4){width:48px}',
+                     'overflow-wrap:anywhere'):
             self.assertIn(rule,text)
+        self.assertNotIn('REJECT CAL reads RAW for this Depallet RUN only.',text)
 
     def test_depallet_filters_date_selects_lot_and_loads_correct_detail(self):
         conn=MemoryConnection(existing=True)
