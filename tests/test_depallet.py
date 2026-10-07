@@ -803,7 +803,7 @@ class DepalletTests(unittest.TestCase):
 
     def test_production_page_has_no_depallet_input_or_reads(self):
         conn=MemoryConnection()
-        with patch('app.main.get_connection',return_value=conn),patch('app.main.read_lots',return_value=[LOT]),patch('app.main.read_plans',return_value=[PLAN]),patch('app.main.read_production_data',return_value={}),patch('app.main.read_depallet_context') as reader:
+        with patch('app.main.get_connection',return_value=conn),patch('app.main.read_lots',return_value=[LOT]),patch('app.main.read_plans',return_value=[PLAN]),patch('app.main.read_production_data',return_value={}),patch('app.main.read_production_reject_context',return_value=dict(production_reject_reasons=[])),patch('app.main.read_depallet_context') as reader:
             response=production_page(request(),production_id=7,production_date=DAY)
         self.assertEqual(response.status_code,200)
         self.assertIn(b'action="/lots/7/production"',response.body)
@@ -924,7 +924,7 @@ class DepalletTests(unittest.TestCase):
 
     def test_new_load_failure_does_not_break_production_page(self):
         conn=MemoryConnection()
-        with patch('app.main.get_connection',return_value=conn),patch('app.main.read_lots',return_value=[LOT]),patch('app.main.read_plans',return_value=[PLAN]),patch('app.main.read_production_data',return_value={}),patch('app.main.read_depallet_context',side_effect=RuntimeError('unavailable')):
+        with patch('app.main.get_connection',return_value=conn),patch('app.main.read_lots',return_value=[LOT]),patch('app.main.read_plans',return_value=[PLAN]),patch('app.main.read_production_data',return_value={}),patch('app.main.read_production_reject_context',return_value=dict(production_reject_reasons=[])),patch('app.main.read_depallet_context',side_effect=RuntimeError('unavailable')):
             response=production_page(request(),production_id=7)
         self.assertEqual(response.status_code,200)
         self.assertIn(b'action="/lots/7/production"',response.body)

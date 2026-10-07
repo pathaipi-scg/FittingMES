@@ -8,7 +8,7 @@ from app.press_production import (read_eligible_moulds, read_eligible_presses,
                                   release_press_production, undo_release_press_production,
                                   validate_press_input, calculate_smdt)
 from app.main import production_page
-from test_production import DAY, LOT, PLAN, request
+from test_production import DAY, LOT, PLAN, PRODUCTION_REJECT_CONTEXT, request
 
 
 class PressProductionCursor:
@@ -614,7 +614,8 @@ class PressProductionTests(unittest.TestCase):
              patch('app.main.read_lots', return_value=[dict(LOT)]), \
              patch('app.main.read_plans', return_value=[dict(PLAN)]), \
              patch('app.main.read_production_data', return_value={}), \
-             patch('app.main.build_press_production_context', return_value=press_context):
+             patch('app.main.build_press_production_context', return_value=press_context), \
+             patch('app.main.read_production_reject_context', return_value=dict(PRODUCTION_REJECT_CONTEXT)):
             response = production_page(request(), production_id=7, production_date=DAY)
         self.assertEqual(response.status_code, 200)
         page = response.body.decode()

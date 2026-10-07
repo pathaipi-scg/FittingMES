@@ -120,23 +120,24 @@ main>header,main>.panel,main>.error{flex-shrink:0}
 .lot-status-error{background:#fdeaea;color:#9d2525}
 .lot-status-info{background:#eaf2fc;color:#245b92}
 
-.wet-reject-batch-toolbar{align-items:end;gap:6px;margin:3px 0}
-.wet-reject-batch-toolbar label{display:flex;flex-direction:column;gap:2px}
-.wet-reject-heading{display:flex;align-items:center;gap:7px;min-width:0;flex-wrap:wrap}
-.wet-reject-heading h2{margin-right:2px}
-.wet-reject-total{font-weight:700;white-space:nowrap}
-.wet-reject-heading .wet-reject-remark{display:flex;align-items:center;gap:3px}
-.wet-reject-heading .wet-reject-remark input{width:180px}
-@media(max-width:700px){.wet-reject-heading .wet-reject-remark{margin-left:0}.wet-reject-heading .wet-reject-remark input{width:min(180px,45vw)}}
-.wet-reject-groups{display:grid;grid-template-columns:repeat(3,minmax(245px,285px));gap:6px;width:max-content;max-width:100%;margin:4px 0}
-.wet-reject-groups .depallet-grid{width:285px;table-layout:fixed}
-.wet-reject-groups .depallet-grid th:nth-child(1),.wet-reject-groups .depallet-grid td:nth-child(1){width:38px}
-.wet-reject-groups .depallet-grid th:nth-child(2),.wet-reject-groups .depallet-grid td:nth-child(2){width:auto}
-.wet-reject-groups .depallet-grid th:nth-child(3),.wet-reject-groups .depallet-grid td:nth-child(3){width:50px}
-.wet-reject-groups .depallet-grid th:nth-child(4),.wet-reject-groups .depallet-grid td:nth-child(4){width:58px}
-.wet-reject-groups td.reason-name{white-space:normal;overflow-wrap:anywhere}
-.wet-reject-total{margin:4px 0;font-weight:600}
-@media(max-width:900px){.wet-reject-groups{grid-template-columns:minmax(245px,285px);width:100%;max-width:285px}}
+.production-reject-heading{display:flex;align-items:center;gap:7px;min-width:0;flex-wrap:wrap}
+.production-reject-heading h2{margin-right:2px}
+.production-reject-heading label{display:flex;align-items:center;gap:3px}
+.production-reject-heading input[name="remark"]{width:180px}
+.production-reject-actions{display:flex;align-items:center;gap:4px}
+.production-reject-summary{display:flex;gap:8px;flex-wrap:wrap;margin:0;font-size:9px;font-variant-numeric:tabular-nums}
+.production-reject-summary strong{margin-left:3px}
+.production-reject-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;margin:4px 0}
+.production-reject-grid .depallet-grid{width:100%;table-layout:fixed}
+.production-reject-grid .depallet-grid th,.production-reject-grid .depallet-grid td{padding:2px 3px}
+.production-reject-grid .depallet-grid th:nth-child(1),.production-reject-grid .depallet-grid td:nth-child(1){width:42px}
+.production-reject-grid .depallet-grid th:nth-child(3),.production-reject-grid .depallet-grid td:nth-child(3){width:48px}
+.production-reject-grid .depallet-grid th:nth-child(4),.production-reject-grid .depallet-grid td:nth-child(4){width:48px}
+.production-reject-grid .depallet-grid input[type=number]{height:19px;padding:0 2px;font-size:9px}
+.production-reject-grid td.reason-name{white-space:normal;overflow-wrap:anywhere}
+@media(max-width:950px){.production-reject-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:620px){.production-reject-grid{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:700px){.production-reject-heading label{margin-left:0}.production-reject-heading input[name="remark"]{width:min(180px,45vw)}}
 
 .material-prefix{white-space:nowrap;flex:none}
 #family-product-form{gap:3px}
@@ -279,19 +280,56 @@ main>header,main>.panel,main>.error{flex-shrink:0}
 {% else %}<tr><td colspan="26" class="muted">No Press Production rows for this Lot.</td></tr>{% endfor %}
 </tbody></table></div>
 </section>
-<section class="panel" aria-label="Wet Reject">
-<div class="wet-reject-heading"><h2>WET REJECT - {{ current.LotNo }}</h2><span class="wet-reject-total">Total Wet Reject &middot; <strong>{{ wet_reject_total }}</strong></span>
-{% if wet_reject_message %}<p class="press-production-message{% if wet_reject_message_type == 'error' %} error{% endif %}" role="status">{{ wet_reject_message }}</p>{% endif %}
-{% if not wet_reject_reasons %}<p class="error" role="alert">No active Wet Reject Reasons are configured in WetRejectReasonMaster. Add active reasons before recording Wet Reject.</p>{% endif %}
-<form id="wet-reject-batch-form" method="post" action="/lots/{{ current.ProductionID }}/wet-reject/batch"></form>
-<label class="wet-reject-remark">Remark<input form="wet-reject-batch-form" name="remark" maxlength="1000"></label>
-<button form="wet-reject-batch-form" class="primary" type="submit" {% if not wet_reject_reasons %}disabled{% endif %}>SAVE WET REJECT</button>
+<section class="panel" aria-label="Production REJECT reconciliation">
+<form id="production-reject-final-form" method="post" action="/lots/{{ current.ProductionID }}/production-reject-final">
+<div class="production-reject-heading">
+<h2>REJECT - {{ current.LotNo }}</h2>
+{% if production_reject_message %}<p class="press-production-message{% if production_reject_message_type == 'error' %} error{% endif %}" role="status">{{ production_reject_message }}</p>{% endif %}
+{% if production_reject_error %}<p class="error" role="alert">{{ production_reject_error }}</p>{% endif %}
+{% if not production_reject_reasons %}<p class="error" role="alert">No active Reject Reasons are configured for this Product Family.</p>{% endif %}
+<label>Remark<input name="remark" maxlength="1000" value="{{ production_reject_remark }}"></label>
+<div class="production-reject-actions">
+<button id="production-reject-save" class="primary" type="submit" {% if not production_reject_reasons or production_reject_error %}disabled{% endif %}>SAVE REJECT</button>
+<button id="production-reject-cal" type="button" {% if not production_reject_reasons %}disabled{% endif %}>REJECT CAL</button>
 </div>
-{% if wet_reject_summary_groups %}<div class="wet-reject-groups" data-total-wet-reject="{{ wet_reject_total }}">
-{% for group in wet_reject_summary_groups %}<table class="depallet-grid"><thead><tr><th>Code</th><th>Reject Reason</th><th>Qty</th><th>Qty / Day</th></tr></thead><tbody>
-{% for item in group %}<tr><td>{{ item.ReasonCode }}</td><td class="reason-name" title="{{ item.ReasonNameTH }}">{{ item.ReasonNameTH }}</td><td class="editable"><input form="wet-reject-batch-form" name="qty_{{ item.ReasonCode }}" type="number" min="0" max="2147483647" step="1" value="{{ item.Qty }}" {% if item.ReasonCode == 'R99' %}readonly{% endif %} aria-label="Qty {{ item.ReasonCode }} {{ item.ReasonNameTH }}"></td><td>{{ item.QtyPerDay }}</td></tr>{% endfor %}
-</tbody></table>{% endfor %}
-</div>{% else %}<p class="muted">No active Wet Reject Reasons.</p>{% endif %}
+<div class="production-reject-summary"
+ data-production-id="{{ current.ProductionID }}"
+ data-production-date="{{ production_date.isoformat() }}"
+ data-total-wet-reject="{{ production_reject_total if production_reject_total is not none else '' }}">
+<span>Total Wet Reject<strong id="production-reject-total">{{ production_reject_total if production_reject_total is not none else '—' }}</strong></span>
+<span>Calculated Reject<strong id="production-reject-calculated">—</strong></span>
+<span>Final Classified Reject<strong id="production-reject-final-classified">{{ production_reject_final_classified }}</strong></span>
+<span>Difference / Unclassified<strong id="production-reject-difference">{{ production_reject_difference if production_reject_difference is not none else '—' }}</strong></span>
+</div>
+</div>
+<p id="production-reject-status" role="status" aria-live="polite"></p>
+{% if production_reject_reasons %}
+<div class="production-reject-grid">
+{% set reason_count = production_reject_reasons|length %}
+{% set base_count = reason_count // 3 %}
+{% set remainder_count = reason_count % 3 %}
+{% set group1_count = base_count + (1 if remainder_count > 0 else 0) %}
+{% set group2_count = base_count + (1 if remainder_count > 1 else 0) %}
+{% set group1 = production_reject_reasons[:group1_count] %}
+{% set group2 = production_reject_reasons[group1_count:group1_count + group2_count] %}
+{% set group3 = production_reject_reasons[group1_count + group2_count:] %}
+{% for group in (group1, group2, group3) %}
+<table class="depallet-grid production-reject-reason-table">
+<thead><tr><th>Code</th><th>Reject Reason</th><th>Qty</th><th>Qty/Day</th></tr></thead>
+<tbody>
+{% for item in group %}
+<tr>
+<td>{{ item.ReasonCode }}</td>
+<td class="reason-name" title="{{ item.ReasonNameTH }}">{{ item.ReasonNameTH }}</td>
+<td class="editable"><input class="production-reject-qty" data-reject-reason-id="{{ item.RejectReasonID }}" name="qty_{{ item.RejectReasonID }}" type="number" min="0" max="2147483647" step="1" required value="{{ item.FinalQty }}" aria-label="Qty {{ item.ReasonCode }} {{ item.ReasonNameTH }}"></td>
+<td>{{ item.QtyPerDay }}</td>
+</tr>
+{% endfor %}
+</tbody></table>
+{% endfor %}
+</div>
+{% else %}<p class="muted">No active Reject Reasons.</p>{% endif %}
+</form>
 </section>
 {% endif %}
 </main>
@@ -391,19 +429,85 @@ main>header,main>.panel,main>.error{flex-shrink:0}
     }
   }));
 
-  const grid = document.querySelector('.wet-reject-groups');
-  if (!grid) return;
-  const total = Number(grid.dataset.totalWetReject || 0);
-  const inputs = [...grid.querySelectorAll('input[name^="qty_"]')];
-  const r99 = grid.querySelector('input[name="qty_R99"]');
-  if (!r99) return;
-  function updateR99() {
-    const classified = inputs.filter(input => input !== r99)
-      .reduce((sum, input) => sum + (Number(input.value) || 0), 0);
-    r99.value = String(Math.max(total - classified, 0));
+  const form = document.getElementById('production-reject-final-form');
+  if (!form) return;
+  const summary = form.querySelector('.production-reject-summary');
+  const inputs = [...form.querySelectorAll('.production-reject-qty')];
+  const status = document.getElementById('production-reject-status');
+  const saveButton = document.getElementById('production-reject-save');
+  const totalWetReject = document.getElementById('production-reject-total');
+  const calculated = document.getElementById('production-reject-calculated');
+  const classified = document.getElementById('production-reject-final-classified');
+  const difference = document.getElementById('production-reject-difference');
+
+  function updateTotals() {
+    let finalTotal = 0;
+    for (const input of inputs) {
+      const text = input.value.trim();
+      if (!/^[0-9]+$/.test(text) || !Number.isSafeInteger(Number(text))) {
+        classified.textContent = '—';
+        difference.textContent = '—';
+        return;
+      }
+      finalTotal += Number(text);
+    }
+    classified.textContent = String(finalTotal);
+    if (summary.dataset.totalWetReject !== '') {
+      difference.textContent = String(
+        Number(summary.dataset.totalWetReject) - finalTotal,
+      );
+    } else {
+      difference.textContent = '—';
+    }
   }
-  inputs.filter(input => input !== r99).forEach(input => input.addEventListener('input', updateR99));
-  updateR99();
+
+  inputs.forEach(input => input.addEventListener('input', updateTotals));
+  document.getElementById('production-reject-cal').addEventListener(
+    'click', async event => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      saveButton.disabled = true;
+      calculated.textContent = '—';
+      status.textContent = 'Calculating whole-Lot RAW REJECT...';
+      try {
+        const params = new URLSearchParams({
+          production_date: summary.dataset.productionDate,
+        });
+        const response = await fetch(
+          `/lots/${summary.dataset.productionId}/production-reject-cal?${params}`,
+          {headers: {Accept: 'application/json'}, cache: 'no-store'},
+        );
+        const result = await response.json();
+        if (!response.ok) {
+          throw new Error(result.error || 'Unable to calculate Production REJECT.');
+        }
+        for (const input of inputs) {
+          input.value = String(
+            result.quantities[input.dataset.rejectReasonId] ?? 0,
+          );
+        }
+        if (result.total_wet_reject === null) {
+          summary.dataset.totalWetReject = '';
+          totalWetReject.textContent = '—';
+        } else {
+          summary.dataset.totalWetReject = String(result.total_wet_reject);
+          totalWetReject.textContent = String(result.total_wet_reject);
+        }
+        calculated.textContent = String(result.raw_total);
+        updateTotals();
+        status.className = result.wet_reject_error ? 'error' : '';
+        status.textContent = result.wet_reject_error ||
+          'Whole-Lot REJECT CAL complete. Review quantities before SAVE REJECT.';
+        saveButton.disabled = Boolean(result.wet_reject_error);
+      } catch (error) {
+        status.textContent = error.message;
+        status.className = 'error';
+        saveButton.disabled = true;
+      } finally {
+        button.disabled = false;
+      }
+    },
+  );
 })();
 </script>
 <script>

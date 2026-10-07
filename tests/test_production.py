@@ -12,6 +12,14 @@ LOT = dict(ProductionID=7, ProdDate=DAY, Shift='D', PlanName='Plan 1',
            MaterialCode='12345678XX', MaterialName='Product brown', PlanQty=3600,
            ProductFamilyID=1, ProductFamily='NeuFit / NeuStile', ProductCode='06',
            LotPrefix='B0066909', RunningNo=1, LotNo='B006690901', CanVoid=1)
+PRODUCTION_REJECT_CONTEXT = dict(
+    production_reject_reasons=[],
+    production_reject_total=0,
+    production_reject_final_classified=0,
+    production_reject_difference=0,
+    production_reject_remark='',
+    production_reject_error=None,
+)
 
 def request():
     return Request({'type':'http', 'method':'GET', 'path':'/', 'headers':[]})
@@ -43,7 +51,7 @@ class ProductionTests(unittest.TestCase):
     def render(self, **kwargs):
         conn=MagicMock()
         conn.cursor.return_value.fetchone.return_value=('06',)
-        with patch('app.main.get_connection',return_value=conn), patch('app.main.read_lots',return_value=[dict(LOT)]), patch('app.main.read_plans',return_value=[dict(PLAN)]):
+        with patch('app.main.get_connection',return_value=conn), patch('app.main.read_lots',return_value=[dict(LOT)]), patch('app.main.read_plans',return_value=[dict(PLAN)]), patch('app.main.read_production_reject_context',return_value=dict(PRODUCTION_REJECT_CONTEXT)):
             response=production_page(request(), **kwargs)
         return response,conn
 

@@ -68,8 +68,10 @@ by assuming generated IDs.
 
 Existing `ProductionLot.Shift`, `Depallet.Shift`, `LoggerEvent.ShiftID`,
 `EquipmentTimeEvent.ShiftID`, and `ProductionShiftRuleHistory.ShiftID`
-remain unchanged. Resolve the selected ShiftMaster row against the
-ProductionLot shift value when loading lots and validating SAVE.
+remain unchanged. Production REJECT validates that the transaction
+ShiftID is active but does not require it to match `ProductionLot.Shift`;
+the ProductionID is the whole-Lot identity. Depallet retains its existing
+Shift/Lot matching rule.
 
 ### Reject Of
 
@@ -103,12 +105,16 @@ Product/Lot is header context and is selected once for multiple reject
 entries.
 
 Use `ProductionID -> ProductionLot.ProductionID` as Product/Lot identity.
-Candidates must match the global Production Date, selected Shift, and
-active/valid ProductionLot context. The server must revalidate ProductionID,
-date, shift, and active state on SAVE. Reject lots with NULL
-ProductFamilyID. ProductFamilyID and ProductCode are obtained through
-ProductionLot; neither is copied into the new entry tables. ProductFamilyID
-relationships use IDs, not family names or hardcoded numeric IDs.
+Production candidates must match the global Production Date and active /
+valid ProductionLot context, but may remain selected when the transaction
+Shift changes. For Production SAVE, the server validates that ShiftID is
+active and that ProductionID belongs to the selected date and is active;
+ProductionLot.Shift does not restrict the transaction Shift. Depallet
+continues to require its existing selected Shift / Lot match. Reject lots
+with NULL ProductFamilyID. ProductFamilyID and ProductCode are obtained
+through ProductionLot; neither is copied into the new entry tables.
+ProductFamilyID relationships use IDs, not family names or hardcoded
+numeric IDs.
 
 ## 4. Source
 
@@ -332,7 +338,7 @@ Preserve bidirectional filtering:
 
 Reject Of does not restrict reason applicability.
 
-## 13. REJECT CAL
+## 13. Standalone REJECT CAL
 
 Keep the existing reject frames/summary areas in **Production** and
 **Depallet**.
@@ -347,12 +353,13 @@ This mirrors:
 
 ### Production REJECT CAL
 
-Read only `dbo.ProductionRejectEntry`, matching:
+The standalone `/reject/cal` page reads only `dbo.ProductionRejectEntry`,
+matching:
 
 -   global Production Date
 -   relevant Shift
 -   relevant Product/Lot/Production context
-Calculate/load the Production/Wet Reject summary.
+Calculate/load the Shift-specific Production REJECT summary.
 
 ### Depallet REJECT CAL
 
@@ -367,11 +374,32 @@ Neither workflow uses a DepalletID owner relationship. A Depallet-side
 reject belongs to the selected Product/Lot context, not a specific
 Depallet run.
 
-`REJECT CAL` and destination `SAVE` are separate concepts unless
-investigation proves an existing established behavior requires
-otherwise.
+The standalone REJECT CAL and Production-page FINAL SAVE are separate
+operations. Standalone CAL is read-only and does not populate the
+Production page's editable whole-Lot FINAL form.
 
-Do not remove the existing Production/Depallet reject summary UI.
+Keep the standalone Production and Depallet REJECT CAL pages.
+
+### Production-page whole-Lot FINAL reconciliation
+
+The Production page uses `dbo.ProductionRejectFinal` and
+`dbo.ProductionRejectFinalDetail`; it no longer uses the legacy WetReject
+master or transaction tables for its Production REJECT entry area.
+
+-   One FINAL header is keyed uniquely by ProductionID, without ShiftID.
+-   Applicable active RejectReason rows are selected dynamically through
+    RejectReasonProductFamily.
+-   Ordinary page LOAD displays saved FinalQty values, or zeros if no
+    FINAL exists. LOAD does not calculate RAW.
+-   REJECT CAL reads ProductionRejectEntry for the authoritative Lot
+    ProductionDate and ProductionID, groups by RejectReasonID, and
+    includes all transaction shifts, Sources, and Lines.
+-   CAL only updates browser form state. SAVE validates the fresh
+    ProductionData wet total and fresh RAW audit totals, then atomically
+    replaces the complete applicable-reason detail snapshot.
+-   Qty/Day is derived from saved FINAL detail for active Production Lots
+    on the Production Date.
+-   RAW rows and legacy WetReject tables are never changed by FINAL SAVE.
 
 ## 14. Paper/Excel relationship
 
@@ -500,9 +528,11 @@ Foreign keys:
 ProductionID is the Product/Lot relational identity. ProductCode and
 ProductFamilyID are derived through ProductionLot and are not copied to
 these tables. Validate ProductFamily applicability through
-`ProductionLot.ProductFamilyID -> RejectReasonProductFamily`. Validate
-ProductionDate, Shift, active state, and ProductFamilyID against
-ProductionLot on SAVE.
+`ProductionLot.ProductFamilyID -> RejectReasonProductFamily`. On Production
+SAVE, validate the authoritative ProductionDate, active Lot, ProductFamily,
+and active transaction Shift independently; do not require the selected
+transaction Shift to equal `ProductionLot.Shift`. Depallet retains its
+Shift/Lot validation.
 
 ProductionRejectEntry and DepalletRejectEntry are the workflow owners.
 Reject Of is not persisted. Do not add RejectOf, DepalletID, ProductCode,

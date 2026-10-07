@@ -1,6 +1,8 @@
 import unittest
 from datetime import date
+from unittest.mock import MagicMock, patch
 
+from starlette.requests import Request
 from app.reject import (
     RejectValidationError,
     read_reject_page_data,
@@ -8,7 +10,7 @@ from app.reject import (
 )
 from app.reject_page import reject_page_context
 from app.reject_summary import read_reject_cal
-from app.main import app, templates
+from app.main import app, reject_cal_page, templates
 
 
 class FakeCursor:
@@ -523,6 +525,37 @@ class RejectEntryTests(unittest.TestCase):
         self.assertEqual(depallet["source_options"][0]["EquipmentID"], 620)
         self.assertEqual(base["lines"][0]["EquipmentCode"], "LINE2")
 
+    def test_production_lot_is_not_filtered_by_transaction_shift(self):
+        production_date = date(2026, 10, 6)
+        base = dict(
+            shifts=[
+                dict(ShiftID=733, ShiftCode="1", ShiftName="Shift 1"),
+                dict(ShiftID=734, ShiftCode="2", ShiftName="Shift 2"),
+            ],
+            lines=[], presses=[],
+            lots=[
+                dict(ProductionID=13, ProductionDate=production_date,
+                     ShiftID=733, ShiftCode="1", ProductFamilyID=842,
+                     ProductCode="06", LotNo="LOT-13",
+                     ProductFamily="Family", ProductName="Product"),
+            ],
+            reasons=[],
+        )
+        production = reject_page_context(
+            base, production_date, workflow="production", shift_id=734,
+            production_id=13,
+        )
+        depallet = reject_page_context(
+            base, production_date, workflow="depallet", shift_id=734,
+            production_id=13,
+        )
+        self.assertEqual(
+            [item["ProductionID"] for item in production["lots"]], [13]
+        )
+        self.assertEqual(production["selected_production_id"], "13")
+        self.assertEqual(depallet["lots"], [])
+        self.assertEqual(depallet["selected_production_id"], "")
+
     def test_no_numeric_id_or_reason_range_business_rules(self):
         from pathlib import Path
 
@@ -535,6 +568,88 @@ class RejectEntryTests(unittest.TestCase):
 
 
 class RejectCalTests(unittest.TestCase):
+    @staticmethod
+    def request():
+        return Request({
+            "type": "http", "asgi": {"version": "3.0"},
+            "http_version": "1.1", "method": "GET", "scheme": "http",
+            "path": "/reject/cal", "raw_path": b"/reject/cal",
+            "query_string": b"", "headers": [],
+            "server": ("localhost", 80), "client": ("127.0.0.1", 12345),
+            "root_path": "",
+        })
+
+    def test_production_cal_route_keeps_same_lot_for_shift_one_and_two(self):
+        production_date = date(2026, 10, 1)
+        data = dict(
+            shifts=[
+                dict(ShiftID=11, ShiftCode="1", ShiftName="Shift 1"),
+                dict(ShiftID=12, ShiftCode="2", ShiftName="Shift 2"),
+            ],
+            lots=[
+                dict(ProductionID=13, ProductionDate=production_date,
+                     ShiftID=11, ShiftCode="1", ProductFamilyID=84,
+                     ProductCode="06", LotNo="I11691001",
+                     ProductFamily="Angle Ridge", ProductName="Angle Ridge"),
+            ],
+        )
+        for shift_id, shift_code, expected_rows, expected_total in (
+            (11, "1", 5, 23),
+            (12, "2", 2, 10),
+        ):
+            with self.subTest(shift=shift_code):
+                connection = MagicMock()
+                summary = dict(
+                    workflow="production",
+                    totals=[dict(ReasonCode="R201", ReasonNameTH="Reason",
+                                 Qty=expected_total, EntryCount=expected_rows)],
+                    total_qty=expected_total,
+                    entry_count=expected_rows,
+                )
+                with patch("app.main.get_connection", return_value=connection), \
+                     patch("app.main.read_reject_page_data", return_value=data), \
+                     patch("app.main.read_reject_cal", return_value=summary) as cal:
+                    response = reject_cal_page(
+                        self.request(), production_date=production_date,
+                        workflow="production", shift_id=shift_id,
+                        production_id=13,
+                    )
+                self.assertEqual(response.status_code, 200)
+                self.assertIn("I11691001", response.body.decode())
+                self.assertIn(f"Shift {shift_code}", response.body.decode())
+                self.assertIn(
+                    f"shift_id={shift_id}&amp;production_id=13",
+                    response.body.decode(),
+                )
+                self.assertEqual(
+                    cal.call_args.args[3:], (shift_id, 13)
+                )
+
+    def test_depallet_cal_route_still_requires_lot_shift_match(self):
+        production_date = date(2026, 10, 1)
+        data = dict(
+            shifts=[
+                dict(ShiftID=11, ShiftCode="1", ShiftName="Shift 1"),
+                dict(ShiftID=12, ShiftCode="2", ShiftName="Shift 2"),
+            ],
+            lots=[
+                dict(ProductionID=13, ProductionDate=production_date,
+                     ShiftID=11, ShiftCode="1", ProductFamilyID=84,
+                     ProductCode="06", LotNo="I11691001",
+                     ProductFamily="Angle Ridge", ProductName="Angle Ridge"),
+            ],
+        )
+        with patch("app.main.get_connection", return_value=MagicMock()), \
+             patch("app.main.read_reject_page_data", return_value=data), \
+             patch("app.main.read_reject_cal") as cal:
+            response = reject_cal_page(
+                self.request(), production_date=production_date,
+                workflow="depallet", shift_id=12, production_id=13,
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Select an active Product / Lot", response.body.decode())
+        cal.assert_not_called()
+
     def test_production_cal_reads_only_production_entry_table(self):
         cursor = FakeCursor()
         result = read_reject_cal(
@@ -545,6 +660,76 @@ class RejectCalTests(unittest.TestCase):
         self.assertNotIn("DepalletRejectEntry", query)
         self.assertEqual(params, (date(2026, 10, 6), 734, 17701))
         self.assertEqual(result["table"], "ProductionRejectEntry")
+
+    def test_production_cal_for_same_lot_is_independently_shift_specific(self):
+        production_date = date(2026, 10, 1)
+
+        class ShiftRowsCursor:
+            def __init__(self):
+                self.description = []
+                self.result = []
+                self.calls = []
+                self.raw = [
+                    (production_date, 11, 13, 301, "R201", "Reason 201", 1, 3),
+                    (production_date, 11, 13, 304, "R204", "Reason 204", 2, 2),
+                    (production_date, 11, 13, 307, "R207", "Reason 207", 3, 6),
+                    (production_date, 11, 13, 308, "R208", "Reason 208", 4, 4),
+                    (production_date, 11, 13, 312, "R212", "Reason 212", 5, 8),
+                    (production_date, 12, 13, 301, "R201", "Reason 201", 1, 5),
+                    (production_date, 12, 13, 302, "R202", "Reason 202", 2, 5),
+                ]
+
+            def execute(self, query, *params):
+                self.calls.append((query, params))
+                selected = [
+                    row for row in self.raw
+                    if row[0] == params[0] and row[1] == params[1]
+                    and row[2] == params[2]
+                ]
+                grouped = {}
+                for row in selected:
+                    grouped.setdefault(row[3], [row[4], row[5], row[6], 0, 0])
+                    grouped[row[3]][3] += row[7]
+                    grouped[row[3]][4] += 1
+                self.description = [
+                    ("RejectReasonID",), ("ReasonCode",), ("ReasonNameTH",),
+                    ("SortOrder",), ("Qty",), ("EntryCount",),
+                ]
+                self.result = [
+                    (reason_id, *values)
+                    for reason_id, values in grouped.items()
+                ]
+
+            def fetchall(self):
+                result, self.result = self.result, []
+                return result
+
+        cursor = ShiftRowsCursor()
+        shift_one = read_reject_cal(
+            cursor, production_date, "production", 11, 13
+        )
+        shift_two = read_reject_cal(
+            cursor, production_date, "production", 12, 13
+        )
+        self.assertEqual(
+            [(row["ReasonCode"], row["Qty"], row["EntryCount"])
+             for row in shift_one["totals"]],
+            [("R201", 3, 1), ("R204", 2, 1), ("R207", 6, 1),
+             ("R208", 4, 1), ("R212", 8, 1)],
+        )
+        self.assertEqual(shift_one["total_qty"], 23)
+        self.assertEqual(shift_one["entry_count"], 5)
+        self.assertEqual(
+            [(row["ReasonCode"], row["Qty"], row["EntryCount"])
+             for row in shift_two["totals"]],
+            [("R201", 5, 1), ("R202", 5, 1)],
+        )
+        self.assertEqual(shift_two["total_qty"], 10)
+        self.assertEqual(shift_two["entry_count"], 2)
+        self.assertTrue(all(
+            params == (production_date, shift_id, 13)
+            for (_, params), shift_id in zip(cursor.calls, (11, 12))
+        ))
 
     def test_depallet_cal_reads_only_depallet_entry_table(self):
         class CalCursor:

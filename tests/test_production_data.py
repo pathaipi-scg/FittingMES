@@ -6,7 +6,9 @@ from app.production_data import (validate, calculate, save_production_data, read
                                   read_shift_rules, resolve_shift)
 from app.main import production_page, save_production
 from app.lots import insert_lot, update_lot
-from test_production import LOT, PLAN, DAY, request
+from test_production import (
+    LOT, PLAN, DAY, PRODUCTION_REJECT_CONTEXT, request,
+)
 
 RAW = dict(Shift='2',ProductionStartTime='08:10',ProductionEndTime='14:25',
            CounterQty='3648',CuringQty='3310',Remark='Operator note')
@@ -186,7 +188,7 @@ class ProductionDataTests(unittest.TestCase):
         conn=MagicMock(); cursor=conn.cursor.return_value
         cursor.description=[(k,) for k in data]; cursor.fetchall.return_value=[tuple(data.values())]
         self.assertEqual(read_production_data(cursor,7),data)
-        with patch('app.main.get_connection',return_value=conn),patch('app.main.read_lots',return_value=[dict(LOT,Shift='2')]),patch('app.main.read_plans',return_value=[dict(PLAN,Shift='3')]),patch('app.main.read_production_data',return_value=data):
+        with patch('app.main.get_connection',return_value=conn),patch('app.main.read_lots',return_value=[dict(LOT,Shift='2')]),patch('app.main.read_plans',return_value=[dict(PLAN,Shift='3')]),patch('app.main.read_production_data',return_value=data),patch('app.main.read_production_reject_context',return_value=dict(PRODUCTION_REJECT_CONTEXT)):
             response=production_page(request(),production_id=7,production_date=DAY)
         self.assertEqual(response.status_code,200)
         self.assertEqual(response.context['current']['Shift'],'2')

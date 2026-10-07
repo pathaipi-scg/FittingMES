@@ -40,7 +40,7 @@ def reject_page_context(data, production_date, workflow=None, shift_id=None,
         None,
     )
 
-    lots = [
+    lots = all_lots if chosen_workflow == "production" else [
         item for item in all_lots
         if selected_shift is not None
         and str(item["ShiftID"]) == str(selected_shift["ShiftID"])

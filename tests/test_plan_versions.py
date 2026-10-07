@@ -5,7 +5,9 @@ from unittest.mock import MagicMock, patch
 
 from app.main import read_plans, mark_used, choose_plan, production_page
 from app.lots import insert_lot, update_lot, require_available
-from test_production import PLAN, LOT, DAY, request
+from test_production import (
+    PLAN, LOT, DAY, PRODUCTION_REJECT_CONTEXT, request,
+)
 
 
 class QueryCursor:
@@ -78,7 +80,7 @@ class EffectivePlanTests(unittest.TestCase):
     def test_information_and_edit_resolve_latest_version(self):
         conn = MagicMock()
         latest = self.latest()
-        with patch('app.main.get_connection', return_value=conn), patch('app.main.read_lots', return_value=[LOT]), patch('app.main.read_plans', return_value=[latest]):
+        with patch('app.main.get_connection', return_value=conn), patch('app.main.read_lots', return_value=[LOT]), patch('app.main.read_plans', return_value=[latest]), patch('app.main.read_production_reject_context', return_value=dict(PRODUCTION_REJECT_CONTEXT)):
             response = production_page(request(), production_id=7, edit=True, production_date=DAY)
         self.assertEqual(response.status_code, 200)
         current = response.context['current']
@@ -126,7 +128,7 @@ class EffectivePlanTests(unittest.TestCase):
         for action in ('create', 'save'):
             with self.subTest(action=action):
                 conn = MagicMock()
-                with patch('app.main.get_connection', return_value=conn), patch('app.main.read_lots', return_value=[LOT] if action == 'save' else []), patch('app.main.read_plans', return_value=read_plans(self.cursor, DAY)), patch('app.main.insert_lot') as insert, patch('app.main.update_lot') as update:
+                with patch('app.main.get_connection', return_value=conn), patch('app.main.read_lots', return_value=[LOT] if action == 'save' else []), patch('app.main.read_plans', return_value=read_plans(self.cursor, DAY)), patch('app.main.insert_lot') as insert, patch('app.main.update_lot') as update, patch('app.main.read_production_reject_context', return_value=dict(PRODUCTION_REJECT_CONTEXT)):
                     response = production_page(request(), old['selection_id'], production_date=DAY,
                         create=action == 'create', save=action == 'save',
                         production_id=7 if action == 'save' else None, running_no=1)

@@ -45,7 +45,7 @@ from app.press_production import (build_press_production_context,
                                   undo_release_press_production,
                                   release_press_production,
                                   save_press_production as save_press_production_row)
-from app.wet_reject import build_wet_reject_context, save_wet_reject, save_wet_reject_batch
+from app.wet_reject import save_wet_reject, save_wet_reject_batch
 from app.print_prod import read_print_prod_context
 from app.print_oee import read_print_oee_context
 from app.browser_pdf import (PdfGenerationError, generate_print_oee_pdf,
@@ -62,6 +62,9 @@ from app.reject import (RejectValidationError, read_reject_entries,
                         read_reject_page_data, save_reject_entry)
 from app.reject_page import reject_page_context
 from app.reject_summary import read_reject_cal
+from app.production_reject_final import (read_production_reject_cal,
+                                         read_production_reject_context,
+                                         save_production_reject_final)
 
 app = FastAPI(title="FittingMES", version="0.1.0")
 app.mount('/static', StaticFiles(directory=Path(__file__).parent / 'static'), name='static')
@@ -354,17 +357,28 @@ def reject_cal_page(request: Request, production_date: date | None = None,
             )
             if selected_shift is None and shift_id is None and data["shifts"]:
                 selected_shift = data["shifts"][0]
+            cal_workflow = str(workflow or "").strip().lower()
+            if cal_workflow not in ("production", "depallet"):
+                raise RejectValidationError(
+                    "INVALID_WORKFLOW", "Select Production or Depallet for REJECT CAL."
+                )
             selected_lot = next(
                 (item for item in data["lots"]
                  if str(item["ProductionID"]) == str(production_id)
-                 and selected_shift is not None
-                 and str(item["ShiftID"]) == str(selected_shift["ShiftID"])),
+                 and (
+                     cal_workflow == "production"
+                     or (
+                         selected_shift is not None
+                         and str(item["ShiftID"]) == str(selected_shift["ShiftID"])
+                     )
+                 )),
                 None,
             )
             if selected_lot is None and production_id is None and selected_shift:
                 selected_lot = next(
                     (item for item in data["lots"]
-                     if str(item["ShiftID"]) == str(selected_shift["ShiftID"])),
+                     if cal_workflow == "production"
+                     or str(item["ShiftID"]) == str(selected_shift["ShiftID"])),
                     None,
                 )
             if selected_shift is None:
@@ -427,7 +441,7 @@ def product_selection_context(cursor, selected):
 
 
 def production_page(request, plan_id=None, product_code=None, confirm=False, mapping_edit=False,
-                    create=False, running_no=None, production_date=None, production_id=None, edit=False, save=False, void=False, production_input=None, data_saved=False, product_family=None, product_choices=None, press_message=None, press_message_type=None, wet_reject_message=None, wet_reject_message_type=None):
+                    create=False, running_no=None, production_date=None, production_id=None, edit=False, save=False, void=False, production_input=None, data_saved=False, product_family=None, product_choices=None, press_message=None, press_message_type=None, wet_reject_message=None, wet_reject_message_type=None, production_reject_message=None, production_reject_message_type=None, production_reject_form=None):
     requested_date = production_date
     production_date = production_date or date.today()
     context = dict(families=[], product_family=None, product_family_id=None, product_previews={}, production_data={}, calculated=calculate(None, None), data_saved=data_saved, production_date=production_date, lots=[], lots_for_date=[], production_data_by_lot={}, calculated_by_lot={}, current=None, edit=edit, edit_plans=[], plans=[], selected=None, products=[], material_prefix=None,
@@ -436,6 +450,12 @@ def production_page(request, plan_id=None, product_code=None, confirm=False, map
                    press_message=press_message, press_message_type=press_message_type,
                    wet_reject_reasons=[], wet_reject_events=[], wet_reject_summary=[], wet_reject_total=0,
                    wet_reject_reason_groups=[], wet_reject_summary_groups=[],
+                   production_reject_reasons=[], production_reject_total=None,
+                   production_reject_final_classified=0,
+                   production_reject_difference=None,
+                   production_reject_remark="", production_reject_error=None,
+                   production_reject_message=production_reject_message,
+                   production_reject_message_type=production_reject_message_type,
                    shift_rules=[],
                    wet_reject_now=datetime.now().strftime('%Y-%m-%dT%H:%M:%S'),
                    wet_reject_message=wet_reject_message, wet_reject_message_type=wet_reject_message_type)
@@ -499,10 +519,6 @@ def production_page(request, plan_id=None, product_code=None, confirm=False, map
                 except Exception:
                     context.update(press_production=[], eligible_presses=[], eligible_moulds=[],
                                    press_product_error='Unable to load Press Production choices or rows.')
-                try:
-                    context.update(build_wet_reject_context(cursor, production_id, production_date))
-                except Exception:
-                    pass
                 if production_input is not None:
                     context["production_data"] = production_input
                     context["current"]["Shift"] = production_input.get("Shift", current["Shift"])
@@ -512,6 +528,30 @@ def production_page(request, plan_id=None, product_code=None, confirm=False, map
                 context["calculated"] = calculate(
                     context["production_data"].get("CounterQty"),
                     context["production_data"].get("CuringQty"))
+                context.update(
+                    read_production_reject_context(cursor, production_id)
+                )
+                if production_reject_form is not None:
+                    quantities = production_reject_form.get("Quantities", {})
+                    submitted_classified = 0
+                    for reason in context["production_reject_reasons"]:
+                        raw_qty = quantities.get(
+                            f'qty_{reason["RejectReasonID"]}'
+                        )
+                        if raw_qty is not None:
+                            reason["FinalQty"] = raw_qty
+                        text = str(reason["FinalQty"] or "").strip()
+                        if text.isascii() and text.isdigit() and len(text) <= 10:
+                            submitted_classified += int(text)
+                    context["production_reject_remark"] = (
+                        production_reject_form.get("Remark", "")
+                    )
+                    context["production_reject_final_classified"] = submitted_classified
+                    if context["production_reject_total"] is not None:
+                        context["production_reject_difference"] = (
+                            context["production_reject_total"]
+                            - context["production_reject_final_classified"]
+                        )
 
                 if edit or save:
                     context["edit_plans"] = mark_used(lot_plans, context["lots"], production_id)
@@ -586,11 +626,15 @@ def home(request: Request, plan_id: str | None = None, production_date: date | N
          mapping_edit: bool = False,
         production_id: int | None = None, edit: bool = False, data_saved: bool = False,
         press_message: str | None = None, press_message_type: str | None = None,
-        wet_reject_message: str | None = None, wet_reject_message_type: str | None = None):
+        wet_reject_message: str | None = None, wet_reject_message_type: str | None = None,
+        production_reject_message: str | None = None,
+        production_reject_message_type: str | None = None):
     return production_page(request, plan_id, mapping_edit=mapping_edit, production_date=production_date, production_id=production_id,
                       edit=edit, data_saved=data_saved, press_message=press_message,
                       press_message_type=press_message_type, wet_reject_message=wet_reject_message,
-                      wet_reject_message_type=wet_reject_message_type)
+                      wet_reject_message_type=wet_reject_message_type,
+                      production_reject_message=production_reject_message,
+                      production_reject_message_type=production_reject_message_type)
 
 
 @app.post("/", response_class=HTMLResponse)
@@ -807,6 +851,92 @@ def read_press_logger_guide(production_id: int, press_production_id: int):
             'BD': {'present': guide['HasBreakdown'], 'minutes': guide['BreakdownMinutes']},
         },
     }, headers={'Cache-Control': 'no-store'})
+
+
+def save_production_reject_final_change(production_id, data):
+    with closing(get_connection()) as conn:
+        return save_production_reject_final(conn, production_id, data)
+
+
+@app.get('/lots/{production_id}/production-reject-cal')
+def production_reject_cal_route(production_id: int,
+                                production_date: date | None = None):
+    try:
+        with closing(get_connection()) as conn:
+            result = read_production_reject_cal(
+                conn.cursor(), production_id, expected_date=production_date
+            )
+        return JSONResponse({
+            "production_id": result["production_id"],
+            "production_date": result["production_date"].isoformat(),
+            "quantities": {
+                str(reason_id): qty
+                for reason_id, qty in result["quantities"].items()
+            },
+            "raw_total": result["raw_total"],
+            "total_wet_reject": result["total_wet_reject"],
+            "wet_reject_error": result["wet_reject_error"],
+        }, headers={"Cache-Control": "no-store"})
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception:
+        logging.exception(
+            "Unable to calculate Production REJECT for ProductionID %s",
+            production_id,
+        )
+        return JSONResponse(
+            {"error": "Unable to calculate Production REJECT. Please retry."},
+            status_code=503,
+        )
+
+
+@app.post('/lots/{production_id}/production-reject-final')
+async def save_production_reject_final_route(request: Request,
+                                             production_id: int):
+    form = await request.form()
+    items = list(form.multi_items())
+    keys = [key for key, _ in items]
+    quantities = {
+        key: value for key, value in items if key.startswith("qty_")
+    }
+    form_values = dict(Quantities=quantities, Remark=form.get("remark", ""))
+
+    def render_error(message):
+        response = production_page(
+            request, production_id=production_id,
+            production_reject_message=message,
+            production_reject_message_type="error",
+            production_reject_form=form_values,
+        )
+        response.status_code = 400
+        return response
+
+    if len(keys) != len(set(keys)):
+        return render_error("Duplicate Production REJECT fields are not allowed.")
+    if any(key != "remark" and not key.startswith("qty_") for key in keys):
+        return render_error("The submitted Production REJECT form is invalid.")
+    try:
+        result = await run_in_threadpool(
+            save_production_reject_final_change,
+            production_id, form_values,
+        )
+        query = urlencode({
+            "production_id": production_id,
+            "production_date": result["production_date"].isoformat(),
+            "production_reject_message": "Production REJECT saved.",
+            "production_reject_message_type": "success",
+        })
+        return RedirectResponse(f"/?{query}", status_code=303)
+    except ValueError as exc:
+        return render_error(str(exc))
+    except Exception:
+        logging.exception(
+            "Unable to save Production REJECT FINAL for ProductionID %s",
+            production_id,
+        )
+        return render_error(
+            "Unable to save Production REJECT. No changes were saved; please retry."
+        )
 
 
 def save_wet_reject_change(production_id, data, wet_reject_id=None):

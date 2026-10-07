@@ -6,7 +6,7 @@ from datetime import date, time
 from unittest.mock import MagicMock, patch
 from urllib.parse import urlencode, urlsplit
 from test_prod_api import get_page
-from test_production import LOT, PLAN
+from test_production import LOT, PLAN, PRODUCTION_REJECT_CONTEXT
 
 
 class NavigationTests(unittest.TestCase):
@@ -15,6 +15,7 @@ class NavigationTests(unittest.TestCase):
              patch('app.main.read_lots',return_value=[dict(LOT)]), \
              patch('app.main.read_plans',return_value=[dict(PLAN)]), \
              patch('app.main.read_production_data',return_value={}), \
+             patch('app.main.read_production_reject_context',return_value=dict(PRODUCTION_REJECT_CONTEXT)), \
              patch('app.main.read_depallet_context',return_value={}), \
              patch('app.main.read_curing_lots',return_value=[]), \
              patch('app.main.read_products',return_value=[]), \

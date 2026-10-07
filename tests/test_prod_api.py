@@ -8,7 +8,7 @@ from datetime import date, time
 from unittest.mock import patch
 from app.main import app, production_page
 from app.prod_api import read_prod_records, resolve_plan, build_pis_prodorders_payload, field_mapping, build_pis_date_preview, lot_readiness, preview_readiness
-from test_production import LOT, PLAN, request
+from test_production import LOT, PLAN, PRODUCTION_REJECT_CONTEXT, request
 
 DAY = date(2026, 9, 22)
 RECORD = dict(ProductionID=2, ProdDate=DAY, Shift='1', MaterialCode='12345678XX',
@@ -229,7 +229,8 @@ class ProdApiTests(unittest.TestCase):
         from unittest.mock import MagicMock
         with patch('app.main.get_connection',return_value=MagicMock()), \
              patch('app.main.read_lots',return_value=[LOT]), \
-             patch('app.main.read_plans',return_value=[PLAN]):
+             patch('app.main.read_plans',return_value=[PLAN]), \
+             patch('app.main.read_production_reject_context',return_value=dict(PRODUCTION_REJECT_CONTEXT)):
             response=production_page(request(),production_id=7)
         body=response.body.decode()
         self.assertIn('href="/prod-api?production_date=2026-09-21"',body)

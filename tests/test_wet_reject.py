@@ -1,3 +1,4 @@
+import re
 import unittest
 from datetime import date, datetime
 from unittest.mock import MagicMock, patch
@@ -372,79 +373,123 @@ class SaveWetRejectBatchTests(unittest.TestCase):
 
 
 class WetRejectPageTests(unittest.TestCase):
-    def render(self, wet_context):
+    def render(self, reject_context):
         with patch('app.main.get_connection', return_value=MagicMock()), \
              patch('app.main.read_lots', return_value=[dict(LOT)]), \
              patch('app.main.read_plans', return_value=[dict(PLAN)]), \
              patch('app.main.read_production_data', return_value={}), \
              patch('app.main.build_press_production_context', return_value=dict(
                  press_production=[], eligible_presses=[], eligible_moulds=[], press_product_error=None)), \
-             patch('app.main.build_wet_reject_context', return_value=wet_context):
+             patch('app.main.read_production_reject_context', return_value=reject_context):
             return production_page(request(), production_id=7, production_date=DAY)
 
-    def test_selected_lot_renders_summary_without_events_or_datetime_editor(self):
-        reasons = [dict(ReasonCode='R01', ReasonNameTH='Crack', SortOrder=1)]
-        wet_context = dict(
-            wet_reject_reasons=reasons,
-            wet_reject_reason_groups=[reasons, [], []],
-            wet_reject_events=[dict(WetRejectID=5, ProductionID=7, ReasonCode='R01', ReasonNameTH='Crack',
-                Qty=5, RejectDateTime=datetime(2026, 9, 28, 8, 15), Remark='note',
-                CreatedAt=None, UpdatedAt=datetime(2026, 9, 28, 9, 0))],
-            wet_reject_summary=[dict(ReasonCode='R01', ReasonNameTH='Crack', Qty=5, QtyPerDay=5)],
-            wet_reject_summary_groups=[[dict(ReasonCode='R01', ReasonNameTH='Crack', Qty=5, QtyPerDay=5)], [], []],
-            wet_reject_total=5)
-        response = self.render(wet_context)
+    def test_selected_lot_renders_new_whole_lot_final_controls(self):
+        reject_context = dict(
+            production_reject_reasons=[
+                dict(RejectReasonID=301, ReasonCode='R201',
+                     ReasonNameTH='Press defect', FinalQty=5, QtyPerDay=8),
+            ],
+            production_reject_total=10,
+            production_reject_final_classified=5,
+            production_reject_difference=5,
+            production_reject_remark='note',
+            production_reject_error=None,
+        )
+        response = self.render(reject_context)
         self.assertEqual(response.status_code, 200)
         page = response.body.decode()
-        for item in ('WET REJECT', 'R01', 'Crack', 'Total Wet Reject', 'name="qty_R01"',
-                 '/lots/7/wet-reject/batch', 'SAVE WET REJECT'):
+        for item in ('REJECT -', 'R201', 'Press defect', 'Total Wet Reject',
+                     'name="qty_301"', '/lots/7/production-reject-final',
+                     'SAVE REJECT', 'REJECT CAL', 'name="remark"'):
             self.assertIn(item, page)
-        self.assertNotIn('Individual Wet Reject events', page)
-        self.assertNotIn('name="reject_datetime"', page)
-        self.assertNotIn('/lots/7/wet-reject/5', page)
-        # Reason selection is no longer a single dropdown; Qty is entered per reason.
-        self.assertNotIn('name="reason_code" required><option value="">Select Reason', page)
-        # Only ONE Wet Reject grid: the editable Qty cell and the Qty/Day cell
-        # live in the same row, not in two separate tables (entry + summary).
-        self.assertEqual(page.count('name="qty_R01"'), 1)
-        self.assertEqual(page.count('class="wet-reject-groups"'), 1)
+        self.assertNotIn('WetRejectReasonMaster', page)
+        self.assertNotIn('name="qty_R99"', page)
+        self.assertNotIn('/lots/7/wet-reject/batch', page)
+        self.assertIn('id="production-reject-calculated">—</strong>', page)
+        self.assertIn('id="production-reject-save"', page)
+        self.assertIn('saveButton.disabled = Boolean(result.wet_reject_error)', page)
+        self.assertIn('id="production-reject-final-classified">5</strong>', page)
+        self.assertIn('>8</td>', page)
+        self.assertEqual(
+            len(re.findall(
+                r'<table class="depallet-grid production-reject-reason-table">',
+                page,
+            )),
+            3,
+        )
 
-    def test_no_active_reasons_reports_missing_master_data(self):
-        wet_context = dict(wet_reject_reasons=[], wet_reject_reason_groups=[[], [], []],
-                           wet_reject_events=[], wet_reject_summary=[],
-                           wet_reject_summary_groups=[[], [], []], wet_reject_total=0)
-        response = self.render(wet_context)
+    def test_no_active_reasons_disables_save_and_reports_missing_master_data(self):
+        reject_context = dict(production_reject_reasons=[])
+        response = self.render(reject_context)
         page = response.body.decode()
-        self.assertIn('No active Wet Reject Reasons are configured', page)
-        self.assertIn('disabled', page)
+        self.assertIn('No active Reject Reasons are configured', page)
+        self.assertIn('SAVE REJECT</button>', page)
+        self.assertIn('SAVE REJECT</button>', page)
+        self.assertIn('type="submit" disabled', page)
 
     def test_dynamic_reason_codes_render_without_any_hardcoded_list(self):
-        # Arbitrary, non-standard codes prove the grid is driven purely by
-        # WetRejectReasonMaster rows, not a hardcoded R01-R99 list in the template.
-        reasons = [dict(ReasonCode='ZZ1', ReasonNameTH='Custom reason one', SortOrder=1),
-                   dict(ReasonCode='ZZ2', ReasonNameTH='Custom reason two', SortOrder=2)]
-        wet_context = dict(
-            wet_reject_reasons=reasons, wet_reject_reason_groups=[reasons, [], []],
-            wet_reject_events=[], wet_reject_summary=[
-                dict(ReasonCode='ZZ1', ReasonNameTH='Custom reason one', Qty=0, QtyPerDay=0),
-                dict(ReasonCode='ZZ2', ReasonNameTH='Custom reason two', Qty=0, QtyPerDay=0)],
-            wet_reject_summary_groups=[[
-                dict(ReasonCode='ZZ1', ReasonNameTH='Custom reason one', Qty=0, QtyPerDay=0),
-                dict(ReasonCode='ZZ2', ReasonNameTH='Custom reason two', Qty=0, QtyPerDay=0)], [], []],
-            wet_reject_total=0)
-        page = self.render(wet_context).body.decode()
-        for item in ('name="qty_ZZ1"', 'name="qty_ZZ2"', 'Custom reason one', 'Custom reason two', 'ZZ1', 'ZZ2'):
+        reasons = [
+            dict(RejectReasonID=808, ReasonCode='ZZ1',
+                 ReasonNameTH='Custom reason one', FinalQty=0, QtyPerDay=0),
+            dict(RejectReasonID=809, ReasonCode='ZZ2',
+                 ReasonNameTH='Custom reason two', FinalQty=0, QtyPerDay=0),
+        ]
+        page = self.render(dict(production_reject_reasons=reasons)).body.decode()
+        for item in ('name="qty_808"', 'name="qty_809"',
+                     'Custom reason one', 'Custom reason two', 'ZZ1', 'ZZ2'):
             self.assertIn(item, page)
 
+    def test_reason_groups_are_contiguous_balanced_and_keep_unique_form_inputs(self):
+        reasons = [
+            dict(
+                RejectReasonID=900 + index,
+                ReasonCode=f"X{index:02d}",
+                ReasonNameTH=f"Dynamic reason {index:02d}",
+                FinalQty=index,
+                QtyPerDay=index + 100,
+            )
+            for index in range(26)
+        ]
+        page = self.render(dict(production_reject_reasons=reasons)).body.decode()
+        tables = re.findall(
+            r'<table class="depallet-grid production-reject-reason-table">(.*?)</table>',
+            page,
+            flags=re.DOTALL,
+        )
+        self.assertEqual(len(tables), 3)
+        table_rows = [
+            re.findall(r"<tr>(.*?)</tr>", table, flags=re.DOTALL)
+            for table in tables
+        ]
+        self.assertEqual([len(group) - 1 for group in table_rows], [9, 9, 8])
+
+        rendered_codes = []
+        rendered_ids = []
+        for group in table_rows:
+            for row in group[1:]:
+                cells = re.findall(r"<td[^>]*>(.*?)</td>", row, flags=re.DOTALL)
+                rendered_codes.append(re.sub(r"<.*?>", "", cells[0]).strip())
+                qty_input = re.search(r'name="qty_(\d+)"', cells[2])
+                self.assertIsNotNone(qty_input)
+                rendered_ids.append(int(qty_input.group(1)))
+                day_qty = re.sub(r"<.*?>", "", cells[3]).strip()
+                self.assertEqual(day_qty, str(100 + len(rendered_codes) - 1))
+        self.assertEqual(rendered_codes, [f"X{index:02d}" for index in range(26)])
+        self.assertEqual(rendered_ids, list(range(900, 926)))
+        self.assertEqual(len(set(rendered_ids)), 26)
+
+        script = page[page.index("const form = document.getElementById('production-reject-final-form');"):]
+        self.assertIn("form.querySelectorAll('.production-reject-qty')", script)
+        self.assertIn("for (const input of inputs)", script)
+        self.assertIn("result.quantities[input.dataset.rejectReasonId]", script)
+        self.assertIn("inputs.forEach(input => input.addEventListener('input', updateTotals))", script)
+        self.assertIn('method="post" action="/lots/7/production-reject-final"', page)
+
     def test_inactive_reason_excluded_from_context_does_not_render(self):
-        # An inactive master row (e.g. R16) is simply absent from the context
-        # produced by build_wet_reject_context's IsActive=1 filter.
-        reasons = [dict(ReasonCode='R01', ReasonNameTH='Crack', SortOrder=1)]
-        wet_context = dict(wet_reject_reasons=reasons, wet_reject_reason_groups=[reasons, [], []],
-                           wet_reject_events=[], wet_reject_summary=[], wet_reject_summary_groups=[[], [], []],
-                           wet_reject_total=0)
-        page = self.render(wet_context).body.decode()
-        self.assertNotIn('name="qty_R16"', page)
+        reasons = [dict(RejectReasonID=301, ReasonCode='R201',
+                        ReasonNameTH='Active reason', FinalQty=0, QtyPerDay=0)]
+        page = self.render(dict(production_reject_reasons=reasons)).body.decode()
+        self.assertNotIn('name="qty_999"', page)
 
     def test_lots_for_date_filters_by_selected_production_date(self):
         other_day_lot = dict(LOT, ProductionID=8, ProdDate=date(2026, 9, 22), LotNo='B006690902')
