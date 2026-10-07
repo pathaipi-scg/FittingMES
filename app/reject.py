@@ -230,18 +230,23 @@ def _validate_entry(cursor, raw):
     if shift is None:
         _invalid("INVALID_SHIFT", "The selected Shift is no longer active.")
 
-    cursor.execute("""
+    lot_shift_match = ""
+    lot_params = (production_id, production_date)
+    if workflow == "depallet":
+        lot_shift_match = "\n          AND LTRIM(RTRIM(lot.Shift))=?"
+        lot_params += (shift["ShiftCode"],)
+    cursor.execute(f"""
         SELECT lot.ProductionID,lot.ProductFamilyID,
                LTRIM(RTRIM(lot.Shift)) AS LotShiftCode
         FROM dbo.ProductionLot AS lot WITH (UPDLOCK,HOLDLOCK)
         WHERE lot.ProductionID=? AND lot.ProdDate=? AND lot.IsActive=1
-          AND LTRIM(RTRIM(lot.Shift))=?
-    """, production_id, production_date, shift["ShiftCode"])
+          {lot_shift_match}
+    """, *lot_params)
     lot = _fetch_one(cursor)
     if lot is None:
         _invalid(
             "INVALID_PRODUCTION_LOT",
-            "Select an active Product / Lot for this Production Date and Shift.",
+            "Select an active Product / Lot for this Production Date.",
         )
     if lot["ProductFamilyID"] is None:
         _invalid(

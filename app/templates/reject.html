@@ -4,7 +4,7 @@
 .reject-context,.reject-entry-form{display:flex;align-items:end;gap:6px;flex-wrap:wrap}
 .reject-context label,.reject-entry-form label{display:grid;gap:2px;font-weight:600}
 .reject-context select{min-width:135px;max-width:min(360px,90vw)}
-.reject-context label:last-child select{min-width:240px}
+.reject-context label:nth-of-type(4) select{min-width:240px}
 .reject-entry-form label:first-child input{width:72px;text-align:right}
 .reject-entry-form label:nth-child(2) select{min-width:150px}
 .reject-entry-form label:nth-child(3) select{min-width:300px;max-width:min(520px,90vw)}
@@ -18,8 +18,8 @@
 .reject-table .select-cell{text-align:center;width:48px}
 .reject-table .qty-cell{text-align:right}
 @media(max-width:640px){
- .reject-context label,.reject-context label:last-child,.reject-entry-form label{width:100%}
- .reject-context select,.reject-context label:last-child select,.reject-entry-form label:nth-child(2) select,.reject-entry-form label:nth-child(3) select{width:100%;min-width:0;max-width:100%}
+ .reject-context label,.reject-context label:last-of-type,.reject-entry-form label{width:100%}
+ .reject-context select,.reject-context label:last-of-type select,.reject-entry-form label:nth-child(2) select,.reject-entry-form label:nth-child(3) select{width:100%;min-width:0;max-width:100%}
 }
 </style>
 {% if error %}<div class="reject-error" role="alert">{{ error }}</div>{% endif %}
@@ -51,14 +51,14 @@
 <option value="{{ item.ProductionID }}" data-family-id="{{ item.ProductFamilyID }}" data-shift-code="{{ item.ShiftCode }}" {% if selected_production_id|string == item.ProductionID|string %}selected{% endif %}>{{ item.LotNo }} · {{ item.ProductName or item.ProductFamily }}</option>
 {% endfor %}
 </select></label>
-<div class="reject-entry-form">
-<label>Qty<input name="qty" id="reject-qty" type="number" min="1" max="2147483647" step="1" required value="{{ qty }}"></label>
 <label>Source<select name="source_equipment_id" id="reject-source" required>
 <option value="">Select Source</option>
 {% for item in source_options %}
 <option value="{{ item.EquipmentID }}" data-equipment-type="{{ item.EquipmentType }}" {% if selected_source_id|string == item.EquipmentID|string %}selected{% endif %}>{{ item.EquipmentCode }}</option>
 {% endfor %}
 </select></label>
+<div class="reject-entry-form">
+<label>Qty<input name="qty" id="reject-qty" type="number" min="1" max="2147483647" step="1" required value="{{ qty }}"></label>
 <label>Reject Reason<select name="reject_reason_id" id="reject-reason" required>
 <option value="">Select Reject Reason</option>
 {% for item in reasons %}
@@ -166,6 +166,7 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
       workflow: workflow.value,
       lineId: line.value,
       productionId: lot.value,
+      sourceId: source.value,
     };
     try {
       sessionStorage.setItem(rejectContextStorageKey, JSON.stringify(context));
@@ -187,8 +188,12 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
     if (hasOption(line, context.lineId)) line.value = context.lineId;
     updateWorkflowLabels();
     updateLots(context.productionId);
-    updateReasons(null, reason.value);
-    updateSources(null, source.value);
+    updateSources(null, context.sourceId);
+    if (source.value) {
+      syncForSource('');
+    } else {
+      updateReasons();
+    }
     return true;
   }
 
@@ -205,7 +210,9 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
   function updateLots(preferredId = '') {
     const shiftOption = shift.selectedOptions[0];
     const shiftCode = shiftOption ? shiftOption.dataset.shiftCode : '';
-    const candidates = page.lots.filter(item => String(item.ShiftCode) === shiftCode);
+    const candidates = workflow.value === 'production'
+      ? page.lots
+      : page.lots.filter(item => String(item.ShiftCode) === shiftCode);
     lot.replaceChildren(option('', 'Select Product / Lot'));
     for (const item of candidates) {
       lot.add(option(item.ProductionID,
@@ -247,11 +254,12 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
       ? requested : '';
   }
 
-  function resetEntryFields() {
+  function resetEntryFields(preserveSource = false) {
     qty.value = '';
     scopeId.value = '';
     updateReasons();
-    updateSources();
+    updateSources(null, preserveSource ? source.value : '');
+    if (preserveSource && source.value) syncForSource();
   }
 
   function syncForReason(preferredSource = source.value) {
@@ -280,11 +288,12 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
     save.textContent = 'SAVE';
     cancel.hidden = true;
     qty.value = '';
-    if (!restoreContext()) {
+    const restored = restoreContext();
+    if (!restored) {
       updateWorkflowLabels();
       updateLots();
     }
-    resetEntryFields();
+    resetEntryFields(restored);
     scopeId.value = '';
     for (const radio of document.querySelectorAll('[data-reject-entry]')) {
       radio.checked = false;
@@ -292,8 +301,8 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
   }
 
   shift.addEventListener('change', () => {
-    updateLots();
-    resetEntryFields();
+    updateLots(workflow.value === 'production' ? lot.value : '');
+    resetEntryFields(workflow.value === 'production');
     rememberContext();
   });
   line.addEventListener('change', () => {
@@ -313,7 +322,10 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
     rememberContext();
   });
   reason.addEventListener('change', () => syncForReason());
-  source.addEventListener('change', () => syncForSource());
+  source.addEventListener('change', () => {
+    syncForSource();
+    rememberContext();
+  });
   form.addEventListener('submit', () => {
     workflowValue.value = workflow.value;
     rememberContext();

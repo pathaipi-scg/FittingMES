@@ -13,13 +13,19 @@ from app.main import app, templates
 
 class FakeCursor:
     def __init__(self, scope="LINE", reason_family=842, reason_exists=True,
-                 source_valid=True, existing_ids=None, lot_family=842):
+                 source_valid=True, existing_ids=None, lot_family=842,
+                 active_shifts=None, lot_valid=True, lot_date=None,
+                 lot_shift_code="2"):
         self.scope = scope
         self.reason_family = reason_family
         self.reason_exists = reason_exists
         self.source_valid = source_valid
         self.existing_ids = existing_ids or {}
         self.lot_family = lot_family
+        self.active_shifts = active_shifts or {733: "1", 734: "2"}
+        self.lot_valid = lot_valid
+        self.lot_date = lot_date or date(2026, 10, 6)
+        self.lot_shift_code = lot_shift_code
         self.calls = []
         self.description = []
         self.result = []
@@ -32,11 +38,25 @@ class FakeCursor:
     def execute(self, query, *params):
         self.calls.append((query, params))
         if "SELECT id AS ShiftID,ShiftCode" in query:
-            self._set(("ShiftID", "ShiftCode"), [(734, "2")])
+            shift_id = params[0]
+            self._set(
+                ("ShiftID", "ShiftCode"),
+                [(shift_id, self.active_shifts[shift_id])]
+                if shift_id in self.active_shifts else [],
+            )
         elif "FROM dbo.ProductionLot AS lot WITH" in query:
+            lot_matches = (
+                self.lot_valid
+                and params[:2] == (17701, self.lot_date)
+                and (
+                    "LTRIM(RTRIM(lot.Shift))=?" not in query
+                    or params[2] == self.lot_shift_code
+                )
+            )
             self._set(
                 ("ProductionID", "ProductFamilyID", "LotShiftCode"),
-                [(17701, self.lot_family, "2")],
+                [(17701, self.lot_family, self.lot_shift_code)]
+                if lot_matches else [],
             )
         elif "FROM dbo.RejectReason AS reason" in query:
             family_id = params[-1]
@@ -141,19 +161,81 @@ class RejectEntryTests(unittest.TestCase):
                 self.assertEqual(entry_id, 16003)
                 self.assertEqual(connection.commits, 1)
 
-    def test_shift_business_code_resolves_against_lot_not_numeric_id(self):
+    def test_production_shift_does_not_have_to_match_lot_shift(self):
         cursor = FakeCursor()
-        save_reject_entry(FakeConnection(cursor), valid_form())
+        save_reject_entry(
+            FakeConnection(cursor), valid_form(shift_id="733")
+        )
         lot_query, lot_params = next(
             call for call in cursor.calls
             if "FROM dbo.ProductionLot AS lot WITH" in call[0]
         )
-        self.assertIn("ShiftCode", next(
-            query for query, _ in cursor.calls
-            if "SELECT id AS ShiftID,ShiftCode" in query
+        self.assertNotIn("AND LTRIM(RTRIM(lot.Shift))=?", lot_query)
+        self.assertEqual(lot_params, (17701, date(2026, 10, 6)))
+
+    def test_same_production_lot_saves_rows_for_both_actual_shifts(self):
+        cursor = FakeCursor(lot_shift_code="1")
+        connection = FakeConnection(cursor)
+        save_reject_entry(
+            connection, valid_form(shift_id="733", qty="3")
+        )
+        save_reject_entry(
+            connection, valid_form(shift_id="734", qty="4")
+        )
+
+        inserts = [
+            params for query, params in cursor.calls
+            if query.lstrip().startswith("INSERT INTO dbo.ProductionRejectEntry")
+        ]
+        self.assertEqual(len(inserts), 2)
+        self.assertEqual([params[1] for params in inserts], [733, 734])
+        self.assertEqual([params[5] for params in inserts], [17701, 17701])
+        self.assertEqual([params[7] for params in inserts], [3, 4])
+        self.assertEqual(connection.commits, 2)
+
+    def test_wrong_production_date_is_rejected(self):
+        cursor = FakeCursor(lot_date=date(2026, 10, 5))
+        with self.assertRaisesRegex(RejectValidationError, "Production Date"):
+            save_reject_entry(
+                FakeConnection(cursor), valid_form()
+            )
+        self.assertFalse(any(
+            query.lstrip().startswith("INSERT INTO dbo.")
+            for query, _ in cursor.calls
         ))
-        self.assertIn("lot.Shift", lot_query)
-        self.assertEqual(lot_params, (17701, date(2026, 10, 6), "2"))
+
+    def test_inactive_or_nonexistent_production_id_is_rejected(self):
+        cursor = FakeCursor(lot_valid=False)
+        with self.assertRaisesRegex(RejectValidationError, "active Product / Lot"):
+            save_reject_entry(FakeConnection(cursor), valid_form())
+        self.assertFalse(any(
+            query.lstrip().startswith("INSERT INTO dbo.")
+            for query, _ in cursor.calls
+        ))
+
+    def test_inactive_or_nonexistent_shift_id_is_rejected(self):
+        cursor = FakeCursor()
+        with self.assertRaisesRegex(RejectValidationError, "Shift is no longer active"):
+            save_reject_entry(
+                FakeConnection(cursor), valid_form(shift_id="999")
+            )
+        self.assertFalse(any(
+            query.lstrip().startswith("INSERT INTO dbo.")
+            for query, _ in cursor.calls
+        ))
+
+    def test_depallet_lot_shift_matching_is_unchanged(self):
+        cursor = FakeCursor(lot_shift_code="1")
+        with self.assertRaisesRegex(RejectValidationError, "active Product / Lot"):
+            save_reject_entry(
+                FakeConnection(cursor),
+                valid_form(workflow="depallet", shift_id="734"),
+            )
+        lot_query = next(
+            query for query, _ in cursor.calls
+            if "FROM dbo.ProductionLot AS lot WITH" in query
+        )
+        self.assertIn("LTRIM(RTRIM(lot.Shift))=?", lot_query)
 
     def test_family_and_reason_applicability_use_product_family_ids(self):
         cursor = FakeCursor()
@@ -523,7 +605,7 @@ class RejectPageRenderTests(unittest.TestCase):
         )
         page = reject_page_context(
             data, production_date, shift_id=734, line_equipment_id=620,
-            production_id=17701,
+            production_id=17701, form={"source_equipment_id": "711"},
         )
         page_body = templates.get_template("reject.html").render(
             request=None, **page
@@ -535,6 +617,15 @@ class RejectPageRenderTests(unittest.TestCase):
         self.assertEqual(page_body.count('type="date"'), 1)
         self.assertIn("Reject Of", page_body)
         self.assertIn("REJECT CAL", page_body)
+        self.assertEqual(page["selected_source_id"], "711")
+        self.assertLess(
+            page_body.index('id="reject-source"'),
+            page_body.index('id="reject-qty"'),
+        )
+        self.assertIn(
+            'value="711" data-equipment-type="PRESS" selected',
+            page_body,
+        )
         self.assertEqual(
             [item["RejectReasonID"] for item in page["reject_client_data"]["reasons"]],
             [901, 902],
