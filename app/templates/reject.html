@@ -139,7 +139,7 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
   const currentSource = () => page.sources.find(
     item => String(item.EquipmentID) === source.value);
   const hasOption = (select, value) =>
-    select.options.some(item => item.value === String(value));
+    Array.from(select.options).some(item => item.value === String(value));
 
   function readRememberedContext() {
     let serialized;

@@ -85,37 +85,66 @@ class FakeOption {
   }
 }
 
+class FakeOptionsCollection {
+  constructor(items) {
+    this.items = items;
+    items.forEach((item, index) => {
+      this[index] = item;
+    });
+  }
+
+  get length() {
+    return this.items.length;
+  }
+
+  item(index) {
+    return this.items[index] || null;
+  }
+
+  [Symbol.iterator]() {
+    return this.items[Symbol.iterator]();
+  }
+}
+
 class FakeSelect {
   constructor(options = [], value = '') {
-    this.options = options;
+    this._options = options;
     this._value = '';
     this.listeners = {};
     this.value = value;
   }
 
+  get options() {
+    return new FakeOptionsCollection(this._options);
+  }
+
+  set options(options) {
+    this._options = Array.from(options);
+  }
+
   get value() {
-    return this.options.some(item => item.value === this._value)
+    return this._options.some(item => item.value === this._value)
       ? this._value
-      : (this.options.length ? this.options[0].value : '');
+      : (this._options.length ? this._options[0].value : '');
   }
 
   set value(value) {
     const requested = String(value);
-    this._value = this.options.some(item => item.value === requested)
+    this._value = this._options.some(item => item.value === requested)
       ? requested
-      : (this.options.length ? this.options[0].value : '');
+      : (this._options.length ? this._options[0].value : '');
   }
 
   get selectedOptions() {
-    return this.options.filter(item => item.value === this.value).slice(0, 1);
+    return this._options.filter(item => item.value === this.value).slice(0, 1);
   }
 
   add(item) {
-    this.options.push(item);
+    this._options.push(item);
   }
 
   replaceChildren(...items) {
-    this.options = items;
+    this._options = items;
     this._value = items.length ? items[0].value : '';
   }
 
@@ -214,7 +243,7 @@ function makeElement(value = '') {
 }
 
 function runPageScript({storage = createSessionStorage(), date = '2026-10-06',
-  entryId = ''} = {}) {
+  entryId = '', lineIds = {line1: '620', line2: '621'}} = {}) {
   const elements = {
     'reject-form': makeElement(),
     'reject-workflow': new FakeSelect([
@@ -234,13 +263,13 @@ function runPageScript({storage = createSessionStorage(), date = '2026-10-06',
     ], '1'),
     'reject-line': new FakeSelect([
       new FakeOption('Select Line', ''),
-      Object.assign(new FakeOption('LINE1', '620'), {
+      Object.assign(new FakeOption('LINE1', lineIds.line1), {
         dataset: {code: 'LINE1'},
       }),
-      Object.assign(new FakeOption('LINE2', '621'), {
+      Object.assign(new FakeOption('LINE2', lineIds.line2), {
         dataset: {code: 'LINE2'},
       }),
-    ], '620'),
+    ], lineIds.line1),
     'reject-production': new FakeSelect([
       new FakeOption('Select Product / Lot', ''),
       new FakeOption('LOT-1 · Test product', '1001'),
@@ -335,6 +364,31 @@ assert.equal(restoredContextPage['reject-qty'].value, '');
 assert.equal(restoredContextPage['reject-source'].value, '');
 assert.equal(restoredContextPage['reject-reason'].value, '');
 
+const browserOptionsStorage = createSessionStorage({
+  [contextKey]: JSON.stringify({
+    productionDate: '2026-10-06',
+    shiftId: '1',
+    workflow: 'production',
+    lineId: '16',
+    productionId: '1001',
+  }),
+});
+const browserOptionsPage = runPageScript({
+  storage: browserOptionsStorage,
+  lineIds: {line1: '1', line2: '16'},
+});
+assert.equal(browserOptionsPage['reject-line'].value, '16');
+assert.equal(browserOptionsPage['reject-production'].value, '1001');
+assert.equal(browserOptionsPage['reject-qty'].value, '');
+assert.equal(browserOptionsPage['reject-source'].value, '');
+assert.equal(browserOptionsPage['reject-reason'].value, '');
+assert.ok(browserOptionsStorage.operations.some(operation =>
+  operation.type === 'set' &&
+  JSON.parse(operation.value).lineId === '16'));
+assert.ok(browserOptionsStorage.operations.every(operation =>
+  operation.type !== 'set' ||
+  JSON.parse(operation.value).lineId !== '1'));
+
 const staleDatePage = runPageScript({
   storage: persistentStorage,
   date: '2026-10-07',
@@ -388,7 +442,7 @@ multipleSourcePage['reject-reason'].value = '9201';
 multipleSourcePage['reject-reason'].dispatch('change');
 assert.equal(multipleSourcePage['reject-source'].value, '');
 assert.deepEqual(
-  multipleSourcePage['reject-source'].options
+  Array.from(multipleSourcePage['reject-source'].options)
     .filter(item => item.value)
     .map(item => item.textContent),
   ['F1', 'F2', 'F3', 'F4', 'F5'],
@@ -399,7 +453,7 @@ singleSourcePage['reject-reason'].value = '9222';
 singleSourcePage['reject-reason'].dispatch('change');
 assert.equal(singleSourcePage['reject-source'].value, '620');
 assert.equal(
-  singleSourcePage['reject-source'].options
+  Array.from(singleSourcePage['reject-source'].options)
     .filter(item => item.value)
     .map(item => item.textContent)
     .join(','),
@@ -410,7 +464,7 @@ const sourceFirstPage = runPageScript();
 sourceFirstPage['reject-source'].value = '701';
 sourceFirstPage['reject-source'].dispatch('change');
 assert.deepEqual(
-  sourceFirstPage['reject-reason'].options
+  Array.from(sourceFirstPage['reject-reason'].options)
     .filter(item => item.value)
     .map(item => item.value),
   ['9201'],
@@ -430,7 +484,7 @@ singleSourcePage['reject-reason'].value = '9201';
 singleSourcePage['reject-reason'].dispatch('change');
 assert.equal(singleSourcePage['reject-source'].value, '');
 assert.deepEqual(
-  singleSourcePage['reject-source'].options
+  Array.from(singleSourcePage['reject-source'].options)
     .filter(item => item.value)
     .map(item => item.textContent),
   ['F1', 'F2', 'F3', 'F4', 'F5'],
@@ -440,7 +494,7 @@ const dynamicLinePage = runPageScript();
 dynamicLinePage['reject-reason'].value = '9201';
 dynamicLinePage['reject-reason'].dispatch('change');
 assert.deepEqual(
-  dynamicLinePage['reject-source'].options
+  Array.from(dynamicLinePage['reject-source'].options)
     .filter(item => item.value)
     .map(item => item.textContent),
   ['F1', 'F2', 'F3', 'F4', 'F5'],
@@ -448,7 +502,7 @@ assert.deepEqual(
 dynamicLinePage['reject-line'].value = '621';
 dynamicLinePage['reject-line'].dispatch('change');
 assert.deepEqual(
-  dynamicLinePage['reject-source'].options
+  Array.from(dynamicLinePage['reject-source'].options)
     .filter(item => item.value)
     .map(item => item.textContent),
   ['LINE2', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12', 'F13', 'F14'],
@@ -456,7 +510,7 @@ assert.deepEqual(
 dynamicLinePage['reject-reason'].value = '9201';
 dynamicLinePage['reject-reason'].dispatch('change');
 assert.deepEqual(
-  dynamicLinePage['reject-source'].options
+  Array.from(dynamicLinePage['reject-source'].options)
     .filter(item => item.value)
     .map(item => item.textContent),
   ['F7', 'F8', 'F9', 'F10', 'F11', 'F12', 'F13', 'F14'],
@@ -466,7 +520,7 @@ dynamicLinePage['reject-line'].dispatch('change');
 dynamicLinePage['reject-reason'].value = '9201';
 dynamicLinePage['reject-reason'].dispatch('change');
 assert.deepEqual(
-  dynamicLinePage['reject-source'].options
+  Array.from(dynamicLinePage['reject-source'].options)
     .filter(item => item.value)
     .map(item => item.textContent),
   ['F1', 'F2', 'F3', 'F4', 'F5'],
