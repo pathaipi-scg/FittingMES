@@ -1,9 +1,11 @@
 import inspect
+import json
 import unittest
 from datetime import date, datetime
+from unittest.mock import patch
 
 from app.logger_summary import read_logger_time_summary, read_logger_press_guide
-from app.main import app, templates
+from app.main import app, read_press_logger_guide, templates
 
 
 class SummaryCursor:
@@ -100,6 +102,65 @@ class LoggerSummaryTests(unittest.TestCase):
         self.assertFalse(result['HasSetup'])
         self.assertFalse(any('FROM dbo.LoggerEvent' in query for query, _ in cursor.calls))
 
+    def test_guide_isolates_date_press_instance_maps_categories_and_keeps_zero_presence(self):
+        production_date = date(2026, 10, 1)
+        events = [
+            (production_date, 7, 1, 2, 5, datetime(2026, 10, 1, 8), 1),
+            (production_date, 7, 1, 3, 7, datetime(2026, 10, 1, 20), 2),
+            (production_date, 7, 1, 4, 0, datetime(2026, 10, 1, 21), 2),
+            (production_date, 7, 2, 2, 99, datetime(2026, 10, 1, 8), 1),
+            (date(2026, 10, 2), 7, 1, 7, 88, datetime(2026, 10, 2, 8), 1),
+        ]
+        cursor = GuideCursor(events=events)
+
+        guide = read_logger_press_guide(cursor, production_date, 'F1')
+
+        self.assertEqual(guide['shifts']['1']['SETUP'],
+                         {'minutes': 5, 'present': True})
+        self.assertEqual(guide['shifts']['2']['CHGOVER'],
+                         {'minutes': 7, 'present': True})
+        self.assertEqual(guide['shifts']['2']['IDLE'],
+                         {'minutes': 0, 'present': True})
+        self.assertEqual(guide['shifts']['1']['BD'],
+                         {'minutes': 0, 'present': False})
+        self.assertEqual(cursor.guide_params[:3], (production_date, 7, 1))
+        self.assertEqual(events[0][0], production_date)
+        self.assertEqual(events[0][2], 1)
+
+    def test_press_guide_route_is_read_only_and_returns_selected_lot_date(self):
+        production_date = date(2026, 10, 1)
+        events = [(production_date, 7, 1, 2, 5,
+                   datetime(2026, 10, 1, 8), 1)]
+        cursor = GuideCursor(events=events, assignment=(production_date, 'F1'))
+
+        class Connection:
+            def cursor(self):
+                return cursor
+
+            def close(self):
+                pass
+
+        with patch('app.main.get_connection', return_value=Connection()):
+            response = read_press_logger_guide(7, 45)
+
+        payload = json.loads(response.body)
+        self.assertEqual(payload['production_date'], production_date.isoformat())
+        self.assertEqual(payload['equipment_code'], 'F1')
+        self.assertEqual(payload['shifts']['1']['SETUP'],
+                         {'minutes': 5, 'present': True})
+        self.assertFalse(any(
+            any(token in query.upper() for token in
+                ('INSERT ', 'UPDATE ', 'DELETE ', 'MERGE '))
+            for query, _ in cursor.calls))
+        self.assertEqual(events, [(production_date, 7, 1, 2, 5,
+                                   datetime(2026, 10, 1, 8), 1)])
+        route_methods = {
+            tuple(route.methods or ()) for route in app.routes
+            if getattr(route, 'path', '') ==
+            '/lots/{production_id}/press-production/{press_production_id}/logger-guide'
+        }
+        self.assertEqual(route_methods, {('GET',)})
+
     def test_guide_query_keeps_primary_machine_ownership_for_related_events(self):
         cursor = GuideCursor()
         read_logger_press_guide(cursor, date(2026, 10, 1), 'F1')
@@ -175,15 +236,21 @@ class LoggerSummaryTests(unittest.TestCase):
 
 
 class GuideCursor:
-    def __init__(self, instance_count=14):
+    def __init__(self, instance_count=14, events=None, assignment=None):
         self.instance_count = instance_count
         self.calls = []
         self.result = []
         self.guide_params = ()
+        self.assignment = assignment
+        self.events = events if events is not None else [
+            (date(2026, 10, 1), 7, 1, 2, 5, datetime(2026, 10, 1, 8, 0), 1),
+            (date(2026, 10, 1), 7, 2, 2, 6, datetime(2026, 10, 1, 8, 0), 1)]
 
     def execute(self, query, *params):
         self.calls.append((query, params))
-        if 'FROM dbo.Fitting_MainMachine' in query:
+        if 'SELECT lot.ProdDate, press.MachineCode' in query:
+            self.result = [self.assignment] if self.assignment else []
+        elif 'FROM dbo.Fitting_MainMachine' in query:
             self.result = [(7, self.instance_count)]
         elif 'FROM dbo.Fitting_StopType' in query:
             self.result = [(2, 'SETUP'), (3, 'CHGOVER'), (4, 'IDLE'),
@@ -194,7 +261,14 @@ class GuideCursor:
                            (date(2026, 1, 1), 2, datetime(2026, 1, 1, 19, 0).time())]
         elif 'FROM dbo.LoggerEvent' in query:
             self.guide_params = params
-            self.result = [(2, 5, datetime(2026, 10, 1, 8, 0), 1)]
+            production_date, mc_id, instance_no, *stop_ids = params
+            self.result = [
+                (stop_id, duration, stop_datetime, shift_id)
+                for event_date, event_mc_id, event_instance, stop_id, duration,
+                    stop_datetime, shift_id in self.events
+                if (event_date, event_mc_id, event_instance) ==
+                   (production_date, mc_id, instance_no) and stop_id in stop_ids
+            ]
         else:
             raise AssertionError(query)
 
@@ -205,6 +279,36 @@ class GuideCursor:
     def fetchone(self):
         result, self.result = (self.result[0] if self.result else None), []
         return result
+
+    def cursor(self):
+        return self
+
+    def close(self):
+        pass
+
+
+class PressGuideRouteConnection:
+    def __init__(self, cursor):
+        self.guide_cursor = cursor
+
+    def cursor(self):
+        return self
+
+    def execute(self, query, *params):
+        if 'SELECT lot.ProdDate, press.MachineCode' in query:
+            self.guide_cursor.result = [(date(2026, 10, 1), 'F1')]
+            self.guide_cursor.calls.append((query, params))
+            return self
+        return self.guide_cursor.execute(query, *params)
+
+    def fetchone(self):
+        return self.guide_cursor.fetchone()
+
+    def fetchall(self):
+        return self.guide_cursor.fetchall()
+
+    def close(self):
+        self.guide_cursor.close()
 
 
 if __name__ == '__main__':

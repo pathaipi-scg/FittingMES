@@ -461,12 +461,13 @@ def product_selection_context(cursor, selected):
 
 
 def production_page(request, plan_id=None, product_code=None, confirm=False, mapping_edit=False,
-                    create=False, running_no=None, production_date=None, production_id=None, edit=False, save=False, void=False, production_input=None, data_saved=False, product_family=None, product_choices=None, press_message=None, press_message_type=None, wet_reject_message=None, wet_reject_message_type=None, production_reject_message=None, production_reject_message_type=None, production_reject_form=None):
+                    create=False, running_no=None, production_date=None, production_id=None, edit=False, save=False, void=False, production_input=None, data_saved=False, product_family=None, product_choices=None, press_message=None, press_message_type=None, press_form=None, wet_reject_message=None, wet_reject_message_type=None, production_reject_message=None, production_reject_message_type=None, production_reject_form=None):
     requested_date = production_date
     production_date = production_date or date.today()
     context = dict(families=[], product_family=None, product_family_id=None, product_previews={}, production_data={}, calculated=calculate(None, None), data_saved=data_saved, production_date=production_date, lots=[], lots_for_date=[], production_data_by_lot={}, calculated_by_lot={}, current=None, edit=edit, edit_plans=[], plans=[], selected=None, products=[], material_prefix=None,
                    product_code=None, lot=None, error=None, lots_load_failed=False, running_no=None, created_lot=None,
                    press_production=[], day_start_time=None, eligible_presses=[], eligible_moulds=[], press_product_error=None,
+                   eligible_shifts=[], press_form={},
                    press_message=press_message, press_message_type=press_message_type,
                    wet_reject_reasons=[], wet_reject_events=[], wet_reject_summary=[], wet_reject_total=0,
                    wet_reject_reason_groups=[], wet_reject_summary_groups=[],
@@ -480,6 +481,7 @@ def production_page(request, plan_id=None, product_code=None, confirm=False, map
                    wet_reject_now=datetime.now().strftime('%Y-%m-%dT%H:%M:%S'),
                    wet_reject_message=wet_reject_message, wet_reject_message_type=wet_reject_message_type)
     status = 200
+    context["press_form"] = press_form or {}
     try:
         with closing(get_connection()) as conn:
             cursor = conn.cursor()
@@ -535,7 +537,8 @@ def production_page(request, plan_id=None, product_code=None, confirm=False, map
                         VersionNo=effective.get("VersionNo"))
                 context["current"] = current
                 try:
-                    context.update(build_press_production_context(cursor, current))
+                    context.update(build_press_production_context(
+                        cursor, current, press_form=context["press_form"]))
                 except Exception:
                     context.update(press_production=[], eligible_presses=[], eligible_moulds=[],
                                    press_product_error='Unable to load Press Production choices or rows.')
@@ -764,42 +767,56 @@ def undo_release_press_production_change(production_id, press_production_id):
         return undo_release_press_production(conn, production_id, press_production_id)
 
 
-def press_production_redirect(production_id, message, message_type='success'):
+def press_production_redirect(production_id, message, message_type='success',
+                              production_date=None):
     params = {'production_id': production_id, 'press_message': message,
               'press_message_type': message_type}
+    if production_date:
+        params['production_date'] = production_date
     return RedirectResponse('/?' + urlencode(params), status_code=303)
 
 
 async def save_press_production_route_action(request, production_id, press_production_id=None):
     form = await request.form()
-    data = dict(MachineCode=form.get('machine_code'), MouldID=form.get('mould_id'),
-                ProductionDate=form.get('production_date'),
-                DispatchQty=form.get('dispatch_qty'), CounterQty=form.get('counter_qty'),
-                CuringQty=form.get('curing_qty'),
-                ProductionStartTime=form.get('production_start_time'),
-                ProductionEndTime=form.get('production_end_time'), Remark=form.get('remark'),
-                SetupMinutes=form.get('setup_minutes'), ChgOverMinutes=form.get('chgover_minutes'),
-                IdleMinutes=form.get('idle_minutes'), CleaningMinutes=form.get('cleaning_minutes'),
-                BreakdownMinutes=form.get('breakdown_minutes'),
-                Shift1SetupMinutes=form.get('shift1_setup_minutes'),
-                Shift1ChgOverMinutes=form.get('shift1_chgover_minutes'),
-                Shift1IdleMinutes=form.get('shift1_idle_minutes'),
-                Shift1SmdtMinutes=form.get('shift1_smdt_minutes'),
-                Shift1BreakdownMinutes=form.get('shift1_breakdown_minutes'),
-                Shift1CleaningMinutes=form.get('shift1_cleaning_minutes'),
-                Shift2SetupMinutes=form.get('shift2_setup_minutes'),
-                Shift2ChgOverMinutes=form.get('shift2_chgover_minutes'),
-                Shift2IdleMinutes=form.get('shift2_idle_minutes'),
-                Shift2SmdtMinutes=form.get('shift2_smdt_minutes'),
-                Shift2BreakdownMinutes=form.get('shift2_breakdown_minutes'),
-                Shift2CleaningMinutes=form.get('shift2_cleaning_minutes'))
+    data = dict(ShiftCode=form.get('shift_code'), MachineCode=form.get('machine_code'),
+                MouldID=form.get('mould_id'),
+                PressProductionID=press_production_id,
+                ProductionDate=form.get('production_date'))
+    optional_fields = {
+        'dispatch_qty': 'DispatchQty',
+        'counter_qty': 'CounterQty',
+        'curing_qty': 'CuringQty',
+        'production_start_time': 'ProductionStartTime',
+        'production_end_time': 'ProductionEndTime',
+        'remark': 'Remark',
+        'setup_minutes': 'SetupMinutes',
+        'chgover_minutes': 'ChgOverMinutes',
+        'idle_minutes': 'IdleMinutes',
+        'cleaning_minutes': 'CleaningMinutes',
+        'breakdown_minutes': 'BreakdownMinutes',
+        'smdt_minutes': 'SmdtMinutes',
+    }
+    for form_field, data_field in optional_fields.items():
+        if form_field not in form:
+            continue
+        value = form.get(form_field)
+        if data_field in ('DispatchQty', 'CounterQty', 'CuringQty') and not str(value or '').strip():
+            continue
+        data[data_field] = value
     try:
         await run_in_threadpool(save_press_production_change, production_id, data, press_production_id)
-        return press_production_redirect(production_id, 'Press Production saved.')
+        return press_production_redirect(production_id, 'Press Production saved.',
+                                         production_date=data['ProductionDate'])
     except ValueError as exc:
-        return press_production_redirect(production_id, str(exc), 'error')
+        return await run_in_threadpool(
+            production_page, request, production_id=production_id,
+            press_message=str(exc),
+            press_message_type='error', press_form=data)
     except Exception:
-        return press_production_redirect(production_id, 'Unable to save Press Production. Please retry.', 'error')
+        return await run_in_threadpool(
+            production_page, request, production_id=production_id,
+            press_message='Unable to save Press Production. Please retry.',
+            press_message_type='error', press_form=data)
 
 
 @app.post('/lots/{production_id}/press-production')
