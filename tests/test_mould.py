@@ -118,7 +118,7 @@ class FakeConnection:
 
 
 class MouldTests(unittest.TestCase):
-    def test_mould_page_accepts_missing_empty_and_valid_navigation_date(self):
+    def test_mould_page_keeps_master_data_independent_of_navigation_date(self):
         for navigation_date in (None, '', date(2026, 10, 1)):
             with self.subTest(navigation_date=navigation_date):
                 conn = FakeConnection()
@@ -126,17 +126,18 @@ class MouldTests(unittest.TestCase):
                     response = mould_page(request(), production_date=navigation_date)
                 self.assertEqual(response.status_code, 200)
                 page = response.body.decode()
-                if navigation_date:
-                    self.assertIn('production_date=2026-10-01', page)
-                else:
-                    self.assertNotIn('production_date=', page)
+                mould_forms = page.split('class="mould-workspace"', 1)[1]
+                self.assertNotIn('name="production_date"', mould_forms)
+                self.assertNotIn('mould_id=4&production_date=', mould_forms)
+                self.assertIn('FROM dbo.vw_MouldList', '\n'.join(sql for sql, _ in conn.sql))
+                self.assertNotIn('2026-10-01', '\n'.join(sql for sql, _ in conn.sql))
 
-    def test_mould_redirect_preserves_filters_and_omits_invalid_or_empty_date(self):
+    def test_mould_redirect_preserves_filters_without_production_date(self):
         navigation = {'q': 'M000001', 'family': '1', 'product': '1|01', 'status': 'ACTIVE'}
         without_date = mould_redirect(4, 'Saved', navigation=navigation)
         self.assertEqual(without_date.headers['location'], '/mould?q=M000001&family=1&product=1%7C01&status=ACTIVE&mould_id=4&message=Saved&message_type=success')
         with_date = mould_redirect(4, 'Saved', navigation={**navigation, 'production_date': '2026-10-01'})
-        self.assertIn('production_date=2026-10-01', with_date.headers['location'])
+        self.assertEqual(with_date.headers['location'], without_date.headers['location'])
         empty_date = mould_redirect(4, 'Saved', navigation={**navigation, 'production_date': ''})
         invalid_date = mould_redirect(4, 'Saved', navigation={**navigation, 'production_date': 'bad-date'})
         self.assertNotIn('production_date=', empty_date.headers['location'])
@@ -282,7 +283,7 @@ class MouldTests(unittest.TestCase):
         self.assertIn('product=1', page)
         self.assertNotIn('name="mould_no"', page)
         self.assertIn('<button class="primary" type="submit">Save Info</button>', page)
-        self.assertIn('<a id="mould-clear" class="button" href="/mould?clear=1&amp;production_date=2026-09-27">Clear</a>', page)
+        self.assertIn('<a id="mould-clear" class="button" href="/mould?clear=1">Clear</a>', page)
         filter_product = page.split('id="mould-product-filter"', 1)[1].split('</select>', 1)[0]
         self.assertIn('value="1|01"', filter_product)
         self.assertIn('>01 / Product One</option>', filter_product)

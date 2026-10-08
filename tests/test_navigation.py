@@ -22,6 +22,8 @@ class NavigationTests(unittest.TestCase):
              patch('app.main.read_daily_work',return_value=({},[],[],{},time(8))), \
              patch('app.main.read_prod_records',return_value=[]), \
              patch('app.main.read_usage_context',return_value=dict(lots=[],shifts=[],daily=[])), \
+             patch('app.main.read_logger_master_review',return_value=dict(counts=[],warnings=[],
+                 main_machines=[],sub_machines=[],stop_types=[],sub_stop_types=[],causes=[])), \
              patch('app.main.press_mc_context',return_value=dict(presses=[],lines=[],selected=None,capability_groups=[],history=[])), \
              patch('app.main.mould_context',return_value=dict(products=[],moulds=[],selected=None,
                  status_history=[],recondition_history=[],usage_history=[])):
@@ -36,8 +38,8 @@ class NavigationTests(unittest.TestCase):
 
     def test_date_survives_complete_tab_cycle(self):
         body=self.page('/','production_date=2026-09-14')
-        for path in ('/usage','/depallet','/prod-api','/reject-api','/press-mc','/mould','/print-prod','/print-oee','/'):
-            nav=re.search(r'<nav class="page-tabs".*?</nav>',body,re.S)[0]
+        for path in ('/usage','/depallet','/prod-api','/reject-api','/press-mc','/mould','/logger/master','/print-prod','/print-oee','/'):
+            nav=re.search(r'<nav class="page-tabs".*?</nav>.*?<div class="settings-submenu-row".*?</div>',body,re.S)[0]
             target=next(html.unescape(url) for url in re.findall(r'href="([^"]+)"',nav)
                         if urlsplit(html.unescape(url)).path==path)
             self.assertEqual(target,path+'?production_date=2026-09-14')
@@ -46,7 +48,7 @@ class NavigationTests(unittest.TestCase):
             self.assertIn('value="2026-09-14"',self.shared_form(body))
 
     def test_refresh_uses_current_tab_and_one_shared_date_input(self):
-        for path in ('/','/usage','/depallet','/prod-api','/reject-api','/press-mc','/mould','/print-prod','/print-oee'):
+        for path in ('/','/usage','/depallet','/prod-api','/reject-api','/press-mc','/mould','/logger/master','/print-prod','/print-oee'):
             with self.subTest(path=path):
                 body=self.page(path,'production_date=2026-09-14')
                 form=self.shared_form(body)
@@ -61,7 +63,7 @@ class NavigationTests(unittest.TestCase):
                 self.assertNotIn('production_date=2026-09-14',refreshed)
 
     def test_deep_links_and_default_date(self):
-        for path in ('/','/usage','/depallet','/prod-api','/reject-api','/press-mc','/mould','/print-prod','/print-oee'):
+        for path in ('/','/usage','/depallet','/prod-api','/reject-api','/press-mc','/mould','/logger/master','/print-prod','/print-oee'):
             body=self.page(path,'production_date=2020-01-02')
             self.assertIn('value="2020-01-02"',self.shared_form(body))
             body=self.page(path)
@@ -94,18 +96,52 @@ class NavigationTests(unittest.TestCase):
     def test_shared_header_groups_date_refresh_and_tabs_in_one_wrapping_row(self):
         for path in ('/','/usage','/depallet','/prod-api','/reject-api','/press-mc','/mould','/print-prod','/print-oee'):
             body=self.page(path,'production_date=2026-09-14')
-            row=re.search(r'<div class="shared-header-row">(.*?)</nav>\s*</div>',body,re.S)
+            row=re.search(r'<div class="shared-header-row">(.*?)</div>\s*</div>\s*</div>',body,re.S)
             self.assertIsNotNone(row)
             self.assertIn('id="shared-production-date"',row[1])
             self.assertLess(row[1].index('>REFRESH<'),row[1].index('<nav class="page-tabs"'))
-            self.assertEqual(re.findall(r'>(PRODUCTION|DEPALLET|USAGE|PROD API|REJECT API|PressMc|Mould)</a>',row[1]),
-                             ['PRODUCTION','USAGE','DEPALLET','PROD API','REJECT API','PressMc','Mould'])
-            self.assertRegex(body,r'\.shared-header-row\{[^}]*display:flex;[^}]*flex-wrap:wrap;')
+            main=re.search(r'<div class="page-tabs-main">(.*?)</div>',row[1],re.S)
+            self.assertIsNotNone(main)
+            self.assertEqual(re.findall(r'>(PRODUCTION|LOGGER|REJECT|USAGE|DEPALLET|PROD API|REJECT API|PRINT PROD|PRINT OEE)</a>',main[1]),
+                             ['PRODUCTION','LOGGER','REJECT','USAGE','DEPALLET','PROD API','REJECT API','PRINT PROD','PRINT OEE'])
+            self.assertIn('>SETTING</button>',row[1])
+            primary=re.search(r'<div class="shared-header-primary-row">(.*?)</div>\s*</div>',row[1],re.S)
+            self.assertIsNotNone(primary)
+            self.assertIn('id="settings-toggle"',primary[1])
+            self.assertNotIn('settings-submenu-row',primary[1])
+            self.assertGreater(row[1].index('<div class="settings-submenu-row"'),
+                               row[1].index('</div>',row[1].index('id="settings-toggle"')))
+            self.assertRegex(body,r'\.shared-header-row\{display:block;')
+            self.assertRegex(body,r'\.shared-header-primary-row\{display:flex;')
+            self.assertRegex(body,r'#settings-tabs\[hidden\]\{display:none !important\}')
 
     def test_shared_date_change_navigation_is_present_on_every_page(self):
-        for path in ('/','/usage','/depallet','/prod-api','/reject-api','/press-mc','/mould'):
+        for path in ('/','/usage','/depallet','/prod-api','/reject-api','/press-mc','/mould','/logger/master'):
             with self.subTest(path=path):
                 body=self.page(path,'production_date=2026-09-14')
                 self.assertEqual(body.count("dateInput.addEventListener('change'"),1)
                 self.assertIn('window.location.assign(url.toString())',body)
                 self.assertIn('>REFRESH<',self.shared_form(body))
+
+    def test_setting_menu_state_and_submenu_links(self):
+        for path, active in (('/', False), ('/press-mc', True), ('/mould', True), ('/logger/master', True)):
+            with self.subTest(path=path):
+                body=self.page(path,'production_date=2026-09-14')
+                setting=re.search(r'<button id="settings-toggle".*?</button>',body,re.S)
+                self.assertIsNotNone(setting)
+                self.assertIn('aria-expanded="' + ('true' if active else 'false') + '"',setting[0])
+                submenu=re.search(r'<div class="settings-submenu-row".*?</div>',body,re.S)
+                self.assertIsNotNone(submenu)
+                self.assertEqual(
+                    re.findall(r'href="([^"]+)"[^>]*>(PressMc|Mould|Log Master)</a>',submenu[0]),
+                    [(path + '?production_date=2026-09-14',
+                      label) for path, label in (
+                          ('/press-mc', 'PressMc'),
+                          ('/mould', 'Mould'),
+                          ('/logger/master', 'Log Master'),
+                      )],
+                )
+                if active:
+                    self.assertIn('aria-current="page"',submenu[0])
+                else:
+                    self.assertNotIn('aria-current="page"',submenu[0])

@@ -45,12 +45,11 @@
 @media(max-width:760px){ #depallet-selectors{grid-template-columns:1fr 1fr}#depallet-selectors label:nth-child(3){grid-column:1/-1}}
 @media(max-width:620px){ #depallet-rejects{grid-template-columns:minmax(0,1fr)}.depallet-final-remark input{width:min(180px,45vw)}}
 </style>
-<h1>DEPALLET</h1>
 {% if error %}<div class="error" role="alert">{{ error }}</div>{% else %}
 <form id="depallet-input" method="post" action="/depallet/save">
 <input id="depallet-date" name="depallet_date" type="hidden" value="{{ production_date }}">
 <fieldset id="depallet-fields">
-<section class="panel"><h2>CREATE DEPALLET LOT</h2>
+<section class="panel">
 <div id="depallet-selectors">
 <label>Product Family<select id="depallet-family"><option value="">Select family</option>{% for family in families %}<option value="{{ family.ProductFamilyID }}">{{ family.ProductFamily }}</option>{% endfor %}</select></label>
 <label>Product<select id="depallet-product" disabled><option value="">Select product</option></select></label>

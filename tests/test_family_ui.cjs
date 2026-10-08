@@ -93,3 +93,27 @@ failedPost.change('2026-09-15');
 assert.equal(failedPost.navigations[0].pathname,'/');
 assert.equal(failedPost.navigations[0].searchParams.has('production_id'),false);
 console.log('Shared date auto-navigation passed on all five tabs; query preservation, stale selections and no form submissions verified.');
+
+const settingsToggle = {attrs:{'aria-expanded':'false'},handlers:{},
+  getAttribute(name) { return this.attrs[name]; },
+  setAttribute(name,value) { this.attrs[name]=value; },
+  addEventListener(name,handler) { this.handlers[name]=handler; }};
+const settingsTabs = {hidden:true};
+const settingDateInput = {value:'2026-09-14',validity:{valid:true},addEventListener() {}};
+const settingDateForm = {action:'/press-mc'};
+vm.runInNewContext(navigationScripts[0], {
+  document:{getElementById:id => ({
+    'shared-production-date':settingDateForm,
+    production_date:settingDateInput,
+    'settings-toggle':settingsToggle,
+    'settings-tabs':settingsTabs
+  }[id])},
+  URL, window:{location:{href:'http://local/press-mc?production_date=2026-09-14',assign() {}}}
+});
+settingsToggle.handlers.click();
+assert.equal(settingsToggle.getAttribute('aria-expanded'),'true');
+assert.equal(settingsTabs.hidden,false);
+settingsToggle.handlers.click();
+assert.equal(settingsToggle.getAttribute('aria-expanded'),'false');
+assert.equal(settingsTabs.hidden,true);
+console.log('SETTING menu expand/collapse behavior passed without navigation.');

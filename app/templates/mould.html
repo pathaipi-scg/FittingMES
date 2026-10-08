@@ -1,9 +1,8 @@
 {% extends 'api_base.html' %}
 {% block content %}
 {% macro mould_navigation_fields() -%}
-<input type="hidden" name="q" value="{{ search }}"><input type="hidden" name="family" value="{{ family_filter }}"><input type="hidden" name="product" value="{{ product_filter }}"><input type="hidden" name="status" value="{{ status_filter }}">{% if production_date %}<input type="hidden" name="production_date" value="{{ production_date }}">{% endif %}
+<input type="hidden" name="q" value="{{ search }}"><input type="hidden" name="family" value="{{ family_filter }}"><input type="hidden" name="product" value="{{ product_filter }}"><input type="hidden" name="status" value="{{ status_filter }}">
 {%- endmacro %}
-{% set mould_date_query = '&production_date=' ~ production_date if production_date else '' %}
 <style>
 .mould-toolbar{display:flex;gap:5px;align-items:end;flex-wrap:nowrap;margin:3px 0}
 .mould-toolbar label,.mould-form label{display:flex;flex-direction:column;gap:2px}
@@ -36,7 +35,6 @@
 <section class="panel mould-list">
   <h2>Moulds <span class="muted">{{ moulds|length }}</span></h2>
   <form class="mould-toolbar" method="get" action="/mould">
-    {% if production_date %}<input type="hidden" name="production_date" value="{{ production_date }}">{% endif %}
     <label for="mould-search">Mould No. / Name<input id="mould-search" type="search" name="q" value="{{ search }}" placeholder="Search Mould"></label>
     <label for="mould-family-filter">Product Family<select id="mould-family-filter" name="family"><option value="">All families</option>{% for family in families %}<option value="{{ family.ProductFamilyID }}" {% if family_filter == family.ProductFamilyID|string %}selected{% endif %}>{{ family.ProductFamily }}</option>{% endfor %}</select></label>
     <label for="mould-product-filter">Product<select id="mould-product-filter" name="product"><option value="">All products</option>{% for item in products %}<option value="{{ item.ProductFamilyID }}|{{ item.ProductCode }}" data-family="{{ item.ProductFamilyID }}" {% if product_filter == item.ProductFamilyID|string ~ '|' ~ item.ProductCode %}selected{% endif %}>{{ item.ProductCode }} / {{ item.ProductName }}</option>{% endfor %}</select></label>
@@ -47,8 +45,8 @@
     <th>Mould No.</th><th>Mould Name</th><th>Product</th><th>Status</th><th>Current Age</th><th>Lifetime Age</th>
   </tr></thead><tbody>
   {% for row in moulds %}<tr aria-selected="{{ 'true' if selected and selected.MouldID == row.MouldID else 'false' }}" data-family="{{ row.ProductFamilyID }}" data-product="{{ row.ProductFamilyID }}|{{ row.ProductCode }}">
-    <td><a class="mould-select" href="/mould?family={{ family_filter|urlencode }}&amp;product={{ product_filter|urlencode }}&amp;status={{ status_filter|urlencode }}&amp;q={{ search|urlencode }}&amp;mould_id={{ row.MouldID }}{{ mould_date_query }}">{{ row.MouldNo }}</a></td>
-    <td><a class="mould-select" href="/mould?family={{ family_filter|urlencode }}&amp;product={{ product_filter|urlencode }}&amp;status={{ status_filter|urlencode }}&amp;q={{ search|urlencode }}&amp;mould_id={{ row.MouldID }}{{ mould_date_query }}">{{ row.MouldName }}</a></td>
+    <td><a class="mould-select" href="/mould?family={{ family_filter|urlencode }}&amp;product={{ product_filter|urlencode }}&amp;status={{ status_filter|urlencode }}&amp;q={{ search|urlencode }}&amp;mould_id={{ row.MouldID }}">{{ row.MouldNo }}</a></td>
+    <td><a class="mould-select" href="/mould?family={{ family_filter|urlencode }}&amp;product={{ product_filter|urlencode }}&amp;status={{ status_filter|urlencode }}&amp;q={{ search|urlencode }}&amp;mould_id={{ row.MouldID }}">{{ row.MouldName }}</a></td>
     <td>{{ row.ProductName or '' }}</td><td class="mould-state" data-state="{{ row.Status }}">{{ row.Status }}</td>
     <td>{{ row.CurrentAge if row.CurrentAge is not none else 0 }}</td><td>{{ row.LifetimeAge if row.LifetimeAge is not none else 0 }}</td>
   </tr>{% else %}<tr><td colspan="6" class="muted">No Moulds match these filters.</td></tr>{% endfor %}
@@ -147,21 +145,17 @@
   const saveFilters = () => sessionStorage.setItem(storageKey, JSON.stringify(filterState()));
   const restoreUrl = stored => {
     const params = new URLSearchParams(stored);
-    const navigationDate = query.get('production_date');
-    if (navigationDate) params.set('production_date', navigationDate);
     return `${window.location.pathname}?${params}`;
   };
   if (query.has('clear')) {
     sessionStorage.removeItem(storageKey);
     query.delete('clear');
-    if (!query.get('production_date')) query.delete('production_date');
     history.replaceState(null, '', `${window.location.pathname}?${query}`);
   } else if (!explicitFilters) {
     try {
       const stored = JSON.parse(sessionStorage.getItem(storageKey) || 'null');
       if (stored) {
         const restored = new URLSearchParams(stored);
-        if (query.get('production_date')) restored.set('production_date', query.get('production_date'));
         if (!restored.get('product') || restored.get('product').startsWith(`${restored.get('family')}|`)) {
           window.location.replace(restoreUrl(stored));
           return;

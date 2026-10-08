@@ -3,6 +3,15 @@ const vm = require('node:vm');
 const assert = require('node:assert/strict');
 
 const html = fs.readFileSync('app/templates/depallet.html', 'utf8');
+assert.doesNotMatch(html, /<h1>\s*DEPALLET\s*<\/h1>/);
+assert.doesNotMatch(html, /<h2>\s*CREATE DEPALLET LOT\s*<\/h2>/);
+assert.match(html, /<section class="panel">\s*<div id="depallet-selectors">/);
+assert.match(html, /id="depallet-family"/);
+assert.match(html, /id="depallet-product"/);
+assert.match(html, /id="depallet-production-lot"/);
+assert.match(html, /<button id="create-depallet-lot" class="primary" type="button" disabled>CREATE DEPALLET LOT<\/button>/);
+assert.ok(html.indexOf('id="create-depallet-lot"') < html.indexOf('DEPALLET LOTS'));
+assert.ok(html.indexOf('DEPALLET LOTS') < html.indexOf('REJECT DETAIL'));
 const match = html.match(/<script>\s*([\s\S]*?)<\/script>/);
 assert.ok(match, 'Depallet executable script exists');
 const source = match[1];

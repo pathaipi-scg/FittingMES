@@ -1,3 +1,4 @@
+import re
 import unittest
 from datetime import date
 from unittest.mock import MagicMock, patch
@@ -69,6 +70,16 @@ class ProductionTests(unittest.TestCase):
         self.assertIn("start.addEventListener('input', updateShift);", text)
         self.assertIn("start.addEventListener('change', updateShift);", text)
         self.assertIn('    updateShift();', text)
+        lot_table=text.split('<table class="depallet-grid lot-table">',1)[1].split('</table>',1)[0]
+        selected_row=re.search(r'<tr class="selected".*?</tr>',lot_table,re.S)
+        self.assertIsNotNone(selected_row)
+        self.assertEqual(selected_row[0].count('<td'),16)
+        self.assertRegex(selected_row[0],r'<td><button[^>]*>Save</button></td>')
+        action_cell=selected_row[0].split('<td class="lot-actions">',1)[1].split('</td>',1)[0]
+        self.assertIn('EDIT',action_cell)
+        self.assertIn('VOID LOT',action_cell)
+        self.assertIn('.depallet-grid td.lot-actions{vertical-align:middle;',text)
+        self.assertIn('.lot-table td.lot-actions>a,.lot-table td.lot-actions>form{display:inline-flex;',text)
         conn.commit.assert_not_called()
 
     def test_edit_original_date_and_current_selectable(self):
