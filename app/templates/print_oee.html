@@ -1,7 +1,7 @@
 {% extends 'api_base.html' %}
 {% block content %}
-{% macro value(v, places=2) -%}{% if v is not none %}{{ ('%.{}f'.format(places))|format(v) }}{% else %}-{% endif %}{%- endmacro %}
-{% macro percent(v) -%}{% if v is not none %}{{ '%.2f'|format(v * 100) }}%{% else %}-{% endif %}{%- endmacro %}
+{% macro value(v, places=2) -%}{% if v is not none %}{{ ('%.{}f'.format(places))|format(v) }}{% endif %}{%- endmacro %}
+{% macro percent(v) -%}{% if v is not none %}{{ '%.2f'|format(v * 100) }}%{% endif %}{%- endmacro %}
 <style>
 :where(body){overflow-x:hidden}
 .oee-actions{display:flex;justify-content:flex-end;gap:6px;margin-bottom:6px}
@@ -24,7 +24,11 @@
 .oee-small{font-size:9px}
 .oee-note{font-size:9px;color:#555}
 .oee-wide-wrap{width:100%;overflow-x:auto;margin-bottom:6px}
-.oee-wide-table{min-width:1550px;table-layout:auto}
+.oee-detail-wrap{width:100%;overflow:visible;margin-bottom:6px}
+.oee-breakdown-table,.oee-episode-table{min-width:0;width:100%;table-layout:fixed;font-size:7px}
+.oee-breakdown-table th,.oee-breakdown-table td,.oee-episode-table th,.oee-episode-table td{padding:2px;line-height:1.15;overflow-wrap:anywhere}
+.oee-breakdown-table th,.oee-episode-table th{white-space:normal}
+.oee-breakdown-table td.num,.oee-episode-table td.num{text-align:right}
 .oee-press-summary{min-width:0;width:100%;table-layout:fixed;font-size:8px}
 .oee-summary-wrap{overflow:visible}
 .oee-press-summary th,.oee-press-summary td{padding:2px 2px;font-size:8px;line-height:1.15;overflow-wrap:anywhere}
@@ -44,22 +48,25 @@
 .oee-code{font-weight:700;white-space:nowrap}
 .oee-actions button,.oee-pdf-button{display:inline-flex;align-items:center;justify-content:center;height:23px;padding:2px 8px;border:1px solid #1765ad;border-radius:2px;background:#1765ad;color:#fff;font:10px system-ui;text-decoration:none}
 @media print{
- @page{size:A4 landscape;margin:7mm}
+ @page{size:A4 portrait;margin:10mm}
  body{background:#fff}.shared-header-row,.oee-actions,body>header{display:none!important}
  main{padding:0!important;margin:0!important}
- .oee-report{max-width:none;font-size:7px}
- .oee-report h1{font-size:15px}
- .oee-table th,.oee-table td{padding:1px}
+ :where(body){overflow:visible}
+ .oee-report{width:100%;max-width:none;font-size:10px}
+ .oee-report h1{font-size:17px}
+ .oee-section{font-size:11px}
+ .oee-note{font-size:8px}
+ .oee-table{width:100%;min-width:0;table-layout:fixed;font-size:8px}
+ .oee-table th,.oee-table td{padding:1px 2px;overflow-wrap:anywhere}
+ .oee-table thead{display:table-header-group}
+ .oee-table tr{break-inside:avoid;page-break-inside:avoid}
  .oee-summary div{padding:2px 3px}
- .oee-small,.oee-note{font-size:6px}
- .oee-table tr{page-break-inside:avoid}
  .oee-wide-wrap{overflow:visible}
- .oee-wide-table{min-width:0;width:100%;font-size:6px}
- .oee-press-summary{min-width:0;width:100%;font-size:6px}
- .oee-press-summary th,.oee-press-summary td{padding:1px;font-size:6px;line-height:1.1}
- .oee-category-table{min-width:0;width:100%;font-size:5px}
- .oee-category-table th,.oee-category-table td{padding:1px;font-size:5px}
- .oee-category-table td.unavailable{font-size:5px}
+ .oee-detail-wrap{overflow:visible}
+ .oee-breakdown-table{font-size:8px}
+ .oee-episode-table{font-size:8px}
+ .oee-press-summary{font-size:8px}
+ .oee-category-table{font-size:8px}
 }
 @media screen and (max-width:700px){
  .oee-report{max-width:100%;overflow:hidden;font-size:9px}
@@ -84,18 +91,18 @@
 <thead><tr><th rowspan="2">Press</th><th rowspan="2">Mould</th><th rowspan="2">Speed</th><th class="shift-group" colspan="6">SHIFT 1</th><th class="shift-group" colspan="6">SHIFT 2</th><th rowspan="2">Total production minutes</th></tr>
 <tr><th>Start</th><th>End</th><th>Min</th><th>Counter</th><th>Curing</th><th>Wet Rej.</th><th>Start</th><th>End</th><th>Min</th><th>Counter</th><th>Curing</th><th>Wet Rej.</th></tr></thead>
 <tbody>{% for press in production_summary_rows %}
-<tr><td>{{ press.Press }}</td><td>{{ press.Mould }}</td><td>{{ press.StandardSpeed }}</td>
+<tr><td>{{ press.Press }}</td><td>{{ press.Mould or '' }}</td><td>{{ press.StandardSpeed or '' }}</td>
 {% for shift in (press.Shift1, press.Shift2) %}{% if shift.HasEpisodes %}
-<td class="episode-time">{{ shift.Start }}</td><td class="episode-time">{{ shift.End }}</td><td class="num">{% if shift.ProductionMinutes is not none %}{{ value(shift.ProductionMinutes) }}{% else %}N/A{% endif %}</td><td class="num">{% if shift.Counter is not none %}{{ value(shift.Counter, 0) }}{% else %}N/A{% endif %}</td><td class="num">{% if shift.Curing is not none %}{{ value(shift.Curing, 0) }}{% else %}N/A{% endif %}</td><td class="num">{% if shift.WetReject is not none %}{{ value(shift.WetReject, 0) }}{% else %}N/A{% endif %}</td>
+<td class="episode-time">{{ shift.Start }}</td><td class="episode-time">{{ shift.End }}</td><td class="num">{{ value(shift.ProductionMinutes) }}</td><td class="num">{{ value(shift.Counter, 0) }}</td><td class="num">{{ value(shift.Curing, 0) }}</td><td class="num">{{ value(shift.WetReject, 0) }}</td>
 {% else %}<td></td><td></td><td></td><td></td><td></td><td></td>{% endif %}{% endfor %}
-<td class="num">{% if press.TotalProductionMinutes is not none %}{{ value(press.TotalProductionMinutes) }}{% else %}N/A{% endif %}</td></tr>
+<td class="num">{{ value(press.TotalProductionMinutes) }}</td></tr>
 {% else %}<tr><td colspan="16">No Press production assignments for this Production Date.</td></tr>{% endfor %}
 {% if production_summary_rows %}{% set totals=production_summary_totals %}
 <tr class="total-row"><th colspan="3">TOTAL</th>
 {% for shift in (totals.Shift1, totals.Shift2) %}{% if shift.HasEpisodes %}
-<td></td><td></td><td class="num">{% if shift.ProductionMinutes is not none %}{{ value(shift.ProductionMinutes) }}{% else %}N/A{% endif %}</td><td class="num">{% if shift.Counter is not none %}{{ value(shift.Counter, 0) }}{% else %}N/A{% endif %}</td><td class="num">{% if shift.Curing is not none %}{{ value(shift.Curing, 0) }}{% else %}N/A{% endif %}</td><td class="num">{% if shift.WetReject is not none %}{{ value(shift.WetReject, 0) }}{% else %}N/A{% endif %}</td>
+<td></td><td></td><td class="num">{{ value(shift.ProductionMinutes) }}</td><td class="num">{{ value(shift.Counter, 0) }}</td><td class="num">{{ value(shift.Curing, 0) }}</td><td class="num">{{ value(shift.WetReject, 0) }}</td>
 {% else %}<td></td><td></td><td></td><td></td><td></td><td></td>{% endif %}{% endfor %}
-<td class="num">{% if totals.TotalProductionMinutes is not none %}{{ value(totals.TotalProductionMinutes) }}{% else %}N/A{% endif %}</td></tr>{% endif %}
+<td class="num">{{ value(totals.TotalProductionMinutes) }}</td></tr>{% endif %}
 </tbody></table></div>
 <div class="oee-section">LOGGER DOWNTIME BY EXCEL CATEGORY (MINUTES)</div>
 <div class="oee-wide-wrap oee-category-wrap"><table class="oee-table oee-category-table">
@@ -104,28 +111,30 @@
 <tr>{% for machine in logger_category_table.Machines %}<th>{{ machine.MachineCode }}</th>{% endfor %}<th>Total</th>{% for machine in logger_category_table.Machines %}<th>{{ machine.MachineCode }}</th>{% endfor %}<th>Total</th></tr></thead>
 <tbody>{% for section in logger_category_table.Sections %}{% for item in section.Rows %}
 <tr{% if item.Kind == 'subtotal' %} class="category-total"{% endif %}><th class="category-name">{% if item.Kind == 'category' %}<span class="oee-code">{{ item.Code }}</span> {{ item.Label }}{% else %}{{ item.Label }}{% endif %}</th>
-{% for cell in item.Shift1 %}{% if cell.assigned %}{% if cell.value is not none %}<td class="num">{{ value(cell.value) }}</td>{% else %}<td class="unavailable">N/A</td>{% endif %}{% else %}<td>-</td>{% endif %}{% endfor %}
-{% if item.Shift1Total.assigned %}{% if item.Shift1Total.value is not none %}<td class="num">{{ value(item.Shift1Total.value) }}</td>{% else %}<td class="unavailable">N/A</td>{% endif %}{% else %}<td>-</td>{% endif %}
-{% for cell in item.Shift2 %}{% if cell.assigned %}{% if cell.value is not none %}<td class="num">{{ value(cell.value) }}</td>{% else %}<td class="unavailable">N/A</td>{% endif %}{% else %}<td>-</td>{% endif %}{% endfor %}
-{% if item.Shift2Total.assigned %}{% if item.Shift2Total.value is not none %}<td class="num">{{ value(item.Shift2Total.value) }}</td>{% else %}<td class="unavailable">N/A</td>{% endif %}{% else %}<td>-</td>{% endif %}
-{% if item.AllShiftsTotal.assigned %}{% if item.AllShiftsTotal.value is not none %}<td class="num">{{ value(item.AllShiftsTotal.value) }}</td>{% else %}<td class="unavailable">N/A</td>{% endif %}{% else %}<td>-</td>{% endif %}</tr>
+{% for cell in item.Shift1 %}{% if cell.assigned %}<td class="num">{{ value(cell.value) }}</td>{% else %}<td></td>{% endif %}{% endfor %}
+{% if item.Shift1Total.assigned %}<td class="num">{{ value(item.Shift1Total.value) }}</td>{% else %}<td></td>{% endif %}
+{% for cell in item.Shift2 %}{% if cell.assigned %}<td class="num">{{ value(cell.value) }}</td>{% else %}<td></td>{% endif %}{% endfor %}
+{% if item.Shift2Total.assigned %}<td class="num">{{ value(item.Shift2Total.value) }}</td>{% else %}<td></td>{% endif %}
+{% if item.AllShiftsTotal.assigned %}<td class="num">{{ value(item.AllShiftsTotal.value) }}</td>{% else %}<td></td>{% endif %}</tr>
 {% endfor %}{% endfor %}</tbody></table></div>
-<p class="oee-note">- = no machine assignment; N/A = mapping, duration, or event attribution incomplete. SubStop mapping takes precedence over StopType fallback. LOGGER minutes are report-only and excluded from OEE.</p>
+<p class="oee-note">Blank category cells indicate no assignment or incomplete mapping, duration, or event attribution. SubStop mapping takes precedence over StopType fallback. LOGGER minutes are report-only and excluded from OEE.</p>
 {% if logger_report.mapping_missing_codes %}<p class="oee-note">Missing Excel mappings: {{ logger_report.mapping_missing_codes|join(', ') }}.</p>{% endif %}
 {% if logger_report.mapping_orphan_subtypes %}<p class="oee-note">Invalid Stop/SubStop master relationships are excluded.</p>{% endif %}
 <div class="oee-section">EXCEL BREAKDOWN DETAIL</div>
 <p class="oee-note">This table contains only StopId 7 Breakdown events for the selected LOGGER Production Date. Each LoggerEventID is listed once; persisted ShiftID takes precedence and timestamped legacy records use the effective LOGGER shift rules. These details are presentation-only and are not added to OEE losses.</p>
-<div class="oee-wide-wrap"><table class="oee-table oee-wide-table oee-small">
-<thead><tr><th>Start Time</th><th>Stop Time</th><th>Duration (minutes)</th><th>Cause</th><th>Machine (F-code)</th><th>Machine Type</th><th>Machine Code</th><th>Corrective Action (Note)</th></tr></thead>
+<div class="oee-detail-wrap"><table class="oee-table oee-breakdown-table">
+<colgroup><col style="width:8%"><col style="width:8%"><col style="width:9%"><col style="width:22%"><col style="width:10%"><col style="width:43%"></colgroup>
+<thead><tr><th>Start Time</th><th>Stop Time</th><th>Duration (minutes)</th><th>Cause</th><th>Machine (F-code)</th><th>Note (การแก้ไข)</th></tr></thead>
 <tbody>{% for event in breakdown_details %}
-<tr><td>{{ event.StartTime or '-' }}</td><td>{{ event.StopTime or '-' }}</td><td class="num">{{ value(event.DurationMinutes) }}</td><td>{{ event.Cause or '-' }}</td><td>{{ event.Machine or '-' }}</td><td>{{ event.MachineType or '-' }}</td><td>{{ event.MachineCode or '-' }}</td><td class="product">{{ event.CorrectiveAction or '-' }}</td></tr>
-{% else %}<tr><td colspan="8">No Breakdown events were recorded for this Production Date.</td></tr>{% endfor %}</tbody></table></div>
+<tr><td>{{ event.StartTime or '' }}</td><td>{{ event.StopTime or '' }}</td><td class="num">{{ value(event.DurationMinutes) }}</td><td>{{ event.Cause or '' }}</td><td>{{ event.Machine or '' }}</td><td>{{ event.CorrectiveAction or '' }}</td></tr>
+{% else %}<tr><td colspan="6">No Breakdown events were recorded for this Production Date.</td></tr>{% endfor %}</tbody></table></div>
 <div class="oee-section">OEE CALCULATION DETAILS BY PRESS/SHIFT EPISODE</div>
-<div class="oee-wide-wrap"><table class="oee-table oee-wide-table">
-<thead><tr><th>PressProductionID</th><th>Shift</th><th>Press</th><th>Lot</th><th>Product</th><th>Mould</th><th>Dispatch</th><th>Counter</th><th>Curing</th><th>Wet Reject</th><th>Start</th><th>End</th><th>Actual Min</th><th>Setup</th><th>ChgOver</th><th>Idle</th><th>Cleaning</th><th>Breakdown</th><th>Total Loss</th><th>Run</th><th>AR</th><th>PR</th><th>QR</th><th>OEE</th><th>Status</th></tr></thead>
+<div class="oee-detail-wrap"><table class="oee-table oee-episode-table">
+<colgroup><col style="width:4%"><col style="width:4%"><col style="width:8%"><col style="width:9%"><col style="width:7%"><col style="width:5%"><col style="width:5%"><col style="width:5%"><col style="width:5%"><col style="width:6%"><col style="width:5%"><col style="width:5%"><col style="width:5%"><col style="width:5%"><col style="width:5%"><col style="width:4%"><col style="width:4%"><col style="width:4%"><col style="width:5%"></colgroup>
+<thead><tr><th>Shift</th><th>Press</th><th>Lot</th><th>Product</th><th>Mould</th><th>Counter</th><th>Curing</th><th>Start</th><th>End</th><th>Actual Min</th><th>Setup</th><th>ChgOver</th><th>Idle</th><th>Cleaning</th><th>Breakdown</th><th>AR</th><th>PR</th><th>QR</th><th>OEE</th></tr></thead>
 <tbody>{% for row in rows %}
-<tr><td>{{ row.PressProductionID or '-' }}</td><td>{{ row.Shift }}</td><td>{{ row.MachineCode }}</td><td>{{ row.LotNo or '-' }}</td><td class="product">{{ row.ProductName or row.ProductCode or '-' }}</td><td>{{ row.MouldNo or '-' }}</td><td class="num">{{ value(row.DispatchQty, 0) }}</td><td class="num">{{ value(row.Counter, 0) }}</td><td class="num">{{ value(row.Curing, 0) }}</td><td class="num">{{ value(row.Reject, 0) }}</td><td>{{ row.Start or '-' }}</td><td>{{ row.End or '-' }}</td><td class="num">{{ value(row.ActualProductionMinutes) }}</td><td class="num">{{ value(row.SetupMinutes) }}</td><td class="num">{{ value(row.ChangeoverMinutes) }}</td><td class="num">{{ value(row.IdleMinutes) }}</td><td class="num">{{ value(row.CleaningMinutes) }}</td><td class="num">{{ value(row.BreakdownMinutes) }}</td><td class="num">{{ value(row.TotalLoss) }}</td><td class="num">{{ value(row.RunTime) }}</td><td class="num">{{ percent(row.Availability) }}</td><td class="num">{{ percent(row.Performance) }}</td><td class="num">{{ percent(row.Quality) }}</td><td class="num">{{ percent(row.OEE) }}</td><td class="status {{ 'ok' if row.Eligible else 'bad' }}">{{ row.Status }}</td></tr>
-{% else %}<tr><td colspan="25">No Press production records.</td></tr>{% endfor %}</tbody></table></div>
+<tr><td>{{ row.Shift }}</td><td>{{ row.MachineCode }}</td><td>{{ row.LotNo or '-' }}</td><td class="product">{{ row.ProductName or row.ProductCode or '-' }}</td><td>{{ row.MouldNo or '-' }}</td><td class="num">{{ value(row.Counter, 0) }}</td><td class="num">{{ value(row.Curing, 0) }}</td><td>{{ row.Start or '' }}</td><td>{{ row.End or '' }}</td><td class="num">{{ value(row.ActualProductionMinutes) }}</td><td class="num">{{ value(row.SetupMinutes) }}</td><td class="num">{{ value(row.ChangeoverMinutes) }}</td><td class="num">{{ value(row.IdleMinutes) }}</td><td class="num">{{ value(row.CleaningMinutes) }}</td><td class="num">{{ value(row.BreakdownMinutes) }}</td><td class="num">{{ percent(row.Availability) }}</td><td class="num">{{ percent(row.Performance) }}</td><td class="num">{{ percent(row.Quality) }}</td><td class="num">{{ percent(row.OEE) }}</td></tr>
+{% else %}<tr><td colspan="19">No Press production records.</td></tr>{% endfor %}</tbody></table></div>
 {% for shift in shifts %}{% set summary=summaries[shift|string] %}
 <div class="oee-summary"><h2>SHIFT {{ shift }} OEE SUMMARY</h2><div>Actual Production Minutes<br><b>{{ value(summary.get('ActualProductionMinutes')) }}</b></div><div>Run Time<br><b>{{ value(summary.get('RunTime')) }}</b></div><div>Total Counter<br><b>{{ value(summary.get('TotalCount'), 0) }}</b></div><div>Total Curing<br><b>{{ value(summary.get('GoodCount'), 0) }}</b></div><div>Availability<br><b>{{ percent(summary.get('Availability')) }}</b></div><div>Performance<br><b>{{ percent(summary.get('Performance')) }}</b></div><div>Quality<br><b>{{ percent(summary.get('Quality')) }}</b></div><div>OEE<br><b>{{ percent(summary.get('OEE')) }}</b></div></div>
 {% endfor %}

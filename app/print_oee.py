@@ -88,12 +88,15 @@ def calculate_oee_row(row):
     result['ActualProductionMinutes'] = actual_minutes
 
     losses = {}
+    displayed_losses = {}
     for code, field in LOSS_FIELDS:
         value = _decimal(row.get(field))
-        losses[field] = value if value is not None else Decimal('0')
-        if value is None or value < 0:
+        valid = value is not None and value >= 0
+        losses[field] = value if valid else Decimal('0')
+        displayed_losses[field] = value if valid else None
+        if not valid:
             status.append('Invalid loss time')
-    result.update(losses)
+    result.update(displayed_losses)
     total_loss = sum(losses.values(), Decimal('0'))
     runtime = actual_minutes - total_loss if actual_minutes is not None else None
     result['TotalLoss'] = total_loss
@@ -167,9 +170,9 @@ def _production_episode_times(episodes, field):
     values = []
     for index, episode in enumerate(episodes, start=1):
         moment = episode.get(field)
-        clock = clock_display(moment) if isinstance(moment, datetime) else 'N/A'
+        clock = clock_display(moment) if isinstance(moment, datetime) else ''
         label = f'{index}: {clock}' if len(episodes) > 1 else clock
-        values.append(label or 'N/A')
+        values.append(label)
     return '; '.join(values)
 
 
@@ -202,9 +205,9 @@ def _unique_episode_values(episodes, getter, formatter=None):
         if value not in values:
             values.append(value)
     if formatter is None:
-        return ' / '.join(str(value) if value is not None else 'N/A'
+        return ' / '.join(str(value) if value is not None else ''
                           for value in values)
-    return ' / '.join(formatter(value) if value is not None else 'N/A'
+    return ' / '.join(formatter(value) if value is not None else ''
                       for value in values)
 
 
@@ -286,8 +289,8 @@ def build_press_production_summary(report_rows):
             total_minutes = sum(known_minutes, ZERO_MINUTES)
         summaries.append(dict(
             Press=press['Press'],
-            Mould=mould_names or 'N/A',
-            StandardSpeed=speeds or 'N/A',
+            Mould=mould_names or None,
+            StandardSpeed=speeds or None,
             Shift1=shift_summaries['1'],
             Shift2=shift_summaries['2'],
             TotalProductionMinutes=total_minutes,
@@ -559,7 +562,7 @@ def _breakdown_details(events):
             LoggerEventID=event_id,
             StartTime=clock_display(event.get('StartDateTime')) or None,
             StopTime=clock_display(event.get('StopDateTime')) or None,
-            DurationMinutes=_decimal(event.get('DurationMin')),
+            DurationMinutes=_duration_minutes(event),
             Cause=event.get('CauseLabel'),
             Machine=event.get('LoggerMachine'),
             MachineType=event.get('MainMachine'),

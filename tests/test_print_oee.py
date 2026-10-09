@@ -74,6 +74,13 @@ class PrintOeeCalculationTests(unittest.TestCase):
             self.assertIsNone(result['Availability'])
             self.assertIsNone(result['OEE'])
 
+    def test_invalid_manual_loss_remains_missing_and_keeps_oee_guard(self):
+        result = self.calculate(SetupMinutes=None)
+        self.assertIsNone(result['SetupMinutes'])
+        self.assertEqual(result['TotalLoss'], Decimal(5))
+        self.assertIn('Invalid loss time', result['Status'])
+        self.assertFalse(result['Eligible'])
+
     def test_invalid_or_zero_length_press_interval_is_rejected(self):
         for end in (datetime(2026, 9, 26, 7), datetime(2026, 9, 26, 8)):
             result = self.calculate(ProductionEndTime=end)
@@ -241,7 +248,7 @@ class PrintOeeCalculationTests(unittest.TestCase):
         ]
         press, = build_press_production_summary(episodes)
         self.assertEqual(press['Shift1']['Start'], '08:00')
-        self.assertEqual(press['Shift1']['End'], 'N/A')
+        self.assertEqual(press['Shift1']['End'], '')
         self.assertIsNone(press['Shift1']['ProductionMinutes'])
         self.assertFalse(press['Shift2']['HasEpisodes'])
         self.assertTrue(press['HasUnknownShift'])
@@ -457,9 +464,10 @@ class PrintOeeQueryTests(unittest.TestCase):
                 LoggerMachine='F7', MainMachine='F', Note='Replaced bearing',
                 ResolvedShift='1'),
             dict(LoggerEventID=14, StopId=7),
+            dict(LoggerEventID=15, StopId=7, DurationMin=Decimal('-3')),
         ]
         details = _breakdown_details(events)
-        self.assertEqual(len(details), 2)
+        self.assertEqual(len(details), 3)
         self.assertEqual(details[0]['StartTime'], '08:05')
         self.assertEqual(details[0]['StopTime'], '09:17')
         self.assertEqual(details[0]['DurationMinutes'], Decimal(72))
@@ -475,6 +483,7 @@ class PrintOeeQueryTests(unittest.TestCase):
         self.assertIsNone(details[1]['Machine'])
         self.assertIsNone(details[1]['MachineCode'])
         self.assertIsNone(details[1]['CorrectiveAction'])
+        self.assertIsNone(details[2]['DurationMinutes'])
 
     def test_old_schema_does_not_reference_missing_shift_column(self):
         cursor = self.Cursor(shift_schema=False)
@@ -603,16 +612,40 @@ class PrintOeeQueryTests(unittest.TestCase):
         self.assertIn('LOGGER DOWNTIME BY EXCEL CATEGORY', text)
         self.assertIn('logger_category_table.Machines', text)
         self.assertIn('item.Label', text)
-        self.assertIn('>N/A</td>', text)
-        self.assertIn('N/A = mapping, duration, or event attribution incomplete', text)
+        self.assertNotIn('N/A', text)
         self.assertNotIn('Unavailable: incomplete Press/Shift data', text)
         self.assertIn('EXCEL BREAKDOWN DETAIL', text)
         self.assertIn('only StopId 7 Breakdown events', text)
         self.assertIn('Machine (F-code)', text)
-        self.assertIn('Corrective Action (Note)', text)
+        self.assertIn('Note (การแก้ไข)', text)
+        self.assertNotIn('Machine Type</th>', text)
+        self.assertNotIn('Machine Code</th>', text)
+        self.assertIn('oee-breakdown-table', text)
+        self.assertIn('oee-episode-table', text)
+        episode_table = text.split('OEE CALCULATION DETAILS BY PRESS/SHIFT EPISODE', 1)[1]
+        for removed_column in ('PressProductionID</th>', 'Total Loss</th>',
+                               'Dispatch</th>', 'Wet Reject</th>', 'Run</th>',
+                               'Status</th>'):
+            self.assertNotIn(removed_column, episode_table)
+        for retained_column in ('Shift</th>', 'Press</th>', 'Lot</th>',
+                                'Product</th>', 'Mould</th>', 'Counter</th>',
+                                'Curing</th>', 'Start</th>', 'End</th>',
+                                'Actual Min</th>', 'Setup</th>', 'ChgOver</th>',
+                                'Idle</th>', 'Cleaning</th>', 'Breakdown</th>',
+                                'AR</th>', 'PR</th>', 'QR</th>', 'OEE</th>'):
+            self.assertIn(retained_column, episode_table)
         self.assertIn('presentation-only and are not added to OEE losses', text)
         self.assertIn('@media print', text)
         self.assertIn('@media screen', text)
+        self.assertIn('@page{size:A4 portrait;margin:10mm}', text)
+        self.assertNotIn('@page{size:A4 landscape', text)
+        self.assertIn('.oee-report{width:100%;max-width:none;font-size:10px}', text)
+        self.assertIn('thead{display:table-header-group}', text)
+        self.assertIn('break-inside:avoid;page-break-inside:avoid', text)
+        self.assertIn('.oee-wide-wrap{overflow:visible}', text)
+        self.assertIn('.oee-episode-table{font-size:8px}', text)
+        self.assertIn('.oee-press-summary{font-size:8px}', text)
+        self.assertIn('.oee-category-table{font-size:8px}', text)
 
     def test_context_uses_saved_assignment_shift_without_time_inference(self):
         sources = [
@@ -667,6 +700,13 @@ class PrintOeeQueryTests(unittest.TestCase):
             ProductionStartTime=datetime(2026, 9, 3, 8, 5),
             ProductionEndTime=datetime(2026, 9, 3, 18, 30),
             SetupMinutes=10, BreakdownMinutes=10))
+        incomplete = calculate_oee_row(row(
+            PressProductionID=21, ProductionID=21, MachineCode='F8',
+            LotNo='I11690904', Shift='1', ShiftMasterID=301,
+            ProductionStartTime=None, ProductionEndTime=None,
+            MouldName=None, StandardSpeed=None, CapabilityIsActive=False,
+            DispatchQty=None, CounterQty=None, CuringQty=None,
+            SetupMinutes=None))
         summaries = {
             '1': summarize([sample]),
             '2': summarize([]),
@@ -686,9 +726,10 @@ class PrintOeeQueryTests(unittest.TestCase):
             unmapped_count=0, unmapped_minutes=Decimal(0),
             unattributed_count=0, unattributed_minutes=Decimal(0),
             duplicate_count=0)
-        production_summary_rows = build_press_production_summary([sample])
+        production_summary_rows = build_press_production_summary(
+            [sample, incomplete])
         report = dict(
-            rows=[sample], summaries=summaries, excluded=[],
+            rows=[sample, incomplete], summaries=summaries, excluded=[incomplete],
             production_summary_rows=production_summary_rows,
             production_summary_totals=build_press_production_totals(
                 production_summary_rows),
@@ -698,7 +739,10 @@ class PrintOeeQueryTests(unittest.TestCase):
                 StartTime='08:05', StopTime='08:15',
                 DurationMinutes=Decimal(10), Cause='Bearing failure',
                 Machine='F7', MachineType='F', MachineCode=None,
-                CorrectiveAction='Replaced bearing')],
+                CorrectiveAction='Replaced bearing'), dict(
+                StartTime=None, StopTime=None, DurationMinutes=None,
+                Cause=None, Machine=None, MachineType=None, MachineCode=None,
+                CorrectiveAction=None)],
             logger_report=logger_report,
             logger_categories=(('ก.1', 'ก', 'เตรียมการผลิต'),),
             shifts=('1', '2'), plan_week='2026-W36', press_count=1)
@@ -724,7 +768,7 @@ class PrintOeeQueryTests(unittest.TestCase):
         self.assertIn('08:05', response.body.decode('utf-8'))
         self.assertIn('18:30', response.body.decode('utf-8'))
         self.assertIn('625.00', response.body.decode('utf-8'))
-        self.assertIn('N/A', response.body.decode('utf-8'))
+        self.assertNotIn('N/A', response.body.decode('utf-8'))
         self.assertIn('EXCEL BREAKDOWN DETAIL', response.body.decode('utf-8'))
         self.assertIn('08:05', response.body.decode('utf-8'))
         self.assertIn('Bearing failure', response.body.decode('utf-8'))
@@ -741,8 +785,34 @@ class PrintOeeQueryTests(unittest.TestCase):
         self.assertIn('Subtotal (ข)', category_table)
         self.assertIn('Subtotal (ค)', category_table)
         self.assertIn('Subtotal (ง)', category_table)
-        self.assertIn('>N/A</td>', category_table)
+        self.assertIn('0.00', category_table)
         self.assertNotIn('Unavailable:', category_table)
+        summary_table = body.split(
+            '<table class="oee-table oee-press-summary">', 1)[1].split(
+                '</table>', 1)[0]
+        incomplete_press_row = summary_table.split(
+            '<td>F8</td>', 1)[1].split('</tr>', 1)[0]
+        self.assertIn('<td></td>', incomplete_press_row)
+        self.assertNotIn('N/A', incomplete_press_row)
+        breakdown_table = body.split(
+            'EXCEL BREAKDOWN DETAIL', 1)[1].split(
+                'OEE CALCULATION DETAILS BY PRESS/SHIFT EPISODE', 1)[0]
+        self.assertIn('Note (การแก้ไข)', breakdown_table)
+        self.assertNotIn('Machine Type', breakdown_table)
+        self.assertNotIn('Machine Code', breakdown_table)
+        self.assertNotIn('N/A', breakdown_table)
+        self.assertIn('<td class="num"></td>', breakdown_table)
+        episode_table = body.split(
+            'OEE CALCULATION DETAILS BY PRESS/SHIFT EPISODE', 1)[1].split(
+                'SHIFT 1 OEE SUMMARY', 1)[0]
+        self.assertNotIn('PressProductionID', episode_table)
+        self.assertNotIn('Total Loss', episode_table)
+        self.assertNotIn('N/A', episode_table)
+        self.assertIn('<td class="num"></td>', episode_table)
+        self.assertIn('<b></b>', body)
+        self.assertNotIn('N/A', body.split('PRESS / SHIFT PRODUCTION SUMMARY', 1)[1].split(
+            'LOGGER DOWNTIME BY EXCEL CATEGORY', 1)[0])
+        self.assertIsNone(incomplete['SetupMinutes'])
         self.assertIn('TOTAL', body)
         self.assertLess(body.index('PRESS / SHIFT PRODUCTION SUMMARY'),
                         body.index('OEE CALCULATION DETAILS'))

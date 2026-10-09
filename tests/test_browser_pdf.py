@@ -86,5 +86,6 @@ class BrowserPdfTests(unittest.TestCase):
                                    base_url='http://127.0.0.1:1868', timeout=1, poll_interval=0)
         args = popen.call_args.args[0]
         self.assertIn('http://127.0.0.1:1868/print-oee?production_date=2026-09-26', args)
+        self.assertFalse(any('--landscape' in arg for arg in args))
         output.unlink()
         root.rmdir()
