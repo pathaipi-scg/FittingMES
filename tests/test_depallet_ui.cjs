@@ -21,6 +21,19 @@ assert.match(html, />Depalleted</);
 assert.match(html, />Remaining</);
 assert.match(html, />Depallet</);
 assert.match(html, />Good</);
+const depalletTableStart = html.indexOf('<table class="depallet-grid" id="depallet-lots">');
+const depalletTableEnd = html.indexOf('</table>', depalletTableStart);
+const depalletTable = html.slice(depalletTableStart, depalletTableEnd);
+const headerRow = depalletTable.split('<thead><tr>', 2)[1].split('</tr>', 1)[0];
+const headers = [...headerRow.matchAll(/<th scope="col">([^<]*)<\/th>/g)]
+  .map(([,label]) => label);
+assert.deepEqual(headers,[
+  'Select','Move','Order','Lot No.','Product','Shift','Produced','Depalleted',
+  'Remaining','Depallet','Good','Remark',
+]);
+assert.equal((depalletTable.match(/<col style=/g) || []).length,headers.length);
+assert.doesNotMatch(depalletTable, /data-field="(?:start|end)"|>Start<\/th>|>End<\/th>/);
+assert.doesNotMatch(source, /makeInput\('(start|end)'/);
 assert.doesNotMatch(html, />Produced Qty</);
 assert.doesNotMatch(html, />Already Depalleted</);
 assert.doesNotMatch(html, />Remaining Curing</);
@@ -30,6 +43,7 @@ assert.match(html, /Qty\/Day/);
 assert.match(html, /id="depallet-reject-cal"/);
 assert.match(html, /id="depallet-reject-save"/);
 assert.doesNotMatch(html, /REJECT CAL reads RAW for this Depallet RUN only\./);
+assert.match(html, /<p id="depallet-status" role="status" aria-live="polite"><\/p>/);
 const saveDepalletIndex = html.indexOf('id="save-depallet"');
 const rejectDetailIndex = html.indexOf('id="reject-detail-title"');
 assert.ok(saveDepalletIndex > html.indexOf('class="depallet-lots-heading"'));
@@ -104,6 +118,7 @@ const ids = ['depallet-input','depallet-fields','depallet-date','depallet-family
   'depallet-balance','depallet-lots-data','depallet-products-data','depallet-entries','depallet-runs-data',
   'depallet-reasons-data','depallet-daily-totals','depallet-day-start-time'];
 const nodes = Object.fromEntries(ids.map(id => [id, new Element(id.includes('select') || id.includes('family') || id.includes('product') ? 'select' : 'div')]));
+delete nodes['depallet-status'];
 const body = new Element('tbody');
 const table = new Element('table'); table.append(body);
 const lots = [
@@ -169,7 +184,6 @@ vm.runInNewContext(source,context);
   lotChoice.value = '101'; create.handlers.click(); assert.equal(body.children.length,2,'same ProductionID may be added again as another run');
   const secondFirstLotRun = body.children[1];
   field(secondFirstLotRun,'depallet_qty').value = '300'; field(secondFirstLotRun,'good_qty').value = '290';
-  field(secondFirstLotRun,'start').value = '21:00'; field(secondFirstLotRun,'end').value = '22:00';
   assert.equal(nodes['depallet-rejects'].querySelectorAll('[data-reject-reason-id]').length,0,
     'an unsaved run has no run-level FINAL reasons loaded');
 
@@ -177,7 +191,6 @@ vm.runInNewContext(source,context);
   assert.equal(body.children.length,3);
   const third = body.children[2];
   field(third,'depallet_qty').value = '200'; field(third,'good_qty').value = '180';
-  field(third,'start').value = '22:00'; field(third,'end').value = '23:00';
   body.handlers.click({target:third.children[0].children[0]});
   assert.equal(nodes['reject-detail-title'].textContent,'REJECT DETAIL - NEW-R1 / NEW RUN');
   body.handlers.click({target:secondFirstLotRun.children[0].children[0]});
@@ -186,20 +199,59 @@ vm.runInNewContext(source,context);
   field(first,'good_qty').value = '500';
   field(secondFirstLotRun,'good_qty').value = '292';
   field(third,'good_qty').value = '196';
-  for (const row of body.children) {
-    field(row,'start').value ||= '20:00'; field(row,'end').value ||= '21:00';
-  }
-  let prevented = false;
-  await form.handlers.submit({preventDefault(){prevented=true;}});
-  assert.equal(prevented,true); assert.equal(requests.length,1);
+  const submit = () => ({preventDefault(){}});
+  let resolvePending;
+  context.fetch = (url,options) => {
+    requests.push({url,options});
+    return new Promise(resolve => { resolvePending = resolve; });
+  };
+  const pendingSave = form.handlers.submit(submit());
+  assert.equal(nodes['depallet-fields'].disabled,true);
+  assert.equal(nodes['save-depallet'].disabled,true);
+  await form.handlers.submit(submit());
+  assert.equal(requests.length,1,'duplicate submissions are ignored while the request is pending');
+  resolvePending({ok:false,status:503,json:async () => ({error:'Database temporarily unavailable'})});
+  await pendingSave;
+  assert.equal(nodes['depallet-fields'].disabled,false);
+  assert.equal(nodes['save-depallet'].disabled,false);
+  assert.equal(product.disabled,false);
+  assert.equal(lotChoice.disabled,false);
+  assert.equal(create.disabled,false);
+  assert.match(nodes['depallet-warning'].textContent,/HTTP 503: Database temporarily unavailable/);
+  assert.equal(nodes['depallet-warning'].dataset.state,'error');
+
+  context.fetch = async (url,options) => {
+    requests.push({url,options});
+    throw new TypeError('Network is unavailable');
+  };
+  await form.handlers.submit(submit());
+  assert.equal(nodes['depallet-fields'].disabled,false);
+  assert.equal(nodes['save-depallet'].disabled,false);
+  assert.match(nodes['depallet-warning'].textContent,/DEPALLET save failed: TypeError: Network is unavailable/);
+
+  context.fetch = async (url,options) => {
+    requests.push({url,options});
+    return {ok:true,status:200,json:async () => ({rows:[
+      {DepalletID:501,ProductionID:101},
+      {DepalletID:502,ProductionID:101},
+      {DepalletID:503,ProductionID:100},
+    ],message:'Saved'})};
+  };
+  await form.handlers.submit(submit());
+  assert.equal(requests.length,3);
   assert.equal(requests[0].url,'/depallet/save');
   const payload = JSON.parse(requests[0].options.body);
   assert.deepEqual(payload.rows.map(row => row.ProductionID),[101,101,100]);
   assert.deepEqual(payload.rows.map(row => row.DepalletID),[null,null,null]);
   assert.deepEqual(payload.rows.map(row => row.rejects),[{}, {}, {}]);
+  assert.ok(payload.rows.every(row => !Object.hasOwn(row,'Start') && !Object.hasOwn(row,'End')));
   assert.ok(!payload.rows.some(row => Object.hasOwn(row,'Qty/Day')));
-  assert.equal(payload.rows[0].Start,'20:00');
   assert.equal(payload.depallet_date,'2026-09-26');
   assert.equal(navigations.length,1);
-  console.log('Depallet cascades, disabled lots, repeated same-lot runs, and batch payload passed.');
+  assert.match(navigations[0],/depallet_id=502/);
+  assert.equal(nodes['depallet-fields'].disabled,true);
+  assert.equal(nodes['save-depallet'].disabled,true);
+  await form.handlers.submit(submit());
+  assert.equal(requests.length,3,'successful navigation remains protected against a duplicate submit');
+  console.log('Depallet cascades, batch payload, missing status fallback, failed/network/success saves, and control restoration passed.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

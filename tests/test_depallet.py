@@ -444,6 +444,31 @@ class DepalletTests(unittest.TestCase):
         self.assertIsNone(result['EndDateTime'])
         self.assertEqual(conn.db['depallets'][-1]['RunSequence'],5)
 
+    def test_batch_save_without_time_fields_creates_run_with_missing_times(self):
+        conn=MemoryConnection()
+        item=dict(ProductionID=7,Shift='2',DepalletQty='100',GoodQty='90',
+                  Remark='',rejects={'R01':'7'})
+        saved=save_depallet_batch(conn,'2026-09-23',[item])
+        self.assertEqual(len(saved),1)
+        self.assertIsNone(saved[0]['StartDateTime'])
+        self.assertIsNone(saved[0]['EndDateTime'])
+        self.assertIsNone(conn.db['depallets'][0]['StartDateTime'])
+        self.assertIsNone(conn.db['depallets'][0]['EndDateTime'])
+
+    def test_batch_save_without_time_fields_preserves_historical_times(self):
+        conn=MemoryConnection(existing=True)
+        start=datetime(2026,9,23,20)
+        end=datetime(2026,9,23,21)
+        conn.work['depallets'][0].update(StartDateTime=start,EndDateTime=end)
+        item=dict(ProductionID=7,DepalletID=10,Shift='2',DepalletQty='100',
+                  GoodQty='90',Remark='Updated without time inputs',
+                  rejects={'R01':'7'})
+        saved=save_depallet_batch(conn,'2026-09-23',[item])
+        self.assertEqual(saved[0]['StartDateTime'],start)
+        self.assertEqual(saved[0]['EndDateTime'],end)
+        self.assertEqual(conn.db['depallets'][0]['StartDateTime'],start)
+        self.assertEqual(conn.db['depallets'][0]['EndDateTime'],end)
+
     def test_batch_save_route_parses_depallet_date_and_rows(self):
         conn=MemoryConnection()
         payload=json.dumps({'depallet_date':'2026-09-26','rows':[
@@ -834,7 +859,9 @@ class DepalletTests(unittest.TestCase):
         text=response.body.decode()
         grid=re.search(r'<table[^>]*id="depallet-lots".*?</table>',text,re.S)[0]
         self.assertEqual(re.findall(r'<th scope="col">(.*?)</th>',grid),
-                         ['Select','Move','Order','Lot No.','Product','Shift','Start','End','Produced','Depalleted','Remaining','Depallet','Good','Remark'])
+                         ['Select','Move','Order','Lot No.','Product','Shift','Produced','Depalleted','Remaining','Depallet','Good','Remark'])
+        self.assertNotIn('data-field="start"',grid)
+        self.assertNotIn('data-field="end"',grid)
         self.assertIn('data-selected="true"',grid)
         self.assertIn('data-production-qty="10000"',grid)
         self.assertIn('Qty/Day',text)

@@ -38,7 +38,7 @@
 .depallet-totals{display:flex;gap:8px;flex-wrap:wrap;margin:0;font-size:9px;font-variant-numeric:tabular-nums}
 .depallet-totals output{margin-left:3px;font-weight:700}
 .depallet-final-status{min-height:14px;color:#718096}.depallet-final-status[data-state=error]{color:#9d2525}.depallet-final-status[data-state=success]{color:#25643b}
-.depallet-controls #depallet-status{font-weight:400;white-space:normal}
+#depallet-status{min-height:14px;margin:0;font-weight:400;white-space:normal}
 #depallet-warning{min-height:14px;color:#946200}#depallet-status[data-state=error]{color:#9d2525}#depallet-status[data-state=success]{color:#25643b}
 #depallet-balance[data-balanced=true]{color:#25643b}#depallet-balance[data-balanced=false]{color:#946200}
 @media(max-width:950px){ #depallet-rejects{grid-template-columns:repeat(2,minmax(0,1fr))}}
@@ -58,20 +58,19 @@
 </div></section>
 <section class="panel"><div class="depallet-lots-heading"><h2>DEPALLET LOTS</h2><button id="save-depallet" type="submit">SAVE DEPALLET</button></div>
 <div class="table-scroll"><table class="depallet-grid" id="depallet-lots">
-<colgroup><col style="width:34px"><col style="width:42px"><col style="width:58px"><col style="width:78px"><col style="width:300px"><col style="width:42px"><col style="width:53px"><col style="width:53px"><col style="width:68px"><col style="width:82px"><col style="width:78px"><col style="width:68px"><col style="width:58px"><col style="width:100px"></colgroup>
-<thead><tr><th scope="col">Select</th><th scope="col">Move</th><th scope="col">Order</th><th scope="col">Lot No.</th><th scope="col">Product</th><th scope="col">Shift</th><th scope="col">Start</th><th scope="col">End</th><th scope="col">Produced</th><th scope="col">Depalleted</th><th scope="col">Remaining</th><th scope="col">Depallet</th><th scope="col">Good</th><th scope="col">Remark</th></tr></thead>
+<colgroup><col style="width:34px"><col style="width:42px"><col style="width:58px"><col style="width:78px"><col style="width:300px"><col style="width:42px"><col style="width:68px"><col style="width:82px"><col style="width:78px"><col style="width:68px"><col style="width:58px"><col style="width:100px"></colgroup>
+<thead><tr><th scope="col">Select</th><th scope="col">Move</th><th scope="col">Order</th><th scope="col">Lot No.</th><th scope="col">Product</th><th scope="col">Shift</th><th scope="col">Produced</th><th scope="col">Depalleted</th><th scope="col">Remaining</th><th scope="col">Depallet</th><th scope="col">Good</th><th scope="col">Remark</th></tr></thead>
 <tbody>{% for run in runs %}{% set d = run %}
 <tr data-run-key="{{ run.run_key }}" data-depallet-id="{{ run.DepalletID }}" data-production-id="{{ run.ProductionID }}" data-lot-no="{{ run.LotNo }}" data-run-sequence="{{ run.RunSequence }}" data-saved="true" data-can-move-up="{{ 'true' if run.CanMoveUp else 'false' }}" data-can-move-down="{{ 'true' if run.CanMoveDown else 'false' }}" data-selected="{{ 'true' if current_run_id == run.DepalletID else 'false' }}" data-remaining="{{ run.RemainingCuringQty }}" data-production-qty="{{ run.ProductionQty }}">
 <td class="select-cell"><input type="radio" name="selected-depallet-row" data-row-select aria-label="Select {{ run.LotNo }} run {{ run.DepalletID }}"></td>
 <td class="move-cell"><button type="button" data-move="up" aria-label="Move run {{ run.DepalletID }} up" title="Move up" {% if not run.CanMoveUp %}disabled{% endif %}>↑</button><button type="button" data-move="down" aria-label="Move run {{ run.DepalletID }} down" title="Move down" {% if not run.CanMoveDown %}disabled{% endif %}>↓</button></td>
 <td class="sequence-cell">SEQ {{ run.RunSequence }} / RUN {{ run.DepalletID }}</td><td>{{ run.LotNo }}</td><td>{{ run.PlanName or '' }}{% if run.PlanName and run.MaterialName %} {% endif %}{{ run.MaterialName or '' }}</td>
 <td class="editable"><input data-field="shift" maxlength="10" value="{{ d.Shift }}" aria-label="{{ run.LotNo }} Shift"></td>
-<td class="editable"><input data-field="start" inputmode="numeric" placeholder="HH:mm" maxlength="5" value="{{ run.StartClock }}" aria-label="{{ run.LotNo }} Start"></td>
-<td class="editable"><input data-field="end" inputmode="numeric" placeholder="HH:mm" maxlength="5" value="{{ run.EndClock }}" aria-label="{{ run.LotNo }} End"></td>
 <td><output>{{ run.ProductionQty }}</output></td><td><output>{{ run.AlreadyDepalletedBeforeRun }}</output></td><td><output>{{ run.RemainingCuringBeforeRun }}</output></td>
 <td class="editable"><input data-field="depallet_qty" type="number" min="0" max="2147483647" step="1" value="{{ d.DepalletQty }}" aria-label="{{ run.LotNo }} Depallet Qty"></td>
 <td class="editable"><input data-field="good_qty" type="number" min="0" max="2147483647" step="1" value="{{ d.GoodQty }}" aria-label="{{ run.LotNo }} Good Qty"></td>
 <td class="editable"><input data-field="remark" maxlength="500" value="{{ d.Remark or '' }}" aria-label="{{ run.LotNo }} Remark"></td></tr>{% endfor %}</tbody></table></div>
+<p id="depallet-status" role="status" aria-live="polite"></p>
 <div id="depallet-warning" role="alert" aria-live="assertive"></div>
 </section>
 <section class="panel"><div class="reject-detail-heading"><h2 id="reject-detail-title">REJECT DETAIL</h2>
@@ -123,9 +122,6 @@
   const reasons = JSON.parse(document.getElementById('depallet-reasons-data').textContent);
   const dailyTotals = JSON.parse(document.getElementById('depallet-daily-totals').textContent);
   const dayStartTime = JSON.parse(document.getElementById('depallet-day-start-time').textContent);
-  function normalizeClockInputs() {
-    tableBody.querySelectorAll('[data-field="start"],[data-field="end"]').forEach(window.FittingMES.attachManualHHmm);
-  }
   const manualCode = /^R(0[1-9]|1[0-9]|2[0-4])$/;
   const outputs = {
     totalReject:document.getElementById('depallet-total-reject'),
@@ -136,7 +132,15 @@
   const calculatedRawByRun = {};
   let selectedRow = null, busy = false, nextRunKey = 1;
 
-  function setMessage(state, text) { status.dataset.state = state; status.textContent = text; }
+  function setMessage(state, text) {
+    const target = status || warning;
+    if (!target) {
+      console.error('DEPALLET status and warning elements are missing.', state);
+      return;
+    }
+    target.dataset.state = state;
+    target.textContent = text;
+  }
   function entryFor(key) { return entries[key]; }
   function fields(row) { return Object.fromEntries(Array.from(row.querySelectorAll('[data-field]'), input => [input.dataset.field,input])); }
   function makeSelectOption(label, value, disabled = false) {
@@ -204,10 +208,6 @@
     addCell(row, item.LotNo); addCell(row, (item.PlanName || '') + (item.PlanName && item.MaterialName ? ' ' : '') + (item.MaterialName || ''));
     const shiftCell = document.createElement('td'); shiftCell.className = 'editable';
     shiftCell.append(makeInput('shift', data.Shift || item.Shift || '', 'text', item.LotNo + ' Shift', 10)); row.append(shiftCell);
-    const startCell = document.createElement('td'); startCell.className = 'editable';
-    startCell.append(makeInput('start', '', 'text', item.LotNo + ' Start', 5)); row.append(startCell);
-    const endCell = document.createElement('td'); endCell.className = 'editable';
-    endCell.append(makeInput('end', '', 'text', item.LotNo + ' End', 5)); row.append(endCell);
     addCell(row, item.ProductionQty, true); addCell(row, item.DepalletQtyTotal, true); addCell(row, item.RemainingCuringQty, true);
     const qtyCell = document.createElement('td'); qtyCell.className = 'editable';
     qtyCell.append(makeInput('depallet_qty', data.DepalletQty || '', 'number', item.LotNo + ' Depallet Qty')); row.append(qtyCell);
@@ -543,7 +543,6 @@
   }
   form.addEventListener('submit', async event => {
     event.preventDefault(); if (busy) return;
-    normalizeClockInputs();
     rememberRejects();
     if (!calculateSelected()) {
       setMessage('error',outputs.balance.value || 'Correct the selected run quantities before saving.');
@@ -556,24 +555,31 @@
       if (!/^[0-9]+$/.test(rowFields.depallet_qty.value) || !/^[0-9]+$/.test(rowFields.good_qty.value)) {
         selectRow(row); setMessage('error','Enter valid whole-piece quantities for ' + row.dataset.lotNo + '.'); return;
       }
-      const validClock = value => /^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(value);
-      const missingAllowed = !rowFields.start.value && !rowFields.end.value;
-      if (!missingAllowed && (!validClock(rowFields.start.value) || !validClock(rowFields.end.value))) {
-        selectRow(row); setMessage('error','Enter Start and End as HH:mm for ' + row.dataset.lotNo + '.'); return;
-      }
       items.push({ProductionID:Number(row.dataset.productionId),
         DepalletID:row.dataset.depalletId ? Number(row.dataset.depalletId) : null,
-        Shift:rowFields.shift.value,Start:rowFields.start.value,End:rowFields.end.value,
+        Shift:rowFields.shift.value,
         DepalletQty:rowFields.depallet_qty.value,GoodQty:rowFields.good_qty.value,Remark:rowFields.remark.value,
         rejects:{...state.reject_values}});
       submittedRunKeys.push(row.dataset.runKey);
     }
     if (!items.length) { setMessage('error','Add a Production Lot and enter Depallet Qty before saving.'); return; }
-    busy = true; fieldset.disabled = true; saveButton.disabled = true; setMessage('info','Saving Depallet data...');
+    busy = true; fieldset.disabled = true; saveButton.disabled = true;
+    let navigating = false;
     try {
+      setMessage('info','Saving Depallet data...');
       const response = await fetch('/depallet/save',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},
         body:JSON.stringify({depallet_date:date.value,rows:items})});
-      const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Unable to save Depallet data.');
+      let result;
+      try {
+        result = await response.json();
+      } catch {
+        throw new Error(`HTTP ${response.status}: invalid JSON response from the server.`);
+      }
+      if (!response.ok) {
+        const detail = result && typeof result.error === 'string' && result.error.trim()
+          ? result.error : 'No backend error details were returned.';
+        throw new Error(`HTTP ${response.status}: ${detail}`);
+      }
       const url = new URL(window.location.href); url.searchParams.set('production_date',date.value);
       if (selectedRow) {
         const selectedIndex = submittedRunKeys.indexOf(selectedRow.dataset.runKey);
@@ -584,8 +590,18 @@
         }
       }
       window.location.assign(url);
-    } catch (error) { setMessage('error',error.message); }
-    finally { busy = false; fieldset.disabled = false; saveButton.disabled = false; }
+      navigating = true;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setMessage('error',`DEPALLET save failed: ${detail}`);
+    } finally {
+      if (!navigating) {
+        busy = false;
+        fieldset.disabled = false;
+        calculateSelected();
+        updateMoveButtons();
+      }
+    }
   });
 
   for (const run of runs) {

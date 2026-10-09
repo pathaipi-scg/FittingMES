@@ -257,9 +257,14 @@ def _save_depallet_locked(cursor, production_id, raw, day_start_time=None):
     data, rejects = validate(authoritative, active_codes, retained)
     if day_start_time is None:
         day_start_time = read_day_start_time(cursor, selected_date)
-    start_datetime, end_datetime = resolve_run_times(
-        selected_date, raw.get('Start'), raw.get('End'), day_start_time,
-        allow_missing=True)
+    has_start = bool(str(raw.get('Start') or '').strip())
+    has_end = bool(str(raw.get('End') or '').strip())
+    if depallet_id is not None and not has_start and not has_end:
+        start_datetime, end_datetime = old_start, old_end
+    else:
+        start_datetime, end_datetime = resolve_run_times(
+            selected_date, raw.get('Start'), raw.get('End'), day_start_time,
+            allow_missing=True)
     data['StartDateTime'] = start_datetime
     data['EndDateTime'] = end_datetime
     max_quantity = int(balance['RemainingCuringQty']) + int(old_quantity)
