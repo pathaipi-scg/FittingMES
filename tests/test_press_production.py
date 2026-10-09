@@ -182,6 +182,7 @@ class PressProductionCursor:
             row = dict(PressProductionID=pp_id, ProductionID=args[0], MachineCode=args[1],
                        ShiftMasterID=args[2], DispatchQty=args[3], CounterQty=args[4],
                        CuringQty=args[5], MouldID=args[6],
+                       ProductionStartTime=args[7], ProductionEndTime=args[8],
                        ProductionDate=self.conn.production_date)
             self.conn.press_rows[pp_id] = row
             self.result = [(pp_id,)]
@@ -989,6 +990,44 @@ class PressProductionTests(unittest.TestCase):
         self.assertEqual(conn.press_rows[30]['ProductionStartTime'], start)
         self.assertEqual(conn.press_rows[30]['ProductionEndTime'], end)
 
+    def test_press_shift_times_update_only_the_selected_assignment(self):
+        shift_one_start = datetime(2026, 9, 26, 10, 0)
+        shift_one_end = datetime(2026, 9, 26, 16, 0)
+        shift_two_start = datetime(2026, 9, 27, 7, 0)
+        shift_two_end = datetime(2026, 9, 27, 15, 0)
+        conn = PressProductionConnection()
+        conn.press_rows[30] = dict(PressProductionID=30, ProductionID=7,
+            MachineCode='F2', ShiftMasterID=101, MouldID=4, CounterQty=100,
+            ProductionDate=conn.production_date, ReleasedAt=None,
+            ProductionStartTime=shift_one_start, ProductionEndTime=shift_one_end)
+        conn.press_rows[31] = dict(PressProductionID=31, ProductionID=7,
+            MachineCode='F8', ShiftMasterID=202, MouldID=9, CounterQty=90,
+            ProductionDate=conn.production_date, ReleasedAt=None,
+            ProductionStartTime=shift_two_start, ProductionEndTime=shift_two_end)
+
+        save_press_production(conn, 7, valid_input(
+            ProductionStartTime='22:00', ProductionEndTime='03:00'), 30)
+
+        self.assertEqual(conn.press_rows[30]['ProductionStartTime'],
+                         datetime(2026, 9, 26, 22, 0))
+        self.assertEqual(conn.press_rows[30]['ProductionEndTime'],
+                         datetime(2026, 9, 27, 3, 0))
+        self.assertEqual(conn.press_rows[31]['ProductionStartTime'], shift_two_start)
+        self.assertEqual(conn.press_rows[31]['ProductionEndTime'], shift_two_end)
+        self.assertEqual(len(conn.press_rows), 2)
+        self.assertEqual((conn.commits, conn.rollbacks), (1, 0))
+
+    def test_invalid_press_times_roll_back_without_writing(self):
+        for start, end in (('7:00', '08:00'), ('22:00', ''), ('19:00', '18:00')):
+            conn = PressProductionConnection()
+            with self.subTest(start=start, end=end), self.assertRaises(ValueError):
+                save_press_production(conn, 7, valid_input(
+                    ProductionStartTime=start, ProductionEndTime=end))
+            self.assertFalse(any('INSERT INTO dbo.PressProduction' in sql
+                                 or 'UPDATE dbo.PressProduction' in sql
+                                 for sql, _ in conn.sql))
+            self.assertEqual((conn.commits, conn.rollbacks), (0, 1))
+
     def test_counter_edit_replaces_existing_usage_without_double_count_and_keeps_generation(self):
         conn = PressProductionConnection()
         conn.press_rows[30] = dict(PressProductionID=30, ProductionID=7, MachineCode='F2', MouldID=4, CounterQty=100)
@@ -1380,6 +1419,8 @@ class PressProductionTests(unittest.TestCase):
         data = valid_input(CounterQty='', CuringQty='', ProductionStartTime='', ProductionEndTime='', Remark='')
         save_press_production(conn, 7, data)
         self.assertEqual(len(conn.press_rows), 1)
+        self.assertIsNone(conn.press_rows[30]['ProductionStartTime'])
+        self.assertIsNone(conn.press_rows[30]['ProductionEndTime'])
 
     def test_manual_minutes_create_five_rows_and_reload_values(self):
         conn = PressProductionConnection()
@@ -1776,7 +1817,8 @@ class PressProductionTests(unittest.TestCase):
         press_row = dict(PressProductionID=30, ProductionID=7, MachineCode='F2', MachineName='Press 2',
             ShiftCode='1', EquipmentTimeIdentityAmbiguous=True,
             DispatchQty=100, CounterQty=120, CuringQty=110, MouldID=4, MouldNo='M000001',
-            MouldName='Ridge', ProductionStartTime=None, ProductionEndTime=None, Remark='press note',
+            MouldName='Ridge', ProductionStartTime=datetime(2026, 9, 26, 22, 0),
+            ProductionEndTime=datetime(2026, 9, 27, 0, 15), Remark='press note',
             UsageCycles=120, UsageReconditionNo=2)
         second_episode = dict(press_row, PressProductionID=31, MouldID=5,
                               MouldNo='M000002', MouldName='Other Mould',
@@ -1789,10 +1831,13 @@ class PressProductionTests(unittest.TestCase):
         legacy_shift_episode = dict(press_row, PressProductionID=33, ShiftCode=None,
                                     MouldID=7, MouldNo='M000004', MouldName='Legacy Shift')
         shift_two_episode = dict(press_row, PressProductionID=34, ShiftCode='2',
-                                 MouldID=8, MouldNo='M000005', MouldName='Shift Two Mould')
+                                 MouldID=8, MouldNo='M000005', MouldName='Shift Two Mould',
+                                 ProductionStartTime=datetime(2026, 9, 27, 7, 0),
+                                 ProductionEndTime=datetime(2026, 9, 27, 15, 0))
         save_actions_episode = dict(press_row, PressProductionID=35,
                                     EquipmentTimeIdentityAmbiguous=False, ReleasedAt=None,
-                                    MouldID=9, MouldNo='M000006', MouldName='Save Actions')
+                                    MouldID=9, MouldNo='M000006', MouldName='Save Actions',
+                                    ProductionStartTime=None, ProductionEndTime=None)
         press_context = dict(press_production=[press_row, second_episode, press_conflict_episode,
                                                legacy_shift_episode, shift_two_episode,
                                                save_actions_episode], eligible_shifts=[
@@ -1831,9 +1876,23 @@ class PressProductionTests(unittest.TestCase):
         self.assertNotIn('SHIFT 1', press_row_30)
         self.assertNotIn('PPID', press_row_30)
         self.assertIn('data-press-production-id="30"', press_row_30)
+        self.assertRegex(press_row_30,
+            r'name="production_start_time" inputmode="numeric" pattern="[^"]+" placeholder="HH:mm" maxlength="5" value="22:00"')
+        self.assertRegex(press_row_30,
+            r'name="production_end_time" inputmode="numeric" pattern="[^"]+" placeholder="HH:mm" maxlength="5" value="00:15"')
         self.assertIn('<td><span>-</span>', legacy_row_33)
         self.assertNotIn('SHIFT UNKNOWN', legacy_row_33)
         self.assertIn('<td><span>2</span>', press_row_34)
+        self.assertRegex(press_row_34,
+            r'name="production_start_time" inputmode="numeric" pattern="[^"]+" placeholder="HH:mm" maxlength="5" value="07:00"')
+        self.assertRegex(press_row_34,
+            r'name="production_end_time" inputmode="numeric" pattern="[^"]+" placeholder="HH:mm" maxlength="5" value="15:00"')
+        self.assertRegex(save_row_35,
+            r'name="production_start_time" inputmode="numeric" pattern="[^"]+" placeholder="HH:mm" maxlength="5" value=""')
+        self.assertRegex(save_row_35,
+            r'name="production_end_time" inputmode="numeric" pattern="[^"]+" placeholder="HH:mm" maxlength="5" value=""')
+        self.assertNotRegex(press_row_30 + press_row_34 + save_row_35,
+                            r'\b(?:AM|PM)\b|type="time"')
         self.assertNotIn('SHIFT 2', press_row_34)
         self.assertRegex(save_row_35,
             r'<button form="press-production-35" type="submit"[^>]*>SAVE</button>')
@@ -1855,7 +1914,12 @@ class PressProductionTests(unittest.TestCase):
         self.assertIn('class="table-scroll press-production-scroll"', page)
         self.assertIn('min-width:1120px', page)
         self.assertIn('.press-production-table col:nth-child(1){width:6%}', page)
-        self.assertIn('.press-production-table col:nth-child(15){width:6%}', page)
+        self.assertIn('.press-production-table col:nth-child(17){width:6%}', page)
+        self.assertIn('<th>Curing</th><th>Start</th><th>End</th><th>Setup</th>', page)
+        production_colgroup = re.search(
+            r'<table class="depallet-grid press-production-table"[^>]*><colgroup>(.*?)</colgroup>',
+            page).group(1)
+        self.assertEqual(production_colgroup.count('<col>'), 17)
         self.assertIn('action="/lots/7/production"', page)
         self.assertIn('name="counter"', page)
         self.assertIn('name="counter_qty"', page)
@@ -1975,7 +2039,8 @@ class PressProductionRouteTests(unittest.IsolatedAsyncioTestCase):
         payload = {'production_date': DAY.isoformat(), 'shift_code': '1',
                    'machine_code': 'F2', 'mould_id': '4', 'dispatch_qty': '100',
                    'counter_qty': '100', 'curing_qty': '95', 'setup_minutes': '12',
-                   'breakdown_minutes': '3'}
+                   'breakdown_minutes': '3', 'production_start_time': '22:00',
+                   'production_end_time': '03:00'}
         req = request()
         submitted_data = {}
 
@@ -1995,8 +2060,9 @@ class PressProductionRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             (submitted_data['DispatchQty'], submitted_data['CounterQty'],
              submitted_data['CuringQty'], submitted_data['SetupMinutes'],
-             submitted_data['BreakdownMinutes']),
-            ('100', '100', '95', '12', '3'))
+             submitted_data['BreakdownMinutes'], submitted_data['ProductionStartTime'],
+             submitted_data['ProductionEndTime']),
+            ('100', '100', '95', '12', '3', '22:00', '03:00'))
         self.assertNotIn('DowntimeOnly', submitted_data)
 
     async def test_edit_conflict_renders_error_with_submitted_assignment_values(self):

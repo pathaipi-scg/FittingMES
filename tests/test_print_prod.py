@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from app.main import app, print_prod_pdf_page
 from app.print_prod import read_print_prod_context
+from app.print_oee import LOGGER_CATEGORIES, LOGGER_CATEGORY_CODES
 from test_prod_api import get_page
 
 
@@ -263,10 +264,23 @@ class PrintProdTests(unittest.TestCase):
     def test_print_oee_route_preserves_date(self):
         with patch('app.main.read_print_oee_context', return_value={
                 'rows': [], 'excluded': [], 'summaries': {'1': {}, '2': {}, 'ALL DAY': {}},
-                'shifts': ('1', '2')}):
+                'shifts': ('1', '2'), 'plan_week': '2026W37',
+                'production_summary_rows': [], 'breakdown_details': [],
+                'logger_category_table': {'Machines': [], 'Sections': []},
+                'logger_categories': LOGGER_CATEGORIES,
+                'logger_report': dict(
+                    groups=[], mapping_missing_codes=[],
+                    mapping_orphan_subtypes=[],
+                    all_shift_unavailable_codes=set(LOGGER_CATEGORY_CODES),
+                    all_shift_category_minutes=dict.fromkeys(
+                        LOGGER_CATEGORY_CODES, None),
+                    events=[], unmapped_count=0, unmapped_minutes=Decimal(0),
+                    unattributed_count=0, unattributed_minutes=Decimal(0),
+                    duplicate_count=0),
+            }):
             status, body, _ = self.page('/print-oee', 'production_date=2026-09-22')
         self.assertEqual(status, 200)
-        self.assertIn('รายงานประสิทธิภาพการผลิต / OEE', body)
+        self.assertIn('รายงานประสิทธิภาพการผลิต / Press-Shift OEE', body)
         self.assertIn('value="2026-09-22"', body)
 
     def test_pdf_route_returns_date_based_attachment(self):

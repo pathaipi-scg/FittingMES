@@ -52,7 +52,7 @@ h2{font-size:10.5px;font-weight:600;line-height:1.2;letter-spacing:0;margin:3px 
 .lot-table th:nth-child(3),.lot-table td:nth-child(3){width:32px}
 .lot-table th:nth-child(6),.lot-table td:nth-child(6){width:240px}
 .lot-table input[name="shift"]{width:34px}
-.lot-table .clock-input{width:62px;text-align:center;font-variant-numeric:tabular-nums}
+.lot-table .clock-input,.press-production-table .clock-input{width:62px;text-align:center;font-variant-numeric:tabular-nums}
 .lot-table input[name="counter"],.lot-table input[name="curing"]{width:52px}
 .lot-table th:nth-child(8),.lot-table td:nth-child(8){width:34px}
 .lot-table th:nth-child(9),.lot-table td:nth-child(9),.lot-table th:nth-child(10),.lot-table td:nth-child(10){width:68px}
@@ -69,9 +69,10 @@ h2{font-size:10.5px;font-weight:600;line-height:1.2;letter-spacing:0;margin:3px 
 .press-production-table col:nth-child(3){width:8%}
 .press-production-table col:nth-child(4){width:9%}
 .press-production-table col:nth-child(5),.press-production-table col:nth-child(6),.press-production-table col:nth-child(7){width:6%}
-.press-production-table col:nth-child(n+8):nth-child(-n+13){width:5.5%}
-.press-production-table col:nth-child(14){width:8%}
-.press-production-table col:nth-child(15){width:6%}
+.press-production-table col:nth-child(8),.press-production-table col:nth-child(9){width:5.6%}
+.press-production-table col:nth-child(n+10):nth-child(-n+15){width:5.5%}
+.press-production-table col:nth-child(16){width:8%}
+.press-production-table col:nth-child(17){width:6%}
 .press-production-table td:nth-child(1),.press-production-table td:nth-child(2),.press-production-table td:nth-child(3){vertical-align:middle}
 .press-production-table td:first-child{white-space:normal;overflow:visible;text-overflow:clip}
 .press-production-table td:first-child>strong{display:block;margin-bottom:2px}
@@ -79,7 +80,7 @@ h2{font-size:10.5px;font-weight:600;line-height:1.2;letter-spacing:0;margin:3px 
 .press-production-table td:first-child>.release-mould-button{width:fit-content;max-width:100%;align-self:flex-start;justify-content:flex-start;padding:3px 4px;text-align:left}
 .release-blocked-message{display:block;max-width:100%;margin-top:2px;color:#9b2c2c;font-size:9px;white-space:normal}
 .press-production-table td:nth-child(5) input,.press-production-table td:nth-child(6) input,.press-production-table td:nth-child(7) input{text-align:right}
-.press-production-table td:nth-child(14) button{padding-left:4px;padding-right:4px}
+.press-production-table td:nth-child(16) button{padding-left:4px;padding-right:4px}
 .press-time-total{font-variant-numeric:tabular-nums;text-align:right}
 .press-shift-group{font-weight:700;text-align:center}
 .press-shift-input{padding:0!important;background:white!important}
@@ -266,7 +267,7 @@ main>header,main>.panel,main>.error{flex-shrink:0}
 <section class="panel" aria-label="Press Production">
 <div class="lot-input-heading"><h2>PRESS PRODUCTION</h2><span class="muted">Per-Press records for {{ current.LotNo }}</span></div>
 {% for pp in press_production %}<form id="press-production-{{ pp.PressProductionID }}" method="post" action="/lots/{{ current.ProductionID }}/press-production/{{ pp.PressProductionID }}"><input type="hidden" name="production_date" value="{{ current.ProdDate }}"></form>{% endfor %}
-<div class="table-scroll press-production-scroll"><table class="depallet-grid press-production-table" data-production-date="{{ current.ProdDate }}" data-day-start-time="{{ day_start_time.strftime('%H:%M') if day_start_time else '' }}"><colgroup>{% for _ in range(15) %}<col>{% endfor %}</colgroup><thead><tr><th>Release</th><th>Shift</th><th>Press</th><th>Mould</th><th>Dispatch</th><th>Counter</th><th>Curing</th><th>Setup</th><th>ChgOver</th><th>Idle</th><th>Cleaning</th><th>Breakdown</th><th>SMDT</th><th>LOG CAL</th><th>Save</th></tr></thead><tbody>
+<div class="table-scroll press-production-scroll"><table class="depallet-grid press-production-table" data-production-date="{{ current.ProdDate }}" data-day-start-time="{{ day_start_time.strftime('%H:%M') if day_start_time else '' }}"><colgroup>{% for _ in range(17) %}<col>{% endfor %}</colgroup><thead><tr><th>Release</th><th>Shift</th><th>Press</th><th>Mould</th><th>Dispatch</th><th>Counter</th><th>Curing</th><th>Start</th><th>End</th><th>Setup</th><th>ChgOver</th><th>Idle</th><th>Cleaning</th><th>Breakdown</th><th>SMDT</th><th>LOG CAL</th><th>Save</th></tr></thead><tbody>
 {% for pp in press_production %}
 <tr data-guide-url="/lots/{{ current.ProductionID }}/press-production/{{ pp.PressProductionID }}/logger-guide" data-shift-code="{{ pp.ShiftCode or '' }}"{% if pp.ReleasedAt %} class="press-production-released"{% endif %}>
 <td>{% if pp.ReleasedAt %}
@@ -285,6 +286,8 @@ main>header,main>.panel,main>.error{flex-shrink:0}
 <td class="editable"><input form="press-production-{{ pp.PressProductionID }}" name="dispatch_qty" type="number" min="0" step="1" value="{{ pp.DispatchQty if pp.DispatchQty is not none else '' }}" aria-label="Dispatch {{ pp.MachineCode }}"></td>
 <td class="editable"><input form="press-production-{{ pp.PressProductionID }}" name="counter_qty" type="number" min="0" max="2147483647" step="1" value="{{ pp.CounterQty if pp.CounterQty is not none else '' }}" aria-label="Counter {{ pp.MachineCode }}"></td>
 <td class="editable"><input form="press-production-{{ pp.PressProductionID }}" name="curing_qty" type="number" min="0" max="2147483647" step="1" value="{{ pp.CuringQty if pp.CuringQty is not none else '' }}" aria-label="Curing {{ pp.MachineCode }}"></td>
+<td class="editable"><input class="clock-input" form="press-production-{{ pp.PressProductionID }}" name="production_start_time" inputmode="numeric" pattern="(?:[0-9]|[01][0-9]|2[0-3]):[0-5][0-9]" placeholder="HH:mm" maxlength="5" value="{{ pp.ProductionStartTime.strftime('%H:%M') if pp.ProductionStartTime else '' }}" aria-label="Start time {{ pp.MachineCode }} Shift {{ pp.ShiftCode or 'unknown' }}" {% if pp.ReleasedAt %}readonly{% endif %}></td>
+<td class="editable"><input class="clock-input" form="press-production-{{ pp.PressProductionID }}" name="production_end_time" inputmode="numeric" pattern="(?:[0-9]|[01][0-9]|2[0-3]):[0-5][0-9]" placeholder="HH:mm" maxlength="5" value="{{ pp.ProductionEndTime.strftime('%H:%M') if pp.ProductionEndTime else '' }}" aria-label="End time {{ pp.MachineCode }} Shift {{ pp.ShiftCode or 'unknown' }}" {% if pp.ReleasedAt %}readonly{% endif %}></td>
 {% if pp.EquipmentTimeIdentityAmbiguous %}{% for _ in range(6) %}<td class="press-shift-input">—</td>{% endfor %}{% else %}
 <td class="editable press-shift-input"><input form="press-production-{{ pp.PressProductionID }}" name="setup_minutes" type="number" min="0" step="0.01" value="{{ '{:.1f}'.format(pp.SetupMinutes or 0) }}" aria-label="{{ pp.MachineCode }} Shift {{ pp.ShiftCode }} SETUP"></td>
 <td class="editable press-shift-input"><input form="press-production-{{ pp.PressProductionID }}" name="chgover_minutes" type="number" min="0" step="0.01" value="{{ '{:.1f}'.format(pp.ChgOverMinutes or 0) }}" aria-label="{{ pp.MachineCode }} Shift {{ pp.ShiftCode }} CHGOVER"></td>
@@ -295,7 +298,7 @@ main>header,main>.panel,main>.error{flex-shrink:0}
 {% endif %}
 <td><button class="log-cal-button" type="button" {% if pp.ReleasedAt or pp.EquipmentTimeIdentityAmbiguous or not pp.ShiftCode %}disabled{% endif %}>LOG CAL</button></td><td>{% if not pp.ReleasedAt %}<button form="press-production-{{ pp.PressProductionID }}" type="submit" {% if not pp.ShiftCode %}disabled title="Select a Shift using EDIT FITTING before saving this legacy assignment."{% endif %}>SAVE</button>{% endif %}</td>
 </tr>
-{% else %}<tr><td colspan="15" class="muted">No Press Production rows for this Lot.</td></tr>{% endfor %}
+{% else %}<tr><td colspan="17" class="muted">No Press Production rows for this Lot.</td></tr>{% endfor %}
 </tbody></table></div>
 </section>
 <section class="panel" aria-label="Production REJECT reconciliation">

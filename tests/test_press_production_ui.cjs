@@ -39,7 +39,11 @@ assert.match(html, /data-available-shifts=/);
 assert.match(html, /data-shift-code=/);
 assert.match(html, /Downtime attribution is ambiguous\. Saved values are retained; downtime editing is disabled\./);
 assert.match(html, /<th>Release<\/th><th>Shift<\/th><th>Press<\/th><th>Mould<\/th>/);
-assert.match(html, /<th>Dispatch<\/th><th>Counter<\/th><th>Curing<\/th><th>Setup<\/th><th>ChgOver<\/th><th>Idle<\/th><th>Cleaning<\/th><th>Breakdown<\/th><th>SMDT<\/th>/);
+assert.match(html, /<th>Dispatch<\/th><th>Counter<\/th><th>Curing<\/th><th>Start<\/th><th>End<\/th><th>Setup<\/th><th>ChgOver<\/th><th>Idle<\/th><th>Cleaning<\/th><th>Breakdown<\/th><th>SMDT<\/th>/);
+assert.match(html, /class="clock-input" form="press-production-\{\{ pp\.PressProductionID \}\}" name="production_start_time" inputmode="numeric" pattern="[^"]+" placeholder="HH:mm" maxlength="5"/);
+assert.match(html, /class="clock-input" form="press-production-\{\{ pp\.PressProductionID \}\}" name="production_end_time" inputmode="numeric" pattern="[^"]+" placeholder="HH:mm" maxlength="5"/);
+assert.doesNotMatch(html, /name="production_(?:start|end)_time"[^>]*type="time"/);
+assert.match(html, /\.lot-table \.clock-input,\.press-production-table \.clock-input\{width:62px;text-align:center;font-variant-numeric:tabular-nums\}/);
 assert.match(html, /name="counter_qty" type="number" min="0" max="2147483647" step="1" value="[^"]*" aria-label="Counter/);
 assert.doesNotMatch(html, /SAVE DOWNTIME|save_action/);
 assert.doesNotMatch(html, /SHIFT 1|SHIFT 2|data-log-total/);
@@ -49,13 +53,14 @@ assert.match(html, /UNDO RELEASE/);
 assert.match(html, /EDIT FITTING/);
 assert.match(html, /\.press-production-table col:nth-child\(1\)\{width:6%\}/);
 assert.match(html, /\.press-production-table col:nth-child\(2\)\{width:3%\}/);
-assert.match(html, /\.press-production-table col:nth-child\(15\)\{width:6%\}/);
+assert.match(html, /\.press-production-table col:nth-child\(8\),\.press-production-table col:nth-child\(9\)\{width:5\.6%\}/);
+assert.match(html, /\.press-production-table col:nth-child\(17\)\{width:6%\}/);
 assert.match(html, /\.press-production-table td:first-child>\.release-mould-button\{width:fit-content;max-width:100%;align-self:flex-start;justify-content:flex-start;padding:3px 4px;text-align:left\}/);
 assert.match(html, /\.press-production-scroll\{max-width:100%;overflow-x:auto\}/);
 assert.match(html, /\.press-production-table\{table-layout:fixed;width:100%;min-width:1120px\}/);
 assert.match(html, /LaterPressAssignmentMachineCode or pp\.LaterMouldAssignmentPress/);
 
-const pressRowsMatch = html.match(/\{% for pp in press_production %\}([\s\S]*?)\{% else %\}<tr><td colspan="15"/);
+const pressRowsMatch = html.match(/\{% for pp in press_production %\}([\s\S]*?)\{% else %\}<tr><td colspan="17"/);
 assert.ok(pressRowsMatch, 'Press Production row template exists');
 const pressRows = pressRowsMatch[1];
 assert.match(pressRows, /<button class="release-mould-button" form="release-\{\{ pp\.PressProductionID \}\}" type="submit" onclick="return confirm\('Release this Mould from the Press\?'\)">MOULD<\/button>/);
@@ -74,6 +79,7 @@ assert.doesNotMatch(pressRows, /SAVE DOWNTIME|save_action|>Save<\/button>/);
 assert.equal((pressRows.match(/>SAVE<\/button>/g) || []).length, 1,
   'Each Press Production row has one SAVE button');
 assert.match(pressRows, /button form="undo-release-\{\{ pp\.PressProductionID \}\}" type="submit"/);
+assert.doesNotMatch(pressRows, /\b(?:AM|PM)\b/i);
 
 const scriptMatch = html.match(
   /<script>\s*\(\(\) => \{\s*const form = document\.getElementById\('add-fitting-form'\);[\s\S]*?\}\)\(\);\s*<\/script>/,
