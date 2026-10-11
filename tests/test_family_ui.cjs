@@ -50,6 +50,19 @@ console.log('All inline JavaScript syntax passed; family dropdown clearing and p
 
 // Exercise shared date navigation without submitting any form or making requests.
 const navigationHTML = fs.readFileSync('app/templates/navigation.html', 'utf8');
+const productionSubmenu = navigationHTML.slice(
+  navigationHTML.indexOf('<div class="production-submenu-row"'),
+  navigationHTML.indexOf('<div class="settings-submenu-row"')
+);
+assert.ok(productionSubmenu.indexOf('>PRODUCTION</a>') < productionSubmenu.indexOf("('logger','LOGGER','/logger')"));
+assert.ok(productionSubmenu.indexOf("('logger','LOGGER','/logger')") < productionSubmenu.indexOf("('reject','REJECT','/reject')"));
+assert.ok(productionSubmenu.indexOf("('reject','REJECT','/reject')") < productionSubmenu.indexOf("('usage','USAGE','/usage')"));
+const depalletSubmenu = navigationHTML.slice(
+  navigationHTML.indexOf('<div class="depallet-submenu-row"'),
+  navigationHTML.indexOf('<div class="settings-submenu-row"')
+);
+assert.ok(depalletSubmenu.indexOf('>DEPALLET</a>') < depalletSubmenu.indexOf('>REJECT</a>'));
+assert.ok(depalletSubmenu.includes("workflow=depallet"));
 const navigationScripts = [...navigationHTML.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 assert.equal(navigationScripts.length,1);
 new vm.Script(navigationScripts[0]);
@@ -61,7 +74,8 @@ function dateNavigation(path, query = 'production_date=2026-09-14', action = pat
     requestSubmit() { assert.fail('Date change must not requestSubmit'); },
     addEventListener() { assert.fail('Manual REFRESH behavior must remain unchanged'); }};
   vm.runInNewContext(navigationScripts[0], {
-    document:{getElementById:id => ({'shared-production-date':dateForm,production_date:dateInput}[id])},
+    document:{getElementById:id => ({'shared-production-date':dateForm,production_date:dateInput}[id]),
+      querySelector() { return null; }, querySelectorAll() { return []; }},
     URL, window:{location:{href:'http://local'+path+'?'+query,assign:url => navigations.push(new URL(url))}},
     fetch() { assert.fail('Date change must navigate, not fetch or save'); }
   });
@@ -97,8 +111,22 @@ console.log('Shared date auto-navigation passed on all five tabs; query preserva
 const settingsToggle = {attrs:{'aria-expanded':'false'},handlers:{},
   getAttribute(name) { return this.attrs[name]; },
   setAttribute(name,value) { this.attrs[name]=value; },
+  classList:{values:new Set(),toggle(name,active) { active ? this.values.add(name) : this.values.delete(name); }},
   addEventListener(name,handler) { this.handlers[name]=handler; }};
 const settingsTabs = {hidden:true};
+const productionToggle = {attrs:{'aria-expanded':'false'},handlers:{},
+  getAttribute(name) { return this.attrs[name]; },
+  setAttribute(name,value) { this.attrs[name]=value; },
+  classList:{values:new Set(),toggle(name,active) { active ? this.values.add(name) : this.values.delete(name); }},
+  addEventListener(name,handler) { this.handlers[name]=handler; }};
+const productionTabs = {hidden:true};
+const depalletToggle = {attrs:{'aria-expanded':'false'},handlers:{},
+  getAttribute(name) { return this.attrs[name]; },
+  setAttribute(name,value) { this.attrs[name]=value; },
+  classList:{values:new Set(),toggle(name,active) { active ? this.values.add(name) : this.values.delete(name); }},
+  addEventListener(name,handler) { this.handlers[name]=handler; }};
+const depalletTabs = {hidden:true};
+const pageTabs = {classList:{values:new Set(),toggle(name,active) { active ? this.values.add(name) : this.values.delete(name); }}};
 const settingDateInput = {value:'2026-09-14',validity:{valid:true},addEventListener() {}};
 const settingDateForm = {action:'/press-mc'};
 vm.runInNewContext(navigationScripts[0], {
@@ -106,9 +134,15 @@ vm.runInNewContext(navigationScripts[0], {
     'shared-production-date':settingDateForm,
     production_date:settingDateInput,
     'settings-toggle':settingsToggle,
-    'settings-tabs':settingsTabs
-  }[id])},
-  URL, window:{location:{href:'http://local/press-mc?production_date=2026-09-14',assign() {}}}
+    'settings-tabs':settingsTabs,
+    'production-toggle':productionToggle,
+    'production-tabs':productionTabs,
+    'depallet-toggle':depalletToggle,
+    'depallet-tabs':depalletTabs
+  }[id]), querySelector(selector) { return selector === '.page-tabs' ? pageTabs : null; },
+  querySelectorAll() { return []; }},
+  URL, window:{location:{href:'http://local/press-mc?production_date=2026-09-14',assign() {}}},
+  sessionStorage:{getItem() { return null; }, setItem() {}}
 });
 settingsToggle.handlers.click();
 assert.equal(settingsToggle.getAttribute('aria-expanded'),'true');
@@ -117,3 +151,140 @@ settingsToggle.handlers.click();
 assert.equal(settingsToggle.getAttribute('aria-expanded'),'false');
 assert.equal(settingsTabs.hidden,true);
 console.log('SETTING menu expand/collapse behavior passed without navigation.');
+productionToggle.handlers.click();
+assert.equal(productionToggle.getAttribute('aria-expanded'),'true');
+assert.equal(productionTabs.hidden,false);
+assert.equal(productionToggle.classList.values.has('temporary-active'),true);
+assert.equal(pageTabs.classList.values.has('temporary-navigation-active'),true);
+settingsToggle.handlers.click();
+assert.equal(settingsToggle.getAttribute('aria-expanded'),'true');
+assert.equal(settingsTabs.hidden,false);
+assert.equal(productionToggle.getAttribute('aria-expanded'),'false');
+assert.equal(productionTabs.hidden,true);
+assert.equal(settingsToggle.classList.values.has('temporary-active'),true);
+assert.equal(productionToggle.classList.values.has('temporary-active'),false);
+productionToggle.handlers.click();
+assert.equal(productionToggle.getAttribute('aria-expanded'),'true');
+assert.equal(productionTabs.hidden,false);
+assert.equal(settingsToggle.getAttribute('aria-expanded'),'false');
+assert.equal(settingsTabs.hidden,true);
+assert.equal(productionToggle.classList.values.has('temporary-active'),true);
+assert.equal(settingsToggle.classList.values.has('temporary-active'),false);
+depalletToggle.handlers.click();
+assert.equal(depalletToggle.getAttribute('aria-expanded'),'true');
+assert.equal(depalletTabs.hidden,false);
+assert.equal(productionToggle.getAttribute('aria-expanded'),'false');
+assert.equal(productionTabs.hidden,true);
+assert.equal(depalletToggle.classList.values.has('temporary-active'),true);
+assert.equal(pageTabs.classList.values.has('temporary-navigation-active'),true);
+depalletToggle.handlers.click();
+assert.equal(depalletToggle.getAttribute('aria-expanded'),'false');
+assert.equal(depalletTabs.hidden,true);
+assert.equal(pageTabs.classList.values.has('temporary-navigation-active'),false);
+productionToggle.handlers.click();
+assert.equal(productionToggle.getAttribute('aria-expanded'),'true');
+assert.equal(productionTabs.hidden,false);
+productionToggle.handlers.click();
+assert.equal(productionToggle.getAttribute('aria-expanded'),'false');
+assert.equal(productionTabs.hidden,true);
+assert.equal(productionToggle.classList.values.has('temporary-active'),false);
+assert.equal(pageTabs.classList.values.has('temporary-navigation-active'),false);
+console.log('PRODUCTION menu expand/collapse behavior passed without navigation.');
+
+function rememberedNavigation(path, productionActive, depalletActive, saved = {}) {
+  const values = new Map([['fittingmes.main-menu.submenu.v1', JSON.stringify(saved)]]);
+  const navigations = [];
+  const makeLink = (href, active) => ({
+    href: new URL(href, 'http://local').href,
+    getAttribute(name) { return name === 'aria-current' && active ? 'page' : null; },
+  });
+  const productionLinks = [
+    makeLink('/?production_date=2026-09-14', productionActive === '/'),
+    makeLink('/logger?production_date=2026-09-14', productionActive === '/logger'),
+    makeLink('/reject?production_date=2026-09-14&workflow=production',
+      productionActive === '/reject'),
+    makeLink('/usage?production_date=2026-09-14', productionActive === '/usage'),
+  ];
+  const depalletLinks = [
+    makeLink('/depallet?production_date=2026-09-14', depalletActive === '/depallet'),
+    makeLink('/reject?production_date=2026-09-14&workflow=depallet',
+      depalletActive === '/reject'),
+  ];
+  const makeToggle = expanded => ({
+    attrs:{'aria-expanded':String(expanded)}, handlers:{},
+    getAttribute(name) { return this.attrs[name]; },
+    setAttribute(name,value) { this.attrs[name]=value; },
+    classList:{toggle() {}},
+    addEventListener(name,handler) { this.handlers[name]=handler; },
+  });
+  const prodToggle = makeToggle(productionActive !== null);
+  const depToggle = makeToggle(depalletActive !== null);
+  const emptyToggle = makeToggle(false);
+  const input = {value:'2026-09-15',validity:{valid:true},addEventListener() {}};
+  const tabs = {hidden:true};
+  vm.runInNewContext(navigationScripts[0], {
+    document:{
+      getElementById:id => ({
+        'shared-production-date':{action:path},
+        production_date:input,
+        'settings-toggle':emptyToggle,
+        'settings-tabs':{hidden:true},
+        'production-toggle':prodToggle,
+        'production-tabs':tabs,
+        'depallet-toggle':depToggle,
+        'depallet-tabs':{hidden:true},
+      }[id]),
+      querySelector:() => null,
+      querySelectorAll:selector => selector === '#production-tabs a'
+        ? productionLinks : depalletLinks,
+    },
+    URL,
+    sessionStorage:{
+      getItem:key => values.get(key) || null,
+      setItem:(key,value) => values.set(key,value),
+    },
+    window:{location:{
+      href:`http://local${path}`,
+      assign:url => navigations.push(new URL(url)),
+    }},
+  });
+  return {productionLinks, depalletLinks, prodToggle, depToggle, navigations, values};
+}
+
+const savedDepalletReject =
+  '/reject?production_date=2026-09-14&workflow=depallet&production_id=7&depallet_id=77&shift_id=2';
+const productionLogger = rememberedNavigation(
+  '/logger?production_date=2026-09-14', '/logger', null,
+  {depallet:savedDepalletReject},
+);
+productionLogger.depToggle.handlers.click();
+assert.equal(productionLogger.navigations[0].pathname, '/reject');
+assert.equal(productionLogger.navigations[0].searchParams.get('workflow'), 'depallet');
+assert.equal(productionLogger.navigations[0].searchParams.get('production_date'), '2026-09-15');
+assert.equal(productionLogger.navigations[0].searchParams.get('depallet_id'), '77');
+assert.equal(productionLogger.navigations[0].searchParams.has('production_id'), true);
+const returnedDepallet = rememberedNavigation(
+  '/reject?workflow=depallet&production_date=2026-09-15&production_id=7&depallet_id=77&shift_id=2',
+  null, '/reject',
+  JSON.parse(productionLogger.values.get('fittingmes.main-menu.submenu.v1')),
+);
+returnedDepallet.prodToggle.handlers.click();
+assert.equal(returnedDepallet.navigations[0].pathname, '/logger');
+assert.equal(returnedDepallet.navigations[0].searchParams.get('production_date'), '2026-09-15');
+assert.equal(returnedDepallet.navigations[0].searchParams.has('depallet_id'), false);
+
+const productionReject = rememberedNavigation(
+  '/reject?workflow=production&production_date=2026-09-14', '/reject', null,
+  {depallet:savedDepalletReject},
+);
+productionReject.depToggle.handlers.click();
+assert.equal(productionReject.navigations[0].searchParams.get('workflow'), 'depallet');
+const depalletReject = rememberedNavigation(
+  '/reject?workflow=depallet&production_date=2026-09-15&production_id=7&depallet_id=77',
+  null, '/reject',
+  JSON.parse(productionReject.values.get('fittingmes.main-menu.submenu.v1')),
+);
+depalletReject.prodToggle.handlers.click();
+assert.equal(depalletReject.navigations[0].searchParams.get('workflow'), 'production');
+assert.equal(depalletReject.navigations[0].searchParams.has('depallet_id'), false);
+console.log('Remembered Production/Depallet submenu destinations, date preservation, and workflow-specific context passed.');

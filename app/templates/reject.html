@@ -28,7 +28,7 @@
 {% if saved %}<div class="reject-success" role="status">REJECT entry saved.</div>{% endif %}
 
 <section class="panel" aria-label="REJECT entry">
-<form id="reject-form" class="reject-context" method="post" action="/reject/save">
+<form id="reject-form" class="reject-context" method="post" action="/reject/save?workflow={{ workflow }}">
 <input type="hidden" name="production_date" id="reject-production-date" value="{{ production_date }}">
 <input type="hidden" name="workflow" id="reject-workflow-value" value="{{ workflow }}">
 <input type="hidden" name="entry_id" id="reject-entry-id" value="{{ entry_id }}">
@@ -39,11 +39,6 @@
 <label>Shift
 <select name="shift_id" id="reject-shift" required>
 {% for item in shifts %}<option value="{{ item.ShiftID }}" data-shift-code="{{ item.ShiftCode }}" {% if selected_shift_id|string == item.ShiftID|string %}selected{% endif %}>{{ item.ShiftName }}</option>{% endfor %}
-</select></label>
-<label>Reject Of
-<select id="reject-workflow" {% if entry_id %}disabled{% endif %}>
-<option value="production" {% if workflow == 'production' %}selected{% endif %}>Production</option>
-<option value="depallet" {% if workflow == 'depallet' %}selected{% endif %}>Depallet</option>
 </select></label>
 <label>Line
 <select name="line_equipment_id" id="reject-line" required>
@@ -108,16 +103,17 @@ function rejectReasonOptions(reasons, familyId, scopeCode = null) {
     (!scopeCode || item.SourceScopeCode === scopeCode));
 }
 
-function rejectSourceOptions(sources, lineId, scopeCode = null) {
+function rejectSourceOptions(sources, lineId, scopeCode = null, workflow = 'production') {
   return sources.filter(item =>
-    String(item.LineEquipmentID) === String(lineId) &&
+    (String(item.LineEquipmentID) === String(lineId) ||
+      (workflow === 'depallet' && item.EquipmentType === 'PRESS')) &&
     (!scopeCode || item.EquipmentType === scopeCode));
 }
 
 (() => {
   const page = {{ reject_client_data|tojson }};
   const form = document.getElementById('reject-form');
-  const workflow = document.getElementById('reject-workflow');
+  const workflow = {{ workflow|tojson }};
   const workflowValue = document.getElementById('reject-workflow-value');
   const shift = document.getElementById('reject-shift');
   const line = document.getElementById('reject-line');
@@ -133,7 +129,7 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
   const cancel = document.getElementById('reject-cancel');
   const cal = document.getElementById('reject-cal');
   const productionDate = document.getElementById('reject-production-date');
-  const originalWorkflow = workflow.value;
+  const isDepallet = workflow === 'depallet';
   const rejectContextStorageKey = 'fittingmes.reject.context.v1';
   let contextInitialized = false;
 
@@ -142,10 +138,10 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
     for (const [key, value] of Object.entries(data)) item.dataset[key] = String(value);
     return item;
   };
-  const currentRun = () => workflow.value === 'depallet'
+  const currentRun = () => isDepallet
     ? page.depalletRuns.find(item => String(item.DepalletID) === lot.value)
     : null;
-  const currentLot = () => workflow.value === 'depallet'
+  const currentLot = () => isDepallet
     ? currentRun()
     : page.lots.find(item => String(item.ProductionID) === lot.value);
   const syncSelectedIdentity = () => {
@@ -154,7 +150,7 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
     depalletId.value = run ? String(run.DepalletID) : '';
   };
   const sourceLabel = item => {
-    const suffix = workflow.value === 'depallet' && item.EquipmentType === 'LINE'
+    const suffix = isDepallet && item.EquipmentType === 'LINE'
       ? ' (DRY)' : '';
     return `${item.EquipmentCode}${suffix}`;
   };
@@ -187,7 +183,7 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
     const context = {
       productionDate: productionDate.value,
       shiftId: shift.value,
-      workflow: workflow.value,
+      workflow,
       lineId: line.value,
       productionId: productionId.value,
       depalletRunId: depalletId.value,
@@ -204,15 +200,11 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
     if (entryId.value) return false;
     if (!context || context.productionDate !== productionDate.value) return false;
 
-    if (hasOption(workflow, context.workflow)) {
-      workflow.value = context.workflow;
-      workflowValue.value = workflow.value;
-    }
+    if (context.workflow !== workflow) return false;
 
     if (hasOption(shift, context.shiftId)) shift.value = context.shiftId;
     if (hasOption(line, context.lineId)) line.value = context.lineId;
-    updateWorkflowLabels();
-    updateLots(context.workflow === 'depallet'
+    updateLots(isDepallet
       ? context.depalletRunId : context.productionId);
     updateSources(null, context.sourceId);
     if (source.value) {
@@ -226,11 +218,10 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
   const startupContext = readRememberedContext();
 
   function updateWorkflowLabels() {
-    const isDepallet = workflow.value === 'depallet';
     source.required = !isDepallet;
     for (const item of line.options) {
       if (item.value) {
-        item.textContent = `${item.dataset.code}${workflow.value === 'depallet' ? ' (DRY)' : ''}`;
+        item.textContent = `${item.dataset.code}${isDepallet ? ' (DRY)' : ''}`;
       }
     }
   }
@@ -238,12 +229,11 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
   function updateLots(preferredId = '') {
     const shiftOption = shift.selectedOptions[0];
     const shiftCode = shiftOption ? shiftOption.dataset.shiftCode : '';
-    const candidates = workflow.value === 'production'
+    const candidates = !isDepallet
       ? page.lots
       : page.depalletRuns.filter(item => String(item.ShiftID) === shift.value);
     lot.replaceChildren(option('', 'Select Product / Lot'));
     for (const item of candidates) {
-      const isDepallet = workflow.value === 'depallet';
       const identity = isDepallet ? item.DepalletID : item.ProductionID;
       const label = `${item.LotNo} · ${item.ProductName || item.ProductFamily}` +
         (isDepallet ? ` · RUN ${item.DepalletID}` : '');
@@ -254,11 +244,11 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
       }));
     }
     const requested = String(preferredId || '');
-    const key = item => String(workflow.value === 'depallet'
+    const key = item => String(isDepallet
       ? item.DepalletID : item.ProductionID);
     lot.value = candidates.some(item => key(item) === requested)
       ? requested
-      : (candidates.length && (workflow.value === 'production' || !requested)
+      : (candidates.length && (!isDepallet || !requested)
         ? key(candidates[0]) : '');
     syncSelectedIdentity();
   }
@@ -282,7 +272,8 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
   }
 
   function updateSources(scopeCode = null, preferredId = '') {
-    const candidates = rejectSourceOptions(page.sources, line.value, scopeCode);
+    const candidates = rejectSourceOptions(
+      page.sources, line.value, scopeCode, workflow);
     source.replaceChildren(option('', 'Select Source'));
     for (const item of candidates) {
       source.add(option(item.EquipmentID, sourceLabel(item),
@@ -305,11 +296,12 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
     const selected = currentReason();
     scopeId.value = selected ? selected.RejectSourceScopeID : '';
     const scopeCode = selected ? selected.SourceScopeCode : null;
-    const candidates = rejectSourceOptions(page.sources, line.value, scopeCode);
+    const candidates = rejectSourceOptions(
+      page.sources, line.value, scopeCode, workflow);
     const preferredId = String(preferredSource || '');
     const preferredIsValid = candidates.some(
       item => String(item.EquipmentID) === preferredId);
-    const sourceId = workflow.value === 'production' &&
+    const sourceId = !isDepallet &&
       selected && !preferredIsValid && candidates.length === 1
       ? candidates[0].EquipmentID : preferredSource;
     updateSources(scopeCode, sourceId);
@@ -322,15 +314,11 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
 
   function clearEdit() {
     entryId.value = '';
-    workflow.disabled = false;
-    workflow.value = originalWorkflow;
-    workflowValue.value = workflow.value;
     save.textContent = 'SAVE';
     cancel.hidden = true;
     qty.value = '';
     const restored = restoreContext();
     if (!restored) {
-      updateWorkflowLabels();
       updateLots();
     }
     resetEntryFields(restored);
@@ -346,22 +334,15 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
     rememberContext();
   });
   line.addEventListener('change', () => {
-    resetEntryFields(workflow.value === 'depallet');
+    resetEntryFields(isDepallet);
     rememberContext();
   });
   lot.addEventListener('change', () => {
     syncSelectedIdentity();
     updateReasons();
-    updateSources(null, workflow.value === 'depallet' ? source.value : '');
+    updateSources(null, isDepallet ? source.value : '');
     scopeId.value = '';
-    if (workflow.value === 'depallet' && source.value) syncForSource('');
-    rememberContext();
-  });
-  workflow.addEventListener('change', () => {
-    workflowValue.value = workflow.value;
-    updateWorkflowLabels();
-    updateLots();
-    resetEntryFields();
+    if (isDepallet && source.value) syncForSource('');
     rememberContext();
   });
   reason.addEventListener('change', () => syncForReason());
@@ -370,7 +351,7 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
     rememberContext();
   });
   form.addEventListener('submit', () => {
-    workflowValue.value = workflow.value;
+    workflowValue.value = workflow;
     rememberContext();
   });
   cancel.addEventListener('click', clearEdit);
@@ -378,11 +359,11 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
     cal.addEventListener('click', () => {
       const params = new URLSearchParams({
         production_date: productionDate.value,
-        workflow: workflow.value,
+        workflow,
         shift_id: shift.value,
         production_id: productionId.value,
       });
-      if (workflow.value === 'depallet') {
+      if (isDepallet) {
         if (depalletId.value) params.set('depallet_id', depalletId.value);
       }
       window.location.href = `/reject/cal?${params}`;
@@ -393,12 +374,8 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
     radio.addEventListener('change', () => {
       if (!radio.checked) return;
       const row = JSON.parse(radio.dataset.rejectEntry);
-      workflow.value = row.workflow;
-      workflowValue.value = row.workflow;
-      workflow.disabled = true;
-      updateWorkflowLabels();
       shift.value = String(row.shift_id);
-      updateLots(row.workflow === 'depallet' ? row.depallet_id : row.production_id);
+      updateLots(isDepallet ? row.depallet_id : row.production_id);
       syncSelectedIdentity();
       line.value = String(row.line_equipment_id);
       updateReasons();
@@ -423,7 +400,7 @@ function rejectSourceOptions(sources, lineId, scopeCode = null) {
     const selected = currentSource();
     if (selected) syncForSource();
   }
-  workflowValue.value = workflow.value;
+  workflowValue.value = workflow;
   contextInitialized = true;
   rememberContext();
 })();

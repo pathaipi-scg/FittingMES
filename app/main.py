@@ -212,7 +212,7 @@ def reject_load_context(production_date, workflow="production", shift_id=None,
                         error=None, form=None, depallet_id=None):
     with closing(get_connection()) as conn:
         cursor = conn.cursor()
-        data = read_reject_page_data(cursor, production_date)
+        data = read_reject_page_data(cursor, production_date, workflow)
         entries = read_reject_entries(cursor, production_date, workflow)
     return reject_page_context(
         data, production_date, workflow=workflow, shift_id=shift_id,
@@ -264,7 +264,7 @@ def save_reject_form(form):
 
 
 @app.post("/reject/save", response_class=HTMLResponse)
-async def save_reject_route(request: Request):
+async def save_reject_route(request: Request, workflow: str | None = None):
     form = await request.form()
     if any(len(form.getlist(key)) != 1 for key in form):
         return JSONResponse(
@@ -272,6 +272,8 @@ async def save_reject_route(request: Request):
             status_code=400,
         )
     values = dict(form)
+    if workflow is not None:
+        values["workflow"] = workflow
     try:
         await run_in_threadpool(save_reject_form, values)
         production_date = date.fromisoformat(
@@ -363,7 +365,7 @@ def reject_cal_page(request: Request, production_date: date | None = None,
     try:
         with closing(get_connection()) as conn:
             cursor = conn.cursor()
-            data = read_reject_page_data(cursor, production_date)
+            data = read_reject_page_data(cursor, production_date, workflow)
             selected_shift = next(
                 (item for item in data["shifts"]
                  if str(item["ShiftID"]) == str(shift_id)),

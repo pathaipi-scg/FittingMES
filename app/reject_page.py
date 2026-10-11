@@ -119,14 +119,24 @@ def reject_page_context(data, production_date, workflow=None, shift_id=None,
             EquipmentType="LINE",
             LineEquipmentID=line["EquipmentID"],
         ))
+        if chosen_workflow != "depallet":
+            all_source_options.extend(
+                dict(item, EquipmentType="PRESS")
+                for item in presses
+                if str(item["LineEquipmentID"]) == line_id
+            )
+    if chosen_workflow == "depallet":
         all_source_options.extend(
             dict(item, EquipmentType="PRESS")
             for item in presses
-            if str(item["LineEquipmentID"]) == line_id
         )
     source_options = [
         item for item in all_source_options
         if str(item["LineEquipmentID"]) == selected_line_id
+        or (
+            chosen_workflow == "depallet"
+            and item["EquipmentType"] == "PRESS"
+        )
     ]
 
     requested_source = form.get("source_equipment_id", "")

@@ -1,6 +1,9 @@
+import asyncio
 import json
 import unittest
 from datetime import date
+from pathlib import Path
+from urllib.parse import urlencode
 from unittest.mock import MagicMock, patch
 
 from starlette.requests import Request
@@ -11,7 +14,13 @@ from app.reject import (
 )
 from app.reject_page import reject_page_context
 from app.reject_summary import read_reject_cal
-from app.main import app, reject_cal_page, reject_page, templates
+from app.main import (
+    app,
+    reject_cal_page,
+    reject_page,
+    save_reject_route,
+    templates,
+)
 
 
 class FakeCursor:
@@ -85,8 +94,23 @@ class FakeCursor:
                     ("RejectReasonID", "RejectSourceScopeID", "SourceScopeCode"),
                     [],
                 )
+        elif "FROM dbo.DepalletLineEquipmentMap AS mapping" in query:
+            self._set(
+                ("EquipmentID", "EquipmentCode"),
+                [(620, "LINE_DRY1")],
+            )
+        elif (
+            "FROM dbo.EquipmentMaster" in query
+            and "EquipmentType='PRESS'" in query
+            and "WHERE id=?" in query
+        ):
+            values = [(711,)] if self.source_valid else []
+            self._set(("EquipmentID",), values)
         elif "SELECT id AS EquipmentID,EquipmentCode" in query:
-            self._set(("EquipmentID", "EquipmentCode"), [(620, "LINE2")])
+            self._set(
+                ("EquipmentID", "EquipmentCode"),
+                [(620, "LINE2")] if params[0] == 620 else [],
+            )
         elif "FROM dbo.vw_PressMcPressList AS press_view" in query:
             values = [(711,)] if self.source_valid else []
             self._set(("EquipmentID",), values)
@@ -207,6 +231,41 @@ class RejectEntryTests(unittest.TestCase):
         )
         self.assertEqual(known_source_params[4], 711)
 
+    def test_depallet_inactive_press_source_is_rejected_server_side(self):
+        cursor = FakeCursor(scope="PRESS", source_valid=False)
+        with self.assertRaisesRegex(RejectValidationError, "active Press"):
+            save_reject_entry(
+                FakeConnection(cursor),
+                valid_form(
+                    workflow="depallet",
+                    depallet_id="16001",
+                    reject_source_scope_id="95",
+                    source_equipment_id="711",
+                ),
+            )
+        self.assertFalse(any(
+            query.lstrip().startswith("INSERT INTO dbo.DepalletRejectEntry")
+            for query, _ in cursor.calls
+        ))
+
+    def test_depallet_save_writes_only_its_quality_table(self):
+        cursor = FakeCursor()
+        save_reject_entry(
+            FakeConnection(cursor),
+            valid_form(workflow="depallet", depallet_id="16001"),
+        )
+        writes = [
+            query for query, _ in cursor.calls
+            if query.lstrip().startswith(("INSERT INTO dbo.", "UPDATE dbo."))
+        ]
+        self.assertEqual(len(writes), 1)
+        self.assertIn("INSERT INTO dbo.DepalletRejectEntry", writes[0])
+        self.assertNotIn("ProductionRejectEntry", writes[0])
+        self.assertNotIn("ProductionData", writes[0])
+        self.assertNotIn("PressProduction", writes[0])
+        self.assertNotIn("EquipmentTimeEvent", writes[0])
+        self.assertNotIn("LoggerEvent", writes[0])
+
         with self.assertRaisesRegex(RejectValidationError, "active Source"):
             save_reject_entry(
                 FakeConnection(FakeCursor()),
@@ -275,6 +334,132 @@ class RejectEntryTests(unittest.TestCase):
             query.lstrip().startswith("INSERT INTO dbo.")
             for query, _ in cursor.calls
         ))
+
+    def test_invalid_line_id_cannot_bypass_equipment_master_validation(self):
+        with self.assertRaisesRegex(RejectValidationError, "active"):
+            save_reject_entry(
+                FakeConnection(FakeCursor()),
+                valid_form(line_equipment_id="621"),
+            )
+
+    def test_reject_line_choices_use_equipment_master_not_logger_machine_counts(self):
+        class LineMasterCursor:
+            def __init__(self):
+                self.description = []
+                self.result = []
+                self.calls = []
+
+            def execute(self, query, *params):
+                self.calls.append((query, params))
+                if "SELECT id AS EquipmentID, EquipmentCode, EquipmentName, DisplayOrder" in query:
+                    self.description = [
+                        ("EquipmentID",), ("EquipmentCode",),
+                        ("EquipmentName",), ("DisplayOrder",),
+                    ]
+                    self.result = [
+                        (15, "LINE1", "Line 1", 101),
+                        (16, "LINE2", "Line 2", 102),
+                    ]
+                elif "FROM dbo.Fitting_MainMachine" in query:
+                    raise AssertionError(
+                        "Reject page must not use LOGGER machine-instance counts."
+                    )
+                else:
+                    self.description = []
+                    self.result = []
+                return self
+
+            def fetchall(self):
+                result, self.result = self.result, []
+                return result
+
+        cursor = LineMasterCursor()
+        data = read_reject_page_data(
+            cursor, date(2026, 10, 6), workflow="production"
+        )
+        context = reject_page_context(
+            data, date(2026, 10, 6), workflow="depallet",
+        )
+        self.assertEqual(
+            [item["EquipmentCode"] for item in context["lines"]],
+            ["LINE1", "LINE2"],
+        )
+        line_query = next(
+            query for query, _ in cursor.calls
+            if "EquipmentType='LINE'" in query
+        )
+        self.assertIn("FROM dbo.EquipmentMaster", line_query)
+        self.assertNotIn("Fitting_MainMachine", line_query)
+
+    def test_depallet_line_choices_use_authoritative_dry_line_mapping(self):
+        class DryLineCursor:
+            def __init__(self):
+                self.description = []
+                self.result = []
+
+            def execute(self, query, *params):
+                if "FROM dbo.DepalletLineEquipmentMap AS mapping" in query:
+                    self.description = [
+                        ("EquipmentID",), ("EquipmentCode",),
+                        ("EquipmentName",), ("DisplayOrder",),
+                    ]
+                    self.result = [(620, "LINE_DRY1", "LINE(dry) 1", 1001)]
+                elif (
+                    "FROM dbo.EquipmentMaster" in query
+                    and "EquipmentType='PRESS'" in query
+                ):
+                    self.description = [
+                        ("EquipmentID",), ("EquipmentCode",),
+                        ("EquipmentName",), ("LineEquipmentID",),
+                        ("LineEquipmentCode",), ("DisplayOrder",),
+                    ]
+                    self.result = [
+                        (711, "F1", "Press 1", None, None, 1),
+                        (712, "F2", "Press 2", None, None, 2),
+                    ]
+                elif "FROM dbo.ShiftMaster" in query:
+                    self.description = [
+                        ("ShiftID",), ("ShiftCode",), ("ShiftName",),
+                    ]
+                    self.result = [(734, "2", "Shift 2")]
+                else:
+                    self.description = []
+                    self.result = []
+                return self
+
+            def fetchall(self):
+                result, self.result = self.result, []
+                return result
+
+        data = read_reject_page_data(
+            DryLineCursor(), date(2026, 10, 6), workflow="depallet"
+        )
+        context = reject_page_context(
+            data, date(2026, 10, 6), workflow="depallet",
+        )
+        self.assertEqual(
+            [item["EquipmentCode"] for item in context["lines"]],
+            ["LINE_DRY1"],
+        )
+        self.assertEqual(
+            [item["EquipmentCode"]
+             for item in context["reject_client_data"]["sources"]],
+            ["LINE_DRY1", "F1", "F2"],
+        )
+        self.assertEqual(
+            [item["EquipmentCode"] for item in context["source_options"]],
+            ["LINE_DRY1", "F1", "F2"],
+        )
+
+    def test_depallet_press_source_query_does_not_use_production_mapping(self):
+        source = Path("app/reject.py").read_text(encoding="utf-8")
+        depallet_query = source.split(
+            "SELECT id AS EquipmentID, EquipmentCode, EquipmentName,\n"
+            "                   CAST(NULL AS bigint) AS LineEquipmentID", 1
+        )[1].split('""")', 1)[0]
+        self.assertIn("EquipmentType='PRESS' AND IsActive=1", depallet_query)
+        self.assertNotIn("EquipmentLineMap", depallet_query)
+        self.assertNotIn("vw_PressMcPressList", depallet_query)
 
     def test_depallet_run_shift_matching_is_required(self):
         cursor = FakeCursor(depallet_shift_code="1")
@@ -937,6 +1122,8 @@ class RejectPageRenderTests(unittest.TestCase):
             'id="reject-source"', 1
         )[1].split(">", 1)[0]
         self.assertIn("required", production_source_markup)
+        self.assertNotIn('id="reject-workflow"', production_html)
+        self.assertIn('action="/reject/save?workflow=production"', production_html)
         def assert_json_safe(value):
             if isinstance(value, dict):
                 return all(
@@ -979,6 +1166,9 @@ class RejectPageRenderTests(unittest.TestCase):
         )[1].split(">", 1)[0]
         self.assertNotIn("required", depallet_source_markup)
         self.assertIn(">Select Source</option>", depallet_html)
+        self.assertNotIn("Reject Of\n<select id=\"reject-workflow\"", depallet_html)
+        self.assertIn('action="/reject/save?workflow=depallet"', depallet_html)
+        self.assertNotIn('id="reject-workflow"', depallet_html)
 
     def test_reject_and_cal_templates_render_without_inner_production_date(self):
         production_date = date(2026, 10, 6)
@@ -1018,7 +1208,7 @@ class RejectPageRenderTests(unittest.TestCase):
             page_body,
         )
         self.assertEqual(page_body.count('type="date"'), 1)
-        self.assertIn("Reject Of", page_body)
+        self.assertNotIn('id="reject-workflow"', page_body)
         self.assertIn("REJECT CAL", page_body)
         self.assertEqual(page["selected_source_id"], "711")
         self.assertLess(
@@ -1079,6 +1269,44 @@ class RejectPageRenderTests(unittest.TestCase):
         self.assertIn("/reject/save", paths)
         self.assertIn("/reject/cal", paths)
         self.assertIn("/reject-api", paths)
+
+
+class RejectSaveRouteTests(unittest.TestCase):
+    @staticmethod
+    def post_request(values):
+        body = urlencode(values).encode()
+
+        async def receive():
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        return Request({
+            "type": "http", "asgi": {"version": "3.0"},
+            "http_version": "1.1", "method": "POST", "scheme": "http",
+            "path": "/reject/save", "raw_path": b"/reject/save",
+            "query_string": b"", "headers": [
+                (b"content-type", b"application/x-www-form-urlencoded"),
+            ],
+            "server": ("localhost", 80), "client": ("127.0.0.1", 12345),
+            "root_path": "",
+        }, receive)
+
+    def test_save_route_enforces_parent_workflow_over_tampered_form(self):
+        for request_workflow, posted_workflow in (
+            ("production", "depallet"),
+            ("depallet", "production"),
+        ):
+            with self.subTest(
+                request_workflow=request_workflow,
+                posted_workflow=posted_workflow,
+            ):
+                with patch("app.main.save_reject_form") as save:
+                    response = asyncio.run(save_reject_route(
+                        self.post_request(valid_form(workflow=posted_workflow)),
+                        workflow=request_workflow,
+                    ))
+                self.assertEqual(response.status_code, 303)
+                submitted = save.call_args.args[0]
+                self.assertEqual(submitted["workflow"], request_workflow)
 
 
 if __name__ == "__main__":

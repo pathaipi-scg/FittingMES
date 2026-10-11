@@ -56,9 +56,10 @@ def _fetch_one(cursor):
     return found[0] if len(found) == 1 else None
 
 
-def read_reject_page_data(cursor, production_date):
+def read_reject_page_data(cursor, production_date, workflow="production"):
     """Read active workflow choices from the authoritative masters."""
     production_date = _production_date(production_date)
+    workflow = _workflow(workflow)
 
     cursor.execute("""
         SELECT id AS ShiftID, ShiftCode, ShiftName
@@ -68,28 +69,61 @@ def read_reject_page_data(cursor, production_date):
     """)
     shifts = rows(cursor)
 
-    cursor.execute("""
-        SELECT id AS EquipmentID, EquipmentCode, EquipmentName, DisplayOrder
-        FROM dbo.EquipmentMaster
-        WHERE EquipmentType='LINE' AND IsActive=1
-        ORDER BY DisplayOrder,EquipmentCode
-    """)
+    if workflow == "depallet":
+        cursor.execute("""
+            SELECT equipment.id AS EquipmentID, equipment.EquipmentCode,
+                   equipment.EquipmentName, equipment.DisplayOrder
+            FROM dbo.DepalletLineEquipmentMap AS mapping
+            JOIN dbo.Fitting_MainMachine AS main_machine
+              ON main_machine.McId=mapping.MainMachineMcId
+             AND main_machine.IsActive=1
+            JOIN dbo.Fitting_SubMachine AS sub_machine
+              ON sub_machine.SubMcId=mapping.SubMcId
+             AND sub_machine.McId=main_machine.McId
+             AND sub_machine.No=mapping.InstanceNo
+             AND sub_machine.IsRelated=1
+            JOIN dbo.EquipmentMaster AS equipment
+              ON equipment.id=mapping.EquipmentID
+             AND equipment.EquipmentType='DRY_LINE'
+             AND equipment.IsActive=1
+            WHERE mapping.IsActive=1
+              AND mapping.InstanceNo BETWEEN 1 AND main_machine.No
+            ORDER BY mapping.InstanceNo,equipment.EquipmentCode
+        """)
+    else:
+        cursor.execute("""
+            SELECT id AS EquipmentID, EquipmentCode, EquipmentName, DisplayOrder
+            FROM dbo.EquipmentMaster
+            WHERE EquipmentType='LINE' AND IsActive=1
+            ORDER BY DisplayOrder,EquipmentCode
+        """)
     lines = rows(cursor)
 
-    cursor.execute("""
-        SELECT press.id AS EquipmentID, press.EquipmentCode,
-               press_view.PressName AS EquipmentName, line.id AS LineEquipmentID,
-               line.EquipmentCode AS LineEquipmentCode, press.DisplayOrder
-        FROM dbo.vw_PressMcPressList AS press_view
-        JOIN dbo.EquipmentMaster AS press
-          ON press.EquipmentCode=press_view.PressCode
-         AND press.EquipmentType='PRESS'
-        JOIN dbo.EquipmentMaster AS line
-          ON line.EquipmentCode=press_view.CurrentLine
-         AND line.EquipmentType='LINE'
-        WHERE press.IsActive=1 AND press_view.IsActive=1 AND line.IsActive=1
-        ORDER BY press.DisplayOrder,press.EquipmentCode
-    """)
+    if workflow == "depallet":
+        cursor.execute("""
+            SELECT id AS EquipmentID, EquipmentCode, EquipmentName,
+                   CAST(NULL AS bigint) AS LineEquipmentID,
+                   CAST(NULL AS varchar(20)) AS LineEquipmentCode,
+                   DisplayOrder
+            FROM dbo.EquipmentMaster
+            WHERE EquipmentType='PRESS' AND IsActive=1
+            ORDER BY DisplayOrder,EquipmentCode
+        """)
+    else:
+        cursor.execute("""
+            SELECT press.id AS EquipmentID, press.EquipmentCode,
+                   press_view.PressName AS EquipmentName, line.id AS LineEquipmentID,
+                   line.EquipmentCode AS LineEquipmentCode, press.DisplayOrder
+            FROM dbo.vw_PressMcPressList AS press_view
+            JOIN dbo.EquipmentMaster AS press
+              ON press.EquipmentCode=press_view.PressCode
+             AND press.EquipmentType='PRESS'
+            JOIN dbo.EquipmentMaster AS line
+              ON line.EquipmentCode=press_view.CurrentLine
+             AND line.EquipmentType='LINE'
+            WHERE press.IsActive=1 AND press_view.IsActive=1 AND line.IsActive=1
+            ORDER BY press.DisplayOrder,press.EquipmentCode
+        """)
     presses = rows(cursor)
 
     cursor.execute("""
@@ -183,7 +217,7 @@ def read_reject_entries(cursor, production_date, workflow):
                shift.ShiftCode,entry.LineEquipmentID,
                line.EquipmentCode AS LineCode,entry.SourceEquipmentID,
                source.EquipmentCode AS SourceCode,
-               CASE WHEN source.EquipmentType='LINE' THEN 'LINE'
+               CASE WHEN source.EquipmentType IN ('LINE','DRY_LINE') THEN 'LINE'
                     WHEN source.EquipmentType='PRESS' THEN 'PRESS'
                     ELSE NULL END AS SourceType,
                entry.ProductionID,lot.LotNo,lot.ProductCode,
@@ -209,18 +243,9 @@ def read_reject_entries(cursor, production_date, workflow):
         ORDER BY entry.Rectime DESC,entry.id DESC
     """, production_date)
     result = rows(cursor)
-    if workflow == "depallet":
-        for item in result:
-            item["LineLabel"] = f'{item["LineCode"]} (DRY)'
-            item["SourceLabel"] = (
-                f'{item["SourceCode"]} (DRY)'
-                if item["SourceType"] == "LINE"
-                else item["SourceCode"] if item["SourceCode"] else "—"
-            )
-    else:
-        for item in result:
-            item["LineLabel"] = item["LineCode"]
-            item["SourceLabel"] = item["SourceCode"]
+    for item in result:
+        item["LineLabel"] = item["LineCode"]
+        item["SourceLabel"] = item["SourceCode"] or "—"
     return result
 
 
@@ -328,11 +353,31 @@ def _validate_entry(cursor, raw):
             "Reject Source Scope does not match the selected Reject Reason.",
         )
 
-    cursor.execute("""
-        SELECT id AS EquipmentID,EquipmentCode
-        FROM dbo.EquipmentMaster
-        WHERE id=? AND EquipmentType='LINE' AND IsActive=1
-    """, line_id)
+    if workflow == "depallet":
+        cursor.execute("""
+            SELECT equipment.id AS EquipmentID, equipment.EquipmentCode
+            FROM dbo.DepalletLineEquipmentMap AS mapping
+            JOIN dbo.Fitting_MainMachine AS main_machine
+              ON main_machine.McId=mapping.MainMachineMcId
+             AND main_machine.IsActive=1
+            JOIN dbo.Fitting_SubMachine AS sub_machine
+              ON sub_machine.SubMcId=mapping.SubMcId
+             AND sub_machine.McId=main_machine.McId
+             AND sub_machine.No=mapping.InstanceNo
+             AND sub_machine.IsRelated=1
+            JOIN dbo.EquipmentMaster AS equipment
+              ON equipment.id=mapping.EquipmentID
+             AND equipment.EquipmentType='DRY_LINE'
+             AND equipment.IsActive=1
+            WHERE mapping.EquipmentID=? AND mapping.IsActive=1
+              AND mapping.InstanceNo BETWEEN 1 AND main_machine.No
+        """, line_id)
+    else:
+        cursor.execute("""
+            SELECT id AS EquipmentID,EquipmentCode
+            FROM dbo.EquipmentMaster
+            WHERE id=? AND EquipmentType='LINE' AND IsActive=1
+        """, line_id)
     line = _fetch_one(cursor)
     if line is None:
         _invalid("INVALID_LINE", "The selected Line is no longer active.")
@@ -349,6 +394,14 @@ def _validate_entry(cursor, raw):
                 "INVALID_SOURCE",
                 "A LINE-scope reason must use the selected Line as its Source.",
             )
+    elif source_id is not None and scope_code == "PRESS" and workflow == "depallet":
+        cursor.execute("""
+            SELECT id AS EquipmentID
+            FROM dbo.EquipmentMaster
+            WHERE id=? AND EquipmentType='PRESS' AND IsActive=1
+        """, source_id)
+        if _fetch_one(cursor) is None:
+            _invalid("INVALID_SOURCE", "Select an active Press.")
     elif source_id is not None and scope_code == "PRESS":
         cursor.execute("""
             SELECT press.id AS EquipmentID

@@ -6,8 +6,12 @@
 .page-tabs-main{display:flex;flex:1 1 0;gap:3px;min-width:0;overflow-x:auto;flex-wrap:nowrap}
 .page-tabs a{display:inline-flex;align-items:center;height:22.5px;padding:1.5px 7px;border:0.75px solid #c7d2df;border-radius:2.25px;background:white;color:#243348;text-decoration:none;font:500 9.75px/1.2 system-ui,sans-serif}
 .page-tabs button{display:inline-flex;align-items:center;height:22.5px;padding:1.5px 7px;border:0.75px solid #c7d2df;border-radius:2.25px;background:white;color:#243348;font:500 9.75px/1.2 system-ui,sans-serif;cursor:pointer;margin-left:auto;white-space:nowrap;flex:0 0 auto}
+.page-tabs-main button{margin-left:0}
 .page-tabs a[aria-current=page]{background:#1765ad;border-color:#1765ad;color:white}
-.page-tabs button[aria-expanded=true]{background:#1765ad;border-color:#1765ad;color:white}
+.page-tabs button.is-active{background:#1765ad;border-color:#1765ad;color:white}
+.page-tabs button.temporary-active{background:#1765ad;border-color:#1765ad;color:white}
+.page-tabs.temporary-navigation-active .page-tabs-main a[aria-current=page],
+.page-tabs.temporary-navigation-active button.is-active:not(.temporary-active){background:white;border-color:#c7d2df;color:#243348}
 .page-tabs a:focus-visible{outline:1.5px solid #63acec;outline-offset:0.75px}
 .page-tabs button:focus-visible{outline:1.5px solid #63acec;outline-offset:0.75px}
 .settings-submenu-row{display:flex;justify-content:flex-end;min-width:0}
@@ -16,13 +20,30 @@
 .settings-tabs a[aria-current=page]{background:#1765ad;border-color:#1765ad;color:white}
 .settings-tabs a:focus-visible{outline:1.5px solid #63acec;outline-offset:0.75px}
 #settings-tabs[hidden]{display:none !important}
+.production-submenu-row{display:flex;justify-content:flex-start;min-width:0}
+.production-tabs{display:flex;gap:3px;min-width:0;overflow-x:auto}
+.production-tabs a{display:inline-flex;align-items:center;height:22.5px;padding:1.5px 7px;border:0.75px solid #c7d2df;border-radius:2.25px;background:white;color:#243348;text-decoration:none;font:500 9.75px/1.2 system-ui,sans-serif;white-space:nowrap}
+.production-tabs a[aria-current=page]{background:#1765ad;border-color:#1765ad;color:white}
+.production-tabs a:focus-visible{outline:1.5px solid #63acec;outline-offset:0.75px}
+#production-tabs[hidden]{display:none !important}
+.depallet-submenu-row{display:flex;justify-content:flex-start;min-width:0}
+.depallet-tabs{display:flex;gap:3px;min-width:0;overflow-x:auto}
+.depallet-tabs a{display:inline-flex;align-items:center;height:22.5px;padding:1.5px 7px;border:0.75px solid #c7d2df;border-radius:2.25px;background:white;color:#243348;text-decoration:none;font:500 9.75px/1.2 system-ui,sans-serif;white-space:nowrap}
+.depallet-tabs a[aria-current=page]{background:#1765ad;border-color:#1765ad;color:white}
+.depallet-tabs a:focus-visible{outline:1.5px solid #63acec;outline-offset:0.75px}
+#depallet-tabs[hidden]{display:none !important}
 .shared-production-date{display:flex;align-items:center;gap:4.5px;flex-wrap:wrap;flex-shrink:0;margin:0}
 </style>
 {% set tab_date = production_date %}
 {% set tab_date_query = '?production_date=' ~ tab_date if tab_date else '' %}
 {% set tab = active_tab|default('production') %}
 {% set settings_active = tab in ('press-mc', 'mould', 'logger-master') %}
-{% set current_path = '/depallet' if tab == 'depallet' else '/reject/cal' if tab == 'reject-cal' else '/reject' if tab == 'reject' else '/logger/summary' if tab == 'logger-summary' else '/logger/master' if tab == 'logger-master' else '/logger' if tab == 'logger' else '/usage' if tab == 'usage' else '/prod-api' if tab == 'prod-api' else '/reject-api' if tab == 'reject-api' else '/press-mc' if tab == 'press-mc' else '/mould' if tab == 'mould' else '/print-prod' if tab == 'print-prod' else '/print-oee' if tab == 'print-oee' else '/' %}
+{% set reject_workflow = workflow|default('production') %}
+{% set production_active = tab in ('production', 'logger', 'logger-summary', 'usage') or (tab in ('reject', 'reject-cal') and reject_workflow != 'depallet') %}
+{% set depallet_active = tab == 'depallet' or (tab in ('reject', 'reject-cal') and reject_workflow == 'depallet') %}
+{% set production_tab_query = tab_date_query %}
+{% if current is defined and current and current.ProdDate == production_date %}{% if tab_date %}{% set production_tab_query = production_tab_query ~ '&' %}{% else %}{% set production_tab_query = production_tab_query ~ '?' %}{% endif %}{% set production_tab_query = production_tab_query ~ 'production_id=' ~ current.ProductionID %}{% endif %}
+{% set current_path = '/reject/cal?workflow=depallet' if tab == 'reject-cal' and reject_workflow == 'depallet' else '/reject/cal?workflow=production' if tab == 'reject-cal' else '/reject?workflow=depallet' if tab == 'reject' and reject_workflow == 'depallet' else '/reject?workflow=production' if tab == 'reject' else '/depallet' if tab == 'depallet' else '/logger/summary' if tab == 'logger-summary' else '/logger/master' if tab == 'logger-master' else '/logger' if tab == 'logger' else '/usage' if tab == 'usage' else '/prod-api' if tab == 'prod-api' else '/reject-api' if tab == 'reject-api' else '/press-mc' if tab == 'press-mc' else '/mould' if tab == 'mould' else '/print-prod' if tab == 'print-prod' else '/print-oee' if tab == 'print-oee' else '/' %}
 <div class="shared-header-row">
 <div class="shared-header-primary-row">
 <form class="shared-production-date" id="shared-production-date" method="get" action="{{ current_path }}">
@@ -33,13 +54,30 @@
 <div class="shared-navigation">
 <nav class="page-tabs" aria-label="Main navigation">
 <div class="page-tabs-main">
-{% for key, label, path in [('production','PRODUCTION','/'),('logger','LOGGER','/logger'),('reject','REJECT','/reject'),('usage','USAGE','/usage'),('depallet','DEPALLET','/depallet'),('prod-api','PROD API','/prod-api'),('reject-api','REJECT API','/reject-api'),('print-prod','PRINT PROD','/print-prod'),('print-oee','PRINT OEE','/print-oee')] %}
-<a href="{{ path }}{{ tab_date_query }}{% if key == 'production' and current is defined and current and current.ProdDate == production_date %}{% if tab_date %}&amp;{% else %}?{% endif %}production_id={{ current.ProductionID }}{% endif %}" {% if active_tab|default('production') == key or key == 'logger' and active_tab in ('logger-summary',) or key == 'reject' and active_tab in ('reject','reject-cal') %}aria-current="page"{% endif %}>{{ label }}</a>
+<button class="production-toggle{% if production_active %} is-active{% endif %}" id="production-toggle" type="button" aria-controls="production-tabs" aria-expanded="{{ 'true' if production_active else 'false' }}">PRODUCTION</button>
+<button class="depallet-toggle{% if depallet_active %} is-active{% endif %}" id="depallet-toggle" type="button" aria-controls="depallet-tabs" aria-expanded="{{ 'true' if depallet_active else 'false' }}">DEPALLET</button>
+{% for key, label, path in [('prod-api','PROD API','/prod-api'),('reject-api','REJECT API','/reject-api'),('print-prod','PRINT PROD','/print-prod'),('print-oee','PRINT OEE','/print-oee')] %}
+<a href="{{ path }}{{ tab_date_query }}" {% if tab == key %}aria-current="page"{% endif %}>{{ label }}</a>
 {% endfor %}
 </div>
-<button id="settings-toggle" type="button" aria-controls="settings-tabs" aria-expanded="{{ 'true' if settings_active else 'false' }}">SETTING</button>
+<button id="settings-toggle" class="{% if settings_active %}is-active {% endif %}settings-toggle" type="button" aria-controls="settings-tabs" aria-expanded="{{ 'true' if settings_active else 'false' }}">SETTING</button>
 </nav>
 </div>
+</div>
+<div class="production-submenu-row" id="production-tabs" {% if not production_active %}hidden{% endif %}>
+<nav class="production-tabs" aria-label="Production navigation">
+<a href="/{{ production_tab_query }}" {% if tab == 'production' %}aria-current="page"{% endif %}>PRODUCTION</a>
+{% for key, label, path in [('logger','LOGGER','/logger'),('reject','REJECT','/reject'),('usage','USAGE','/usage')] %}
+{% if key == 'reject' %}<a href="/reject{{ tab_date_query }}{% if tab_date_query %}&amp;{% else %}?{% endif %}workflow=production" {% if key == 'reject' and tab in ('reject','reject-cal') and reject_workflow != 'depallet' %}aria-current="page"{% endif %}>{{ label }}</a>
+{% else %}<a href="{{ path }}{{ tab_date_query }}" {% if tab == key or key == 'logger' and tab == 'logger-summary' %}aria-current="page"{% endif %}>{{ label }}</a>{% endif %}
+{% endfor %}
+</nav>
+</div>
+<div class="depallet-submenu-row" id="depallet-tabs" {% if not depallet_active %}hidden{% endif %}>
+<nav class="depallet-tabs" aria-label="Depallet navigation">
+<a href="/depallet{{ tab_date_query }}" {% if tab == 'depallet' %}aria-current="page"{% endif %}>DEPALLET</a>
+<a href="/reject{{ tab_date_query }}{% if tab_date_query %}&amp;{% else %}?{% endif %}workflow=depallet" {% if tab in ('reject','reject-cal') and reject_workflow == 'depallet' %}aria-current="page"{% endif %}>REJECT</a>
+</nav>
 </div>
 <div class="settings-submenu-row" id="settings-tabs" {% if not settings_active %}hidden{% endif %}>
 <nav class="settings-tabs" aria-label="Setting navigation">
@@ -55,6 +93,90 @@
   const dateForm = document.getElementById('shared-production-date');
   const dateInput = document.getElementById('production_date');
   if (!dateForm || !dateInput) return;
+  const navigationStorageKey = 'fittingmes.main-menu.submenu.v1';
+  const groupLinks = {
+    production: Array.from(document.querySelectorAll('#production-tabs a') || []),
+    depallet: Array.from(document.querySelectorAll('#depallet-tabs a') || []),
+  };
+  const currentUrl = new URL(window.location.href);
+  const storedNavigation = (() => {
+    try {
+      return JSON.parse(
+        typeof sessionStorage === 'undefined'
+          ? '{}' : sessionStorage.getItem(navigationStorageKey) || '{}',
+      );
+    } catch (error) {
+      console.warn('Unable to read remembered menu destinations.', error);
+      return {};
+    }
+  })();
+  const saveDestination = (group, href) => {
+    storedNavigation[group] = href;
+    try {
+      if (typeof sessionStorage === 'undefined') return;
+      sessionStorage.setItem(navigationStorageKey, JSON.stringify(storedNavigation));
+    } catch (error) {
+      console.warn('Unable to remember menu destination.', error);
+    }
+  };
+  const menuGroupForUrl = url => {
+    if (url.pathname === '/depallet' ||
+        (url.pathname.startsWith('/reject') &&
+         url.searchParams.get('workflow') === 'depallet')) return 'depallet';
+    if (url.pathname === '/' || url.pathname === '/logger' ||
+        url.pathname === '/logger/summary' ||
+        url.pathname === '/usage' ||
+        (url.pathname.startsWith('/reject') &&
+         url.searchParams.get('workflow') !== 'depallet')) return 'production';
+    return null;
+  };
+  const currentGroup = menuGroupForUrl(currentUrl);
+  const preserveRouteContext = (destination, group) => {
+    const pathname = destination.pathname;
+    const isRejectRoute = pathname.startsWith('/reject');
+    const supportsProductionId = pathname === '/' || pathname === '/depallet' ||
+      isRejectRoute;
+    const supportsDepalletId = group === 'depallet' &&
+      (pathname === '/depallet' || isRejectRoute);
+    const supportsShiftId = isRejectRoute;
+    if (supportsProductionId && currentUrl.searchParams.has('production_id')) {
+      destination.searchParams.set(
+        'production_id', currentUrl.searchParams.get('production_id'),
+      );
+    }
+    if (supportsDepalletId && currentUrl.searchParams.has('depallet_id')) {
+      destination.searchParams.set(
+        'depallet_id', currentUrl.searchParams.get('depallet_id'),
+      );
+    }
+    if (supportsShiftId && currentUrl.searchParams.has('shift_id')) {
+      destination.searchParams.set('shift_id', currentUrl.searchParams.get('shift_id'));
+    }
+  };
+  const routeForGroup = (group, link) => {
+    const destination = new URL(
+      storedNavigation[group] || link.href,
+      window.location.href,
+    );
+    destination.searchParams.set('production_date', dateInput.value);
+    if (menuGroupForUrl(currentUrl) === group) {
+      preserveRouteContext(destination, group);
+    }
+    return destination;
+  };
+  for (const group of ['production', 'depallet']) {
+    const activeLink = groupLinks[group].find(
+      link => link.getAttribute('aria-current') === 'page',
+    );
+    if (activeLink) {
+      const destination = new URL(activeLink.href, window.location.href);
+      if (currentGroup === group) {
+        destination.searchParams.set('production_date', dateInput.value);
+        preserveRouteContext(destination, group);
+      }
+      saveDestination(group, destination.pathname + destination.search);
+    }
+  }
   const loadedDate = dateInput.value;
   dateInput.addEventListener('change', () => {
     if (!dateInput.value || !dateInput.validity.valid || dateInput.value === loadedDate) return;
@@ -77,11 +199,53 @@
   });
   const settingsToggle = document.getElementById('settings-toggle');
   const settingsTabs = document.getElementById('settings-tabs');
-  if (!settingsToggle || !settingsTabs) return;
-  settingsToggle.addEventListener('click', () => {
-    const expanded = settingsToggle.getAttribute('aria-expanded') === 'true';
-    settingsToggle.setAttribute('aria-expanded', String(!expanded));
-    settingsTabs.hidden = expanded;
+  const productionToggle = document.getElementById('production-toggle');
+  const productionTabs = document.getElementById('production-tabs');
+  const depalletToggle = document.getElementById('depallet-toggle');
+  const depalletTabs = document.getElementById('depallet-tabs');
+  const pageTabs = document.querySelector('.page-tabs');
+  const setTemporaryNavigation = (toggle, active) => {
+    if (!toggle) return;
+    toggle.classList.toggle('temporary-active', active);
+    if (pageTabs) pageTabs.classList.toggle('temporary-navigation-active', active);
+  };
+  const groups = [
+    {toggle: settingsToggle, tabs: settingsTabs},
+    {toggle: productionToggle, tabs: productionTabs},
+    {toggle: depalletToggle, tabs: depalletTabs},
+  ];
+  const closeOtherGroups = current => {
+    for (const group of groups) {
+      if (group === current || !group.toggle || !group.tabs) continue;
+      group.toggle.setAttribute('aria-expanded', 'false');
+      group.tabs.hidden = true;
+      setTemporaryNavigation(group.toggle, false);
+    }
+  };
+  const bindToggle = group => {
+    if (!group.toggle || !group.tabs) return;
+    group.toggle.addEventListener('click', () => {
+      if (group.menuGroup && currentGroup !== group.menuGroup &&
+          groupLinks[group.menuGroup].length) {
+        const link = groupLinks[group.menuGroup][0];
+        if (link) {
+          window.location.assign(
+            routeForGroup(group.menuGroup, link).toString(),
+          );
+          return;
+        }
+      }
+      const expanded = group.toggle.getAttribute('aria-expanded') === 'true';
+      if (!expanded) closeOtherGroups(group);
+      group.toggle.setAttribute('aria-expanded', String(!expanded));
+      group.tabs.hidden = expanded;
+      setTemporaryNavigation(group.toggle, !expanded);
+    });
+  };
+  groups.forEach(group => {
+    if (group.toggle === productionToggle) group.menuGroup = 'production';
+    if (group.toggle === depalletToggle) group.menuGroup = 'depallet';
+    bindToggle(group);
   });
 })();
 </script>

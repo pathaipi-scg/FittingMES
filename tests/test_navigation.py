@@ -38,11 +38,15 @@ class NavigationTests(unittest.TestCase):
 
     def test_date_survives_complete_tab_cycle(self):
         body=self.page('/','production_date=2026-09-14')
-        for path in ('/usage','/depallet','/prod-api','/reject-api','/press-mc','/mould','/logger/master','/print-prod','/print-oee','/'):
-            nav=re.search(r'<nav class="page-tabs".*?</nav>.*?<div class="settings-submenu-row".*?</div>',body,re.S)[0]
+        self.assertIn('id="production-toggle"',body)
+        for path in ('/usage','/depallet','/prod-api','/reject-api','/press-mc','/mould','/logger/master','/logger','/reject','/print-prod','/print-oee'):
+            nav=re.search(r'<nav class="page-tabs".*?</nav>.*?<div class="production-submenu-row".*?</div>.*?<div class="settings-submenu-row".*?</div>',body,re.S)[0]
             target=next(html.unescape(url) for url in re.findall(r'href="([^"]+)"',nav)
                         if urlsplit(html.unescape(url)).path==path)
-            self.assertEqual(target,path+'?production_date=2026-09-14')
+            expected=path+'?production_date=2026-09-14'
+            if path == '/reject':
+                expected += '&workflow=production'
+            self.assertEqual(target,expected)
             split=urlsplit(target)
             body=self.page(split.path,split.query)
             self.assertIn('value="2026-09-14"',self.shared_form(body))
@@ -73,7 +77,6 @@ class NavigationTests(unittest.TestCase):
         body=self.page('/','production_date=2026-09-21&production_id=7')
         self.assertIn('name="production_id" value="7"',self.shared_form(body))
         self.assertIn('action="/lots/7/production"',body)
-        self.assertIn('production_date=2026-09-21&amp;production_id=7',body)
         changed=self.page('/','production_date=2026-09-22&production_id=7&edit=true')
         self.assertNotIn('name="production_id"',self.shared_form(changed))
         self.assertNotIn('action="/lots/7/production"',changed)
@@ -103,8 +106,25 @@ class NavigationTests(unittest.TestCase):
             main=re.search(r'<div class="page-tabs-main">(.*?)</div>',row[1],re.S)
             self.assertIsNotNone(main)
             self.assertEqual(re.findall(r'>(PRODUCTION|LOGGER|REJECT|USAGE|DEPALLET|PROD API|REJECT API|PRINT PROD|PRINT OEE)</a>',main[1]),
-                             ['PRODUCTION','LOGGER','REJECT','USAGE','DEPALLET','PROD API','REJECT API','PRINT PROD','PRINT OEE'])
+                             ['PROD API','REJECT API','PRINT PROD','PRINT OEE'])
+            main_order = [
+                'id="production-toggle"',
+                'id="depallet-toggle"',
+                '>PROD API</a>',
+                '>REJECT API</a>',
+                '>PRINT PROD</a>',
+                '>PRINT OEE</a>',
+            ]
+            self.assertEqual(
+                [main[1].index(marker) for marker in main_order],
+                sorted(main[1].index(marker) for marker in main_order),
+            )
             self.assertIn('>SETTING</button>',row[1])
+            self.assertIn('>PRODUCTION</button>',row[1])
+            self.assertIn('>DEPALLET</button>',row[1])
+            self.assertIn('.page-tabs button{',body)
+            self.assertIn('.page-tabs-main button{margin-left:0}',body)
+            self.assertEqual(body.count('margin-left:auto'),1)
             primary=re.search(r'<div class="shared-header-primary-row">(.*?)</div>\s*</div>',row[1],re.S)
             self.assertIsNotNone(primary)
             self.assertIn('id="settings-toggle"',primary[1])
@@ -145,3 +165,83 @@ class NavigationTests(unittest.TestCase):
                     self.assertIn('aria-current="page"',submenu[0])
                 else:
                     self.assertNotIn('aria-current="page"',submenu[0])
+
+    def test_production_menu_state_and_submenu_links(self):
+        for path, active in (('/', True), ('/logger', True), ('/reject', True), ('/usage', True),
+                             ('/depallet', False), ('/prod-api', False), ('/reject-api', False),
+                             ('/print-prod', False), ('/print-oee', False), ('/press-mc', False)):
+            with self.subTest(path=path):
+                body=self.page(path,'production_date=2026-09-14')
+                production=re.search(r'<button[^>]*id="production-toggle".*?</button>',body,re.S)
+                self.assertIsNotNone(production)
+                self.assertIn('aria-expanded="' + ('true' if active else 'false') + '"',production[0])
+                self.assertEqual('is-active' in production[0], active)
+                submenu=re.search(r'<div class="production-submenu-row".*?</div>',body,re.S)
+                self.assertIsNotNone(submenu)
+                self.assertEqual('hidden' in submenu[0], not active)
+                self.assertEqual(
+                    re.findall(r'href="([^"]+)"[^>]*>(PRODUCTION|LOGGER|REJECT|USAGE)</a>',submenu[0]),
+                    [
+                        ('/?production_date=2026-09-14', 'PRODUCTION'),
+                        ('/logger?production_date=2026-09-14', 'LOGGER'),
+                        ('/reject?production_date=2026-09-14&amp;workflow=production', 'REJECT'),
+                        ('/usage?production_date=2026-09-14', 'USAGE'),
+                    ],
+                )
+                if path == '/':
+                    self.assertIn('href="/?production_date=2026-09-14"',submenu[0])
+                    self.assertIn('aria-current="page"',submenu[0])
+                elif path in ('/logger', '/reject', '/usage'):
+                    self.assertIn('aria-current="page"',submenu[0])
+                else:
+                    self.assertNotIn('aria-current="page"',submenu[0])
+
+    def test_main_and_setting_active_state_are_exclusive(self):
+        for path, main_label in (
+            ('/depallet', 'DEPALLET'),
+            ('/prod-api', 'PROD API'), ('/reject-api', 'REJECT API'),
+            ('/print-prod', 'PRINT PROD'), ('/print-oee', 'PRINT OEE'),
+        ):
+            body=self.page(path,'production_date=2026-09-14')
+            self.assertEqual(
+                re.findall(r'<a href="[^"]+" aria-current="page">([^<]+)</a>',body),
+                [main_label],
+            )
+            self.assertNotIn('class="production-toggle is-active"',body)
+            self.assertNotIn('class="is-active settings-toggle"',body)
+            self.assertRegex(body,r'<div class="production-submenu-row" id="production-tabs" hidden>')
+            self.assertRegex(body,r'<div class="settings-submenu-row" id="settings-tabs" hidden>')
+        for path, label in (('/press-mc', 'PressMc'), ('/mould', 'Mould'), ('/logger/master', 'Log Master')):
+            body=self.page(path,'production_date=2026-09-14')
+            self.assertIn('class="is-active settings-toggle"',body)
+            self.assertRegex(body,r'<div class="settings-submenu-row" id="settings-tabs" >')
+            self.assertRegex(body,r'<div class="production-submenu-row" id="production-tabs" hidden>')
+            self.assertIn('aria-current="page">'+label+'</a>',body)
+
+    def test_production_submenu_preserves_selected_lot_context(self):
+        body=self.page('/','production_date=2026-09-21&production_id=7')
+        submenu=re.search(r'<div class="production-submenu-row".*?</div>',body,re.S)[0]
+        self.assertIn('href="/?production_date=2026-09-21&amp;production_id=7"',submenu)
+
+    def test_depallet_menu_and_reject_context(self):
+        body=self.page('/depallet','production_date=2026-09-14')
+        depallet=re.search(r'<button[^>]*id="depallet-toggle".*?</button>',body,re.S)[0]
+        self.assertIn('aria-expanded="true"',depallet)
+        self.assertIn('is-active',depallet)
+        self.assertRegex(body,r'<div class="depallet-submenu-row" id="depallet-tabs" >')
+        self.assertRegex(body,r'<div class="production-submenu-row" id="production-tabs" hidden>')
+        submenu=re.search(r'<div class="depallet-submenu-row".*?</div>',body,re.S)[0]
+        self.assertEqual(
+            re.findall(r'href="([^"]+)"[^>]*>(DEPALLET|REJECT)</a>',submenu),
+            [
+                ('/depallet?production_date=2026-09-14', 'DEPALLET'),
+                ('/reject?production_date=2026-09-14&amp;workflow=depallet', 'REJECT'),
+            ],
+        )
+        body=self.page('/reject','production_date=2026-09-14&workflow=depallet')
+        self.assertIn('class="depallet-toggle is-active"',body)
+        self.assertRegex(body,r'<div class="depallet-submenu-row" id="depallet-tabs" >')
+        self.assertRegex(body,r'<div class="production-submenu-row" id="production-tabs" hidden>')
+        submenu=re.search(r'<div class="depallet-submenu-row".*?</div>',body,re.S)[0]
+        self.assertIn('aria-current="page">REJECT</a>',submenu)
+        self.assertNotIn('class="production-toggle is-active"',body)
