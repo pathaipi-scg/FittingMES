@@ -18,7 +18,7 @@ def _client_date(value):
 def reject_page_context(data, production_date, workflow=None, shift_id=None,
                         line_equipment_id=None, production_id=None,
                         depallet_id=None, entries=None,
-                        saved=False, error=None, form=None):
+                        saved=False, deleted=False, error=None, form=None):
     form = dict(form or {})
     shifts = list(data.get("shifts") or [])
     lines = list(data.get("lines") or [])
@@ -232,6 +232,7 @@ def reject_page_context(data, production_date, workflow=None, shift_id=None,
         entry_id=str(form.get("entry_id") or ""),
         form=form,
         saved=saved,
+        deleted=deleted,
         error=error,
         cal_url=cal_url,
         reject_client_data=client_data,

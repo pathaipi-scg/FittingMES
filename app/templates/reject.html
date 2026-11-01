@@ -26,6 +26,7 @@
 </style>
 {% if error %}<div class="reject-error" role="alert">{{ error }}</div>{% endif %}
 {% if saved %}<div class="reject-success" role="status">REJECT entry saved.</div>{% endif %}
+{% if deleted %}<div class="reject-success" role="status">REJECT entry deleted.</div>{% endif %}
 
 <section class="panel" aria-label="REJECT entry">
 <form id="reject-form" class="reject-context" method="post" action="/reject/save?workflow={{ workflow }}">
@@ -72,7 +73,7 @@
 <option value="{{ item.RejectReasonID }}" data-scope-id="{{ item.RejectSourceScopeID }}" data-scope-code="{{ item.SourceScopeCode }}" {% if selected_reason_id|string == item.RejectReasonID|string %}selected{% endif %}>{{ item.ReasonCode }} · {{ item.ReasonNameTH }}</option>
 {% endfor %}
 </select></label>
-<div class="reject-actions"><button class="primary" id="reject-save" type="submit">{% if entry_id %}SAVE EDIT{% else %}SAVE{% endif %}</button><button id="reject-cancel" type="button" {% if not entry_id %}hidden{% endif %}>CANCEL</button></div>
+<div class="reject-actions"><button class="primary" id="reject-save" type="submit">{% if entry_id %}SAVE EDIT{% else %}SAVE{% endif %}</button><button id="reject-cancel" type="button" {% if not entry_id %}hidden{% endif %}>CANCEL</button><button class="button danger" id="reject-delete" type="button" disabled>DELETE</button></div>
 {% if cal_url %}<button class="button" id="reject-cal" type="button">REJECT CAL</button>{% endif %}
 </div>
 </form>
@@ -86,7 +87,7 @@
 <tbody>
 {% for item in entries %}
 <tr>
-<td class="select-cell"><input type="radio" name="reject-selected-row" data-reject-entry='{{ {"entry_id":item.EntryID,"workflow":workflow,"shift_id":item.ShiftID,"line_equipment_id":item.LineEquipmentID,"production_id":item.ProductionID,"depallet_id":item.DepalletID,"source_equipment_id":item.SourceEquipmentID,"reject_reason_id":item.RejectReasonID,"reject_source_scope_id":item.RejectSourceScopeID,"qty":item.Qty}|tojson }}' aria-label="Select REJECT entry {{ item.EntryID }}"></td>
+<td class="select-cell"><input type="radio" name="reject-selected-row" data-reject-entry='{{ {"entry_id":item.EntryID,"workflow":workflow,"shift_id":item.ShiftID,"line_equipment_id":item.LineEquipmentID,"production_id":item.ProductionID,"depallet_id":item.DepalletID,"source_equipment_id":item.SourceEquipmentID,"reject_reason_id":item.RejectReasonID,"reject_source_scope_id":item.RejectSourceScopeID,"qty":item.Qty,"source_label":item.SourceLabel,"line_label":item.LineLabel,"shift_code":item.ShiftCode,"lot_label":item.LotNo ~ " · " ~ (item.ProductName or item.ProductFamily),"reason_code":item.ReasonCode,"reason_name":item.ReasonNameTH}|tojson }}' aria-label="Select REJECT entry {{ item.EntryID }}"></td>
 <td>{{ item.SourceLabel }}</td><td>{{ item.LineLabel }}</td><td>{{ item.ShiftCode }}</td>
 <td>{{ item.LotNo }} · {{ item.ProductName or item.ProductFamily }}{% if workflow == 'depallet' %} · RUN {{ item.DepalletID }}{% endif %}</td>
 <td>{{ item.ReasonCode }}</td><td>{{ item.ReasonNameTH }}</td><td class="qty-cell">{{ item.Qty }}</td>
@@ -127,10 +128,13 @@ function rejectSourceOptions(sources, lineId, scopeCode = null, workflow = 'prod
   const qty = document.getElementById('reject-qty');
   const save = document.getElementById('reject-save');
   const cancel = document.getElementById('reject-cancel');
+  const deleteButton = document.getElementById('reject-delete');
   const cal = document.getElementById('reject-cal');
   const productionDate = document.getElementById('reject-production-date');
   const isDepallet = workflow === 'depallet';
   const rejectContextStorageKey = 'fittingmes.reject.context.v1';
+  const depalletSelectionStorageKey =
+    'fittingmes.depallet.' + productionDate.value;
   let contextInitialized = false;
 
   const option = (value, label, data = {}) => {
@@ -160,6 +164,16 @@ function rejectSourceOptions(sources, lineId, scopeCode = null, workflow = 'prod
     item => String(item.EquipmentID) === source.value);
   const hasOption = (select, value) =>
     Array.from(select.options).some(item => item.value === String(value));
+  function rememberDepalletSelection() {
+    if (!isDepallet || !depalletId.value) return;
+    try {
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.setItem(depalletSelectionStorageKey, depalletId.value);
+      }
+    } catch (error) {
+      console.warn('Unable to remember Depallet selection from REJECT.', error);
+    }
+  }
 
   function readRememberedContext() {
     let serialized;
@@ -215,7 +229,8 @@ function rejectSourceOptions(sources, lineId, scopeCode = null, workflow = 'prod
     return true;
   }
 
-  const startupContext = readRememberedContext();
+  const startupContext = isDepallet && depalletId.value
+    ? null : readRememberedContext();
 
   function updateWorkflowLabels() {
     source.required = !isDepallet;
@@ -326,6 +341,7 @@ function rejectSourceOptions(sources, lineId, scopeCode = null, workflow = 'prod
     for (const radio of document.querySelectorAll('[data-reject-entry]')) {
       radio.checked = false;
     }
+    if (deleteButton) deleteButton.disabled = true;
   }
 
   shift.addEventListener('change', () => {
@@ -339,6 +355,14 @@ function rejectSourceOptions(sources, lineId, scopeCode = null, workflow = 'prod
   });
   lot.addEventListener('change', () => {
     syncSelectedIdentity();
+    if (isDepallet) {
+      rememberDepalletSelection();
+      const url = new URL(window.location.href);
+      url.searchParams.set('production_id', productionId.value);
+      url.searchParams.set('depallet_id', depalletId.value);
+      url.searchParams.set('production_date', productionDate.value);
+      window.history.replaceState(null, '', url);
+    }
     updateReasons();
     updateSources(null, isDepallet ? source.value : '');
     scopeId.value = '';
@@ -388,8 +412,54 @@ function rejectSourceOptions(sources, lineId, scopeCode = null, workflow = 'prod
       save.textContent = 'SAVE EDIT';
       cancel.hidden = false;
       qty.focus();
+      if (deleteButton) deleteButton.disabled = false;
     });
   });
+
+  if (deleteButton) {
+    deleteButton.addEventListener('click', () => {
+      const selected = document.querySelector('[data-reject-entry]:checked');
+      if (!selected) return;
+      const row = JSON.parse(selected.dataset.rejectEntry);
+      const details = [
+        `Entry ID: ${row.entry_id}`,
+        `Source Press: ${row.source_label || '—'}`,
+        `Line: ${row.line_label || '—'}`,
+        `Shift: ${row.shift_code || '—'}`,
+        `Product / Lot: ${row.lot_label || '—'}${isDepallet ? ` · RUN ${row.depallet_id}` : ''}`,
+        `Reject Code and Reason: ${row.reason_code || '—'} · ${row.reason_name || '—'}`,
+        `Quantity: ${row.qty}`,
+      ].join('\n');
+      const workflowLabel = isDepallet ? 'Depallet' : 'Production';
+      if (!window.confirm(`Delete this ${workflowLabel} REJECT entry?\n\n${details}`)) return;
+      const form = document.createElement('form');
+      form.method = 'post';
+      form.action = `/reject/delete?workflow=${encodeURIComponent(workflow)}`;
+      for (const [name, value] of Object.entries({
+        production_date: productionDate.value,
+        workflow: 'production',
+        entry_id: row.entry_id,
+        production_id: row.production_id,
+        shift_id: row.shift_id,
+        line_equipment_id: row.line_equipment_id,
+      })) {
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = name;
+        input.value = value;
+        form.appendChild(input);
+      }
+      if (isDepallet) {
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = 'depallet_id';
+        input.value = row.depallet_id;
+        form.appendChild(input);
+      }
+      document.body.appendChild(form);
+      form.submit();
+    });
+  }
 
   updateWorkflowLabels();
   if (!restoreContext(startupContext)) updateLots(lot.value);
@@ -402,6 +472,7 @@ function rejectSourceOptions(sources, lineId, scopeCode = null, workflow = 'prod
   }
   workflowValue.value = workflow;
   contextInitialized = true;
+  rememberDepalletSelection();
   rememberContext();
 })();
 </script>

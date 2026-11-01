@@ -27,7 +27,8 @@ def request():
 
 def insert_test_lot(conn, plan=PLAN, prefix='B066909', running_no=1, family_id=1):
     with patch('app.lots.lot_prefix', return_value=prefix):
-        return insert_lot(conn, plan, '06', prefix, running_no, product_family_id=family_id)
+        suffix = running_no if isinstance(running_no, str) else f'{running_no:02d}'
+        return insert_lot(conn, plan, '06', prefix, suffix, product_family_id=family_id)
 
 class ProductionTests(unittest.TestCase):
     def test_prefix(self):
@@ -94,21 +95,48 @@ class ProductionTests(unittest.TestCase):
         self.assertEqual(response.status_code,400)
         conn.commit.assert_not_called()
 
+    def test_remembered_lot_is_restored_only_for_requested_date(self):
+        response, _ = self.render(
+            production_date=DAY, remembered_production_id=LOT['ProductionID'],
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['current']['ProductionID'], LOT['ProductionID'])
+        self.assertIn('checked', response.body.decode())
+        self.assertIn('remembered_lot_invalid', response.context)
+        response, _ = self.render(
+            production_date=date(2026, 9, 22), remembered_production_id=LOT['ProductionID'],
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.context['current'])
+        self.assertTrue(response.context['remembered_lot_invalid'])
+
+    def test_invalid_remembered_lot_falls_back_without_error(self):
+        response, conn = self.render(
+            production_date=DAY, remembered_production_id=999,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.context['current'])
+        self.assertTrue(response.context['remembered_lot_invalid'])
+        conn.commit.assert_not_called()
+
     def test_list_order(self):
         cursor=MagicMock(); cursor.fetchall.return_value=[]
         read_lots(cursor)
         sql=cursor.execute.call_args.args[0]
         self.assertIn('ORDER BY p.ProdDate DESC, p.LotSequence, p.ProductionID',sql)
         self.assertIn('WHERE p.IsActive=1',sql)
+        self.assertIn('later.LotPrefix=p.LotPrefix',sql)
+        self.assertIn('later.SequenceMonth=p.SequenceMonth',sql)
+        self.assertNotIn('later.IsActive=1',sql)
 
     def test_mapping_and_create_redirect(self):
         conn=MagicMock(); conn.cursor.return_value.fetchone.side_effect=[
             (1,'06'),('NeuFit / NeuStile','Product'),('B',),(1,)]
         with patch('app.main.get_connection',return_value=conn),patch('app.main.read_lots',return_value=[]),patch('app.main.read_plans',return_value=[dict(PLAN)]),patch('app.main.insert_lot',return_value=8) as insert:
-            response=production_page(request(),'p1',create=True,running_no=1,production_date=DAY)
+            response=production_page(request(),'p1',create=True,running_no='01',production_date=DAY)
         self.assertEqual(response.status_code,303)
         self.assertIn('production_id=8',response.headers['location'])
-        self.assertEqual(insert.call_args.args[2:5],('06','B066909',1))
+        self.assertEqual(insert.call_args.args[2:5],('06','B066909','01'))
 
     def test_mapped_product_header_includes_authoritative_product_name(self):
         conn = MagicMock()
@@ -122,6 +150,41 @@ class ProductionTests(unittest.TestCase):
             response = production_page(request(), 'p1', production_date=DAY)
         self.assertEqual(response.status_code, 200)
         self.assertIn('Prestige Common / 13 / Angle HIP', response.body.decode())
+
+    def test_lot_create_form_suggests_max_plus_one_and_exposes_two_digit_override(self):
+        conn = MagicMock()
+        conn.cursor.return_value.fetchone.return_value=('Prestige Common','Angle HIP')
+        with patch('app.main.get_connection', return_value=conn), \
+             patch('app.main.read_lots', return_value=[]), \
+             patch('app.main.read_plans', return_value=[dict(PLAN)]), \
+             patch('app.main.read_production_reject_context', return_value=dict(PRODUCTION_REJECT_CONTEXT)), \
+             patch('app.main.read_mapping', return_value=(4, '13')), \
+             patch('app.main.next_running_no', return_value=3), \
+             patch('app.main.lot_prefix', return_value='I136909'):
+            response = production_page(request(), 'p1', production_date=DAY)
+        text = response.body.decode()
+        self.assertIn('id="running_no" value="3" readonly', text)
+        self.assertIn('name="running_no" type="text" inputmode="numeric" maxlength="2"', text)
+        self.assertIn('value="03"', text)
+        self.assertIn('data-historical-max="2"', text)
+        self.assertIn('id="create-lot-button"', text)
+        self.assertIn('create.disabled = Boolean(message);', text)
+
+    def test_exhausted_sequence_disables_create_lot(self):
+        conn = MagicMock()
+        conn.cursor.return_value.fetchone.return_value=('Prestige Common','Angle HIP')
+        with patch('app.main.get_connection', return_value=conn), \
+             patch('app.main.read_lots', return_value=[]), \
+             patch('app.main.read_plans', return_value=[dict(PLAN)]), \
+             patch('app.main.read_production_reject_context', return_value=dict(PRODUCTION_REJECT_CONTEXT)), \
+             patch('app.main.read_mapping', return_value=(4, '13')), \
+             patch('app.main.next_running_no', return_value=100), \
+             patch('app.main.lot_prefix', return_value='I136909'):
+            response = production_page(request(), 'p1', production_date=DAY)
+        text = response.body.decode()
+        self.assertIn('Next Running No</label><input id="running_no" value="100" readonly', text)
+        self.assertIn('Running number sequence exhausted (maximum 99).', text)
+        self.assertIn('id="create-lot-button" class="primary" type="submit" disabled', text)
 
     def test_workflow_product_does_not_push_lot_controls_right(self):
         response, _ = self.render(production_id=7)
@@ -173,7 +236,7 @@ class TransactionTests(unittest.TestCase):
         conn.commit.assert_called_once()
     def test_create_history_and_lock(self):
         conn=MagicMock(); cursor=conn.cursor.return_value
-        cursor.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),None,(1,),(1,),(7,)]
+        cursor.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),None,(1,),None,(1,),(7,)]
         self.assertEqual(insert_test_lot(conn),7)
         sqls=[c.args[0] for c in cursor.execute.call_args_list]
         self.assertIn('sp_getapplock',sqls[0])
@@ -186,11 +249,53 @@ class TransactionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'already assigned'): insert_test_lot(conn)
         conn.rollback.assert_called_once(); conn.commit.assert_not_called()
 
-    def test_stale_or_gap_number_rejected(self):
-        for number in (1,3):
-            conn=MagicMock(); conn.cursor.return_value.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),None,(2,)]
-            with self.assertRaisesRegex(ValueError,'Running number'): insert_test_lot(conn,running_no=number)
+    def test_suffix_at_or_below_historical_max_rejected(self):
+        for number in ('01','02'):
+            conn=MagicMock(); conn.cursor.return_value.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),None,(3,)]
+            with self.assertRaisesRegex(ValueError,'greater than it'): insert_test_lot(conn,running_no=number)
             conn.commit.assert_not_called()
+
+    def test_manual_override_above_max_is_inserted(self):
+        for suffix in ('04','05'):
+            conn=MagicMock(); cursor=conn.cursor.return_value
+            cursor.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),None,(3,),None,(1,),(7,)]
+            self.assertEqual(insert_test_lot(conn,running_no=suffix),7)
+            insert_args=next(call.args for call in cursor.execute.call_args_list
+                             if 'INSERT INTO dbo.ProductionLot' in call.args[0])
+            self.assertEqual(insert_args[8:10],(int(suffix),f'B066909{suffix}'))
+            conn.commit.assert_called_once()
+
+    def test_suffix_validation_and_leading_zero_preservation(self):
+        for suffix in ('1','001','00','٠1',' 1','+1'):
+            conn=MagicMock()
+            with self.assertRaisesRegex(ValueError,'two ASCII digits|between 01 and 99'):
+                insert_test_lot(conn,running_no=suffix)
+            conn.rollback.assert_called_once()
+            self.assertFalse(any('INSERT INTO dbo.ProductionLot' in call.args[0]
+                                 for call in conn.cursor.return_value.execute.call_args_list))
+
+        conn=MagicMock(); cursor=conn.cursor.return_value
+        cursor.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),None,(1,),None,(1,),(7,)]
+        self.assertEqual(insert_test_lot(conn,running_no='01'),7)
+        insert_args=next(call.args for call in cursor.execute.call_args_list
+                         if 'INSERT INTO dbo.ProductionLot' in call.args[0])
+        self.assertEqual(insert_args[8:10],(1,'B06690901'))
+
+    def test_duplicate_lot_number_rejected_even_when_above_running_max(self):
+        conn=MagicMock(); cursor=conn.cursor.return_value
+        cursor.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),None,(3,),('duplicate',)]
+        with self.assertRaisesRegex(ValueError,'already exists'):
+            insert_test_lot(conn,running_no='04')
+        conn.rollback.assert_called_once()
+        self.assertFalse(any('INSERT INTO dbo.ProductionLot' in call.args[0]
+                             for call in cursor.execute.call_args_list))
+
+    def test_running_sequence_exhausted_at_99(self):
+        conn=MagicMock(); cursor=conn.cursor.return_value
+        cursor.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),None,(100,)]
+        with self.assertRaisesRegex(ValueError,'exhausted'):
+            insert_test_lot(conn,running_no='99')
+        conn.rollback.assert_called_once()
 
     def setup_update(self, next_no=2):
         conn=MagicMock(); cursor=conn.cursor.return_value
@@ -241,13 +346,14 @@ class TransactionTests(unittest.TestCase):
         self.assertNotIn('LotNo=',args[0]); self.assertNotIn('ProdDate=',args[0])
         self.assertEqual(cursor.execute.call_args.args[-1],'PLAN_CHANGE')
 
-    def test_void_releases_plan_and_reuses_number(self):
+    def test_void_releases_plan_but_keeps_running_number_consumed(self):
         conn,cursor=self.setup_update()
         update_lot(conn,7,void=True)
-        cursor.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),None,(1,),(1,),(8,)]
-        self.assertEqual(insert_test_lot(conn),8)
-        checks=[c.args[0] for c in cursor.execute.call_args_list if 'MAX(RunningNo)' in c.args[0] or 'SELECT LotNo' in c.args[0]]
-        self.assertTrue(all('IsActive=1' in sql for sql in checks))
+        cursor.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),None,(2,),None,(1,),(8,)]
+        self.assertEqual(insert_test_lot(conn,running_no='02'),8)
+        checks=[c.args[0] for c in cursor.execute.call_args_list if 'MAX(RunningNo)' in c.args[0]]
+        self.assertTrue(checks)
+        self.assertTrue(all('IsActive=1' not in sql for sql in checks))
 
     def test_history_failure_rolls_back(self):
         conn,cursor=self.setup_update()

@@ -87,6 +87,20 @@ class NavigationTests(unittest.TestCase):
         self.assertNotIn('href="/?production_id=7&production_date=2026-09-21"',changed)
         self.assertIn('No Production Lots for this date.',changed)
 
+    def test_production_to_logger_preserves_selected_lot(self):
+        body = self.page('/', 'production_date=2026-09-21&production_id=7')
+        nav = re.search(
+            r'<div class="production-submenu-row".*?</div>', body, re.S
+        )[0]
+        logger_link = next(
+            html.unescape(url) for url in re.findall(r'href="([^"]+)"', nav)
+            if urlsplit(html.unescape(url)).path == '/logger'
+        )
+        self.assertEqual(
+            logger_link,
+            '/logger?production_date=2026-09-21&production_id=7',
+        )
+
     def test_lot_only_deep_link_uses_lot_date_and_plan_form_keeps_date(self):
         body=self.page('/','production_id=7')
         self.assertIn('value="2026-09-21"',self.shared_form(body))
@@ -222,6 +236,13 @@ class NavigationTests(unittest.TestCase):
         body=self.page('/','production_date=2026-09-21&production_id=7')
         submenu=re.search(r'<div class="production-submenu-row".*?</div>',body,re.S)[0]
         self.assertIn('href="/?production_date=2026-09-21&amp;production_id=7"',submenu)
+
+    def test_production_navigation_reads_date_scoped_remembered_lot(self):
+        body=self.page('/logger','production_date=2026-09-21')
+        self.assertIn("fittingmes.production-lot.' + productionDate",body)
+        self.assertIn("remembered_production_id",body)
+        self.assertIn("applyRememberedLot(destination)",body)
+        self.assertIn("data-production-date",self.page('/', 'production_date=2026-09-21'))
 
     def test_depallet_menu_and_reject_context(self):
         body=self.page('/depallet','production_date=2026-09-14')

@@ -37,7 +37,7 @@ from app.depallet_reject_final import (read_depallet_reject_cal,
                                        read_depallet_reject_context,
                                        save_depallet_reject_final)
 from app.products import (read_families, lot_prefix, read_products, read_mapping,
-                          confirm_mapping, selected_product, month_start)
+                          confirm_mapping, selected_product)
 from app.production_data import (read_production_data, save_production_data, calculate,
                                   read_shift_rules)
 from app.press_mc import (page_context as press_mc_context, add_press, update_press_name,
@@ -45,6 +45,7 @@ from app.press_mc import (page_context as press_mc_context, add_press, update_pr
 from app.mould import (page_context as mould_context, register_mould, update_mould_info,
                        send_to_recondition, return_from_recondition, set_mould_status)
 from app.press_production import (build_press_production_context,
+                                  read_assigned_press_codes,
                                   undo_release_press_production,
                                   release_press_production,
                                   save_press_production as save_press_production_row)
@@ -56,12 +57,13 @@ from app.browser_pdf import (PdfGenerationError, generate_print_oee_pdf,
                              finish_pdf_process)
 from app.logger import (LoggerValidationError, read_logger_events,
                         read_logger_masters, save_logger_event,
-                        update_logger_event)
+                        update_logger_event, delete_logger_event)
 from app.logger_page import (cause_suggestion, logger_form_input,
                              logger_page_context, normalize_form_selection)
 from app.logger_master import read_logger_master_review
 from app.logger_summary import read_logger_time_summary, read_logger_press_guide
-from app.reject import (RejectValidationError, read_reject_entries,
+from app.reject import (RejectValidationError,
+delete_reject_entry, read_reject_entries,
                         read_reject_page_data, save_reject_entry)
 from app.reject_page import reject_page_context
 from app.reject_summary import read_reject_cal
@@ -75,35 +77,45 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 
 def logger_load_context(production_date, saved=False, error=None, form=None,
-                        preset_shift_id=None):
+                        preset_shift_id=None, production_id=None):
     with closing(get_connection()) as conn:
         cursor = conn.cursor()
         masters = read_logger_masters(cursor)
         shift_rules = read_shift_rules(cursor, production_date)
         events = read_logger_events(cursor, production_date)
+        assigned_press_codes = (
+            read_assigned_press_codes(cursor, production_id)
+            if production_id is not None else None
+        )
     return logger_page_context(masters, production_date, logger_events=events, saved=saved,
                                error=error, form=form, shift_rules=shift_rules,
-                               preset_shift_id=preset_shift_id)
+                               preset_shift_id=preset_shift_id, production_id=production_id,
+                               assigned_press_codes=assigned_press_codes)
 
 
 @app.get('/logger', response_class=HTMLResponse)
 def logger_page(request: Request, production_date: date | None = None,
-                saved: bool = False, preset_shift_id: int | None = None):
+                saved: bool = False, deleted: bool = False,
+                preset_shift_id: int | None = None,
+                production_id: int | None = None):
     production_date = production_date or date.today()
     status = 200
     try:
-        context = logger_load_context(production_date, saved=saved,
+        context = logger_load_context(production_date, production_id=production_id, saved=saved,
                                       preset_shift_id=preset_shift_id)
+        context['deleted'] = deleted
     except ValueError as exc:
         context = dict(page_title='LOGGER', active_tab='logger',
                        production_date=production_date, error=str(exc), saved=False,
-                       logger_events=[])
+                       deleted=False, logger_events=[], production_id=production_id,
+                       assigned_press_instances_json='null')
         status = 400
     except Exception:
         context = dict(page_title='LOGGER', active_tab='logger',
                        production_date=production_date,
                        error='Unable to load LOGGER data. Please retry.', saved=False,
-                       logger_events=[])
+                       deleted=False, production_id=production_id,
+                       logger_events=[], assigned_press_instances_json='null')
         status = 503
     return templates.TemplateResponse(request=request, name='logger.html',
                                       context=context, status_code=status,
@@ -171,6 +183,26 @@ def save_logger_form(form):
     return data.production_date
 
 
+def delete_logger_form(form):
+    production_date = date.fromisoformat(str(form.get('production_date', '')))
+    with closing(get_connection()) as conn:
+        delete_logger_event(conn, form.get('logger_event_id', ''), production_date)
+    return production_date
+
+
+def _logger_production_id(form):
+    value = form.get('production_id')
+    try:
+        return int(value) if value not in (None, '') else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _logger_production_query(form):
+    production_id = _logger_production_id(form)
+    return f'&production_id={production_id}' if production_id is not None else ''
+
+
 @app.post('/logger/save', response_class=HTMLResponse)
 async def save_logger_route(request: Request):
     form = await request.form()
@@ -181,7 +213,8 @@ async def save_logger_route(request: Request):
         preset_query = (
             f'&preset_shift_id={preset_shift_id}' if preset_shift_id else '')
         return RedirectResponse(
-            f'/logger?production_date={production_date}{preset_query}&saved=true',
+            f'/logger?production_date={production_date}{preset_query}'
+            f'{_logger_production_query(form_values)}&saved=true',
                                 status_code=303)
     except LoggerValidationError as exc:
         try:
@@ -192,11 +225,14 @@ async def save_logger_route(request: Request):
             context = await run_in_threadpool(
                 logger_load_context, selected_date, False,
                 f'{exc.code}: {exc}', form_values,
-                form_values.get('preset_shift_id'))
+                form_values.get('preset_shift_id'),
+                production_id=_logger_production_id(form_values))
         except Exception:
             context = dict(page_title='LOGGER', active_tab='logger',
                            production_date=selected_date, error=str(exc),
-                           saved=False, form=form_values, logger_events=[])
+                           saved=False, form=form_values, logger_events=[],
+                           production_id=_logger_production_id(form_values),
+                           assigned_press_instances_json='null')
         return templates.TemplateResponse(request=request, name='logger.html',
                                           context=context, status_code=400,
                                           headers={'Cache-Control': 'no-store'})
@@ -207,9 +243,48 @@ async def save_logger_route(request: Request):
                             status_code=503)
 
 
+@app.post('/logger/delete', response_class=HTMLResponse)
+async def delete_logger_route(request: Request):
+    form_values = dict(await request.form())
+    try:
+        production_date = await run_in_threadpool(delete_logger_form, form_values)
+        preset_shift_id = form_values.get('preset_shift_id', '')
+        preset_query = f'&preset_shift_id={preset_shift_id}' if preset_shift_id else ''
+        return RedirectResponse(
+            f'/logger?production_date={production_date}{preset_query}'
+            f'{_logger_production_query(form_values)}&deleted=true',
+            status_code=303,
+        )
+    except LoggerValidationError as exc:
+        try:
+            selected_date = date.fromisoformat(str(form_values.get('production_date', '')))
+        except ValueError:
+            selected_date = date.today()
+        try:
+            context = await run_in_threadpool(
+                logger_load_context, selected_date, False,
+                f'{exc.code}: {exc}', None, form_values.get('preset_shift_id'),
+                production_id=_logger_production_id(form_values))
+        except Exception:
+            context = dict(page_title='LOGGER', active_tab='logger',
+                           production_date=selected_date, error=str(exc),
+                           saved=False, deleted=False, form={},
+                           production_id=_logger_production_id(form_values),
+                           logger_events=[], assigned_press_instances_json='null')
+        return templates.TemplateResponse(
+            request=request, name='logger.html', context=context,
+            status_code=400, headers={'Cache-Control': 'no-store'},
+        )
+    except ValueError:
+        return JSONResponse({'error': 'Enter a valid Production Date.'}, status_code=400)
+    except Exception:
+        return JSONResponse({'error': 'Unable to delete LOGGER entry. Please retry.'},
+                            status_code=503)
+
+
 def reject_load_context(production_date, workflow="production", shift_id=None,
                         line_equipment_id=None, production_id=None, saved=False,
-                        error=None, form=None, depallet_id=None):
+                        deleted=False, error=None, form=None, depallet_id=None):
     with closing(get_connection()) as conn:
         cursor = conn.cursor()
         data = read_reject_page_data(cursor, production_date, workflow)
@@ -219,6 +294,7 @@ def reject_load_context(production_date, workflow="production", shift_id=None,
         line_equipment_id=line_equipment_id, production_id=production_id,
         depallet_id=depallet_id,
         entries=entries, saved=saved, error=error, form=form,
+        deleted=deleted,
     )
 
 
@@ -227,13 +303,18 @@ def reject_page(request: Request, production_date: date | None = None,
                 workflow: str = "production", shift_id: int | None = None,
                 line_equipment_id: int | None = None,
                 production_id: int | None = None, depallet_id: int | None = None,
-                saved: bool = False):
+                saved: bool = False, deleted: bool = False):
     production_date = production_date or date.today()
     status = 200
     try:
+        load_kwargs = dict(
+            depallet_id=depallet_id, saved=saved,
+        )
+        if deleted:
+            load_kwargs["deleted"] = True
         context = reject_load_context(
             production_date, workflow, shift_id, line_equipment_id,
-            production_id, depallet_id=depallet_id, saved=saved,
+            production_id, **load_kwargs,
         )
     except ValueError as exc:
         context = reject_page_context(
@@ -261,6 +342,60 @@ def reject_page(request: Request, production_date: date | None = None,
 def save_reject_form(form):
     with closing(get_connection()) as conn:
         return save_reject_entry(conn, form)
+
+
+def delete_reject_form(form):
+    with closing(get_connection()) as conn:
+        return delete_reject_entry(conn, form)
+
+
+@app.post("/reject/delete", response_class=HTMLResponse)
+async def delete_reject_route(request: Request, workflow: str | None = None):
+    form = await request.form()
+    if any(len(form.getlist(key)) != 1 for key in form):
+        return JSONResponse(
+            {"error": "Duplicate REJECT fields are not allowed."},
+            status_code=400,
+        )
+    values = dict(form)
+    if workflow is not None:
+        values["workflow"] = workflow
+    try:
+        await run_in_threadpool(delete_reject_form, values)
+        production_date = date.fromisoformat(str(values.get("production_date") or ""))
+        query = urlencode({
+            "production_date": production_date.isoformat(),
+            "workflow": values.get("workflow", "production"),
+            "shift_id": values.get("shift_id", ""),
+            "line_equipment_id": values.get("line_equipment_id", ""),
+            "production_id": values.get("production_id", ""),
+            "deleted": "true",
+        })
+        if values.get("depallet_id"):
+            query += "&" + urlencode({"depallet_id": values["depallet_id"]})
+        return RedirectResponse(f"/reject?{query}", status_code=303)
+    except RejectValidationError as exc:
+        try:
+            selected_date = date.fromisoformat(str(values.get("production_date") or ""))
+        except ValueError:
+            selected_date = date.today()
+        selected_workflow = values.get("workflow", "production")
+        context = await run_in_threadpool(
+            reject_load_context, selected_date, selected_workflow,
+            values.get("shift_id"), values.get("line_equipment_id"),
+            values.get("production_id"), False, False, str(exc), values,
+            depallet_id=values.get("depallet_id"),
+        )
+        return templates.TemplateResponse(
+            request=request, name="reject.html", context=context,
+            status_code=400, headers={"Cache-Control": "no-store"},
+        )
+    except Exception:
+        logging.exception("Unable to delete REJECT entry")
+        return JSONResponse(
+            {"error": "Unable to delete REJECT entry. No changes were saved; please retry."},
+            status_code=503,
+        )
 
 
 @app.post("/reject/save", response_class=HTMLResponse)
@@ -446,28 +581,30 @@ def read_plans(cursor, production_date):
 
 def product_selection_context(cursor, selected):
     products = read_products(cursor)
-    cursor.execute('''SELECT ProductFamilyID,ProductCode,MAX(RunningNo)+1
-        FROM dbo.ProductionLot WHERE IsActive=1 AND ProductFamilyID IS NOT NULL
-        AND SequenceMonth=? GROUP BY ProductFamilyID,ProductCode''',
-        month_start(day(selected["StartTime"])))
-    running = {(r[0], r[1]): int(r[2]) for r in cursor.fetchall()}
     previews = {}
     for product in products:
         family_id, code = product["ProductFamilyID"], product["ProductCode"]
-        number = running.get((family_id, code), 1)
         stem = lot_prefix(cursor, family_id, code, selected["StartTime"])
+        number = next_running_no(cursor, stem, family_id, code, selected["StartTime"])
         previews[str(family_id) + "|" + code] = dict(
             ProductFamily=product["ProductFamily"], ProductFamilyID=family_id, ProductCode=code, LotPrefix=stem,
-            RunningNo=number, LotNo=f"{stem}{number:02d}")
+            RunningNo=number, LotNo=f"{stem}{number:02d}" if number <= 99 else "")
     return dict(products=products, product_previews=previews)
 
 
 def production_page(request, plan_id=None, product_code=None, confirm=False, mapping_edit=False,
-                    create=False, running_no=None, production_date=None, production_id=None, edit=False, save=False, void=False, production_input=None, data_saved=False, product_family=None, product_choices=None, press_message=None, press_message_type=None, press_form=None, wet_reject_message=None, wet_reject_message_type=None, production_reject_message=None, production_reject_message_type=None, production_reject_form=None):
+                    create=False, running_no=None, production_date=None, production_id=None,
+                    remembered_production_id=None, edit=False, save=False, void=False,
+                    production_input=None, data_saved=False, product_family=None,
+                    product_choices=None, press_message=None, press_message_type=None,
+                    press_form=None, wet_reject_message=None, wet_reject_message_type=None,
+                    production_reject_message=None, production_reject_message_type=None,
+                    production_reject_form=None):
     requested_date = production_date
     production_date = production_date or date.today()
     context = dict(families=[], product_family=None, product_family_id=None, product_previews={}, production_data={}, calculated=calculate(None, None), data_saved=data_saved, production_date=production_date, lots=[], lots_for_date=[], production_data_by_lot={}, calculated_by_lot={}, current=None, edit=edit, edit_plans=[], plans=[], selected=None, products=[], material_prefix=None,
-                   product_code=None, lot=None, error=None, lots_load_failed=False, running_no=None, created_lot=None,
+                   product_code=None, lot=None, error=None, lots_load_failed=False, running_no=None,
+                   running_suffix=None, running_suffix_warning=None, created_lot=None,
                    press_production=[], day_start_time=None, eligible_presses=[], eligible_moulds=[], press_product_error=None,
                    eligible_shifts=[], press_form={},
                    press_message=press_message, press_message_type=press_message_type,
@@ -479,6 +616,7 @@ def production_page(request, plan_id=None, product_code=None, confirm=False, map
                    production_reject_remark="", production_reject_error=None,
                    production_reject_message=production_reject_message,
                    production_reject_message_type=production_reject_message_type,
+                   remembered_lot_invalid=False,
                    shift_rules=[],
                    wet_reject_now=datetime.now().strftime('%Y-%m-%dT%H:%M:%S'),
                    wet_reject_message=wet_reject_message, wet_reject_message_type=wet_reject_message_type)
@@ -503,6 +641,19 @@ def production_page(request, plan_id=None, product_code=None, confirm=False, map
                     elif day(selected_lot['ProdDate']) != production_date:
                         production_id = None
                         context['edit'] = False
+            if (production_id is None and remembered_production_id is not None
+                    and requested_date is not None
+                    and not (confirm or create or save or void or production_input is not None)):
+                remembered = next(
+                    (lot for lot in context['lots']
+                     if lot['ProductionID'] == remembered_production_id
+                     and day(lot['ProdDate']) == production_date),
+                    None,
+                )
+                if remembered is not None:
+                    production_id = remembered_production_id
+                else:
+                    context['remembered_lot_invalid'] = True
             context["lots_for_date"] = [lot for lot in context["lots"] if day(lot["ProdDate"]) == production_date]
             try:
                 context["shift_rules"] = read_shift_rules(cursor, production_date)
@@ -625,9 +776,18 @@ def production_page(request, plan_id=None, product_code=None, confirm=False, map
                         context["lot"] = lot_prefix(cursor, mapped[0], mapped[1], selected["StartTime"])
                         context["running_no"] = next_running_no(cursor, context["lot"],
                             mapped[0], mapped[1], selected["StartTime"])
+                        context["running_suffix"] = (
+                            f'{context["running_no"]:02d}' if context["running_no"] <= 99
+                            else ''
+                        )
                         if create:
-                            new_id = insert_lot(conn, selected, mapped[1], context["lot"], running_no,
-                                                product_family_id=mapped[0])
+                            context["running_suffix"] = running_no
+                            try:
+                                new_id = insert_lot(conn, selected, mapped[1], context["lot"], running_no,
+                                                    product_family_id=mapped[0])
+                            except ValueError as exc:
+                                context["running_suffix_warning"] = str(exc)
+                                raise
                             return RedirectResponse(f"/?production_id={new_id}&production_date={production_date}", status_code=303)
                 else:
                     context.update(product_selection_context(cursor, selected))
@@ -649,12 +809,14 @@ def production_page(request, plan_id=None, product_code=None, confirm=False, map
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request, plan_id: str | None = None, production_date: date | None = None,
          mapping_edit: bool = False,
-        production_id: int | None = None, edit: bool = False, data_saved: bool = False,
+        production_id: int | None = None, remembered_production_id: int | None = None,
+        edit: bool = False, data_saved: bool = False,
         press_message: str | None = None, press_message_type: str | None = None,
         wet_reject_message: str | None = None, wet_reject_message_type: str | None = None,
         production_reject_message: str | None = None,
         production_reject_message_type: str | None = None):
     return production_page(request, plan_id, mapping_edit=mapping_edit, production_date=production_date, production_id=production_id,
+                      remembered_production_id=remembered_production_id,
                       edit=edit, data_saved=data_saved, press_message=press_message,
                       press_message_type=press_message_type, wet_reject_message=wet_reject_message,
                       wet_reject_message_type=wet_reject_message_type,
@@ -683,7 +845,7 @@ async def confirm_product(request: Request):
 
 
 @app.post("/lots", response_class=HTMLResponse)
-def create_lot(request: Request, plan_id: str = Form(...), running_no: int = Form(...), production_date: date = Form(...)):
+def create_lot(request: Request, plan_id: str = Form(...), running_no: str = Form(...), production_date: date = Form(...)):
     return production_page(request, plan_id, create=True, running_no=running_no, production_date=production_date)
 
 
@@ -1032,13 +1194,16 @@ async def update_wet_reject_route(request: Request, production_id: int, wet_reje
 
 @app.get("/depallet", response_class=HTMLResponse)
 def depallet_page(request: Request, production_date: date | None = None,
-                  production_id: int | None = None, depallet_id: int | None = None):
+                  production_id: int | None = None, depallet_id: int | None = None,
+                  remembered_depallet_id: int | None = None):
     production_date = production_date or date.today()
     context = dict(page_title="DEPALLET", active_tab="depallet", production_date=production_date,
                    lots=[], products=[], families=[], entries={}, runs=[], current=None,
                    current_run_id=depallet_id, error=None, r99_name="", daily_totals={},
+                   remembered_depallet_invalid=False,
                    day_start_time=None, depallet_reject_reasons=[],
-                   depallet_reject_total=None, depallet_reject_final_classified=0,
+                   depallet_reject_total=None,
+                   depallet_reject_final_classified=0,
                    depallet_reject_difference=None, depallet_reject_remark="",
                    depallet_reject_message=None, depallet_reject_message_type=None,
                    depallet_reject_calculated=None, depallet_reject_error=None)
@@ -1062,8 +1227,21 @@ def depallet_page(request: Request, production_date: date | None = None,
                 if selected_run is None and production_id is not None:
                     selected_run = next((run for run in context['runs']
                                          if run['ProductionID'] == production_id), None)
-                if selected_run is None and production_id is None and depallet_id is None and context['runs']:
-                    selected_run = context['runs'][0]
+                if (selected_run is None and depallet_id is None
+                        and production_id is None
+                        and remembered_depallet_id is not None):
+                    selected_run = next(
+                        (run for run in context["runs"]
+                         if run["DepalletID"] == remembered_depallet_id),
+                        None,
+                    )
+                    if selected_run is None:
+                        context["remembered_depallet_invalid"] = True
+                if (selected_run is None and production_id is None
+                        and depallet_id is None
+                        and remembered_depallet_id is None
+                        and context["runs"]):
+                    selected_run = context["runs"][0]
                 context['current_run_id'] = selected_run['DepalletID'] if selected_run else None
                 if selected_run:
                     context.update(selected_run["final_reject_context"])
@@ -1107,6 +1285,7 @@ def depallet_reject_cal_response(depallet_id, production_date, shift_id):
                 for reason_id, qty in result["quantities"].items()
             },
             "raw_total": result["raw_total"],
+            "calculated_good": result["calculated_good"],
             "total_reject": result["total_reject"],
         }, headers={"Cache-Control": "no-store"})
     except ValueError as exc:

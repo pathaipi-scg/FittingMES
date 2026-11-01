@@ -517,3 +517,72 @@ def save_reject_entry(conn, raw):
     except Exception:
         conn.rollback()
         raise
+
+
+def delete_reject_entry(conn, raw):
+    """Delete one workflow-owned REJECT entry after validating its context."""
+    try:
+        cursor = conn.cursor()
+        workflow = _workflow(raw.get("workflow"))
+        production_date = _production_date(raw.get("production_date"))
+        entry_id = _positive_int(
+            raw.get("entry_id"), "INVALID_ENTRY", "Selected entry",
+        )
+        production_id = _positive_int(
+            raw.get("production_id"), "INVALID_PRODUCTION_LOT", "Product / Lot",
+        )
+        shift_id = _positive_int(raw.get("shift_id"), "INVALID_SHIFT", "Shift")
+        line_id = _positive_int(
+            raw.get("line_equipment_id"), "INVALID_LINE", "Line",
+        )
+        if workflow == "depallet":
+            depallet_id = _positive_int(
+                raw.get("depallet_id"), "INVALID_DEPALLET_RUN", "Depallet Run",
+            )
+            cursor.execute("""
+                SELECT id AS EntryID
+                FROM dbo.DepalletRejectEntry WITH (UPDLOCK,HOLDLOCK)
+                WHERE id=? AND ProductionDate=? AND ProductionID=?
+                  AND DepalletID=? AND ShiftID=? AND LineEquipmentID=?
+            """, entry_id, production_date, production_id, depallet_id,
+                shift_id, line_id)
+            table = "DepalletRejectEntry"
+            delete_params = (
+                entry_id, production_date, production_id, depallet_id,
+                shift_id, line_id,
+            )
+        else:
+            cursor.execute("""
+                SELECT id AS EntryID
+                FROM dbo.ProductionRejectEntry WITH (UPDLOCK,HOLDLOCK)
+                WHERE id=? AND ProductionDate=? AND ProductionID=?
+                  AND ShiftID=? AND LineEquipmentID=?
+            """, entry_id, production_date, production_id, shift_id, line_id)
+            table = "ProductionRejectEntry"
+            delete_params = (
+                entry_id, production_date, production_id, shift_id, line_id,
+            )
+        if _fetch_one(cursor) is None:
+            _invalid(
+                "ENTRY_NOT_FOUND",
+                "The selected entry does not belong to this REJECT workflow and context.",
+            )
+        if workflow == "depallet":
+            cursor.execute("""
+                DELETE FROM dbo.DepalletRejectEntry
+                WHERE id=? AND ProductionDate=? AND ProductionID=?
+                  AND DepalletID=? AND ShiftID=? AND LineEquipmentID=?
+            """, *delete_params)
+        else:
+            cursor.execute("""
+                DELETE FROM dbo.ProductionRejectEntry
+                WHERE id=? AND ProductionDate=? AND ProductionID=?
+                  AND ShiftID=? AND LineEquipmentID=?
+            """, *delete_params)
+        if cursor.rowcount != 1:
+            _invalid("ENTRY_NOT_FOUND", "The selected REJECT entry no longer exists.")
+        conn.commit()
+        return entry_id
+    except Exception:
+        conn.rollback()
+        raise

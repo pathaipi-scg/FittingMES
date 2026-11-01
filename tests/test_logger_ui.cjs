@@ -32,16 +32,35 @@ assert.ok(html.indexOf('id="logger-stop"') < html.indexOf('id="logger-start"'));
 assert.match(html, /name="logger-row-select"/);
 assert.match(html, /id="logger-cancel"/);
 assert.match(source, /logger-events-data/);
+assert.match(source, /fittingmes\.logger\.selection/);
+assert.match(source, /sessionStorage\.setItem/);
+assert.match(source, /assignedPressSet/);
+assert.match(source, /populateInstances\(initialInstance, true\)/);
+assert.ok(source.indexOf('populateInstances(initialInstance, true)')
+  < source.indexOf('rebuildOptions(initialSelection, selectedForm.cause_id || null)'));
+assert.match(source, /const validSelected = selected && options\.some/);
+assert.match(source, /const causes = JSON\.parse/);
 assert.match(source, /saveButton\.textContent = 'SAVE EDIT'/);
 assert.match(source, /cancelButton\.addEventListener\('click'/);
 assert.match(source, /causeCandidates\(causes, selectedOption, subMachines, stopId, subStopId, isSmdt\(stopId\)\)/);
-assert.match(source, /rebuildCauses\(selected, type\.value, subType\.value, selectedCauseId,\s*selected \? null : options\)/);
+assert.match(source, /rebuildCauses\(validSelected, type\.value, subType\.value,\s*validSelected \? selectedCauseId : null,\s*validSelected \? null : options\)/);
 assert.match(source, /type\.addEventListener\('change'/);
 assert.match(source, /subType\.addEventListener\('change'/);
 assert.doesNotMatch(source, /type\.value = selectedCause\.StopId/);
 assert.match(source, /manualStopTypeOverride/);
 assert.match(source, /duration\.value = String\(preview\.minutes\)/);
 assert.match(source, /duration\.addEventListener\('input'/);
+assert.match(source, /function validateBreakdownDuration\(\)/);
+assert.match(source, /BD requires at least 10 minutes\./);
+assert.match(source, /if \(!validateBreakdownDuration\(\)\) \{ event\.preventDefault\(\); return; \}/);
+assert.match(source, /validateBreakdownDuration\(\);\s*\}\);\s*subType\.addEventListener/);
+assert.match(source, /if \(!eventId\.value && !duration\.value\.trim\(\)\)/);
+assert.match(source, /duration\.value = '1';\s*applyDurationDefault\(1\);/);
+assert.ok(source.indexOf("duration.value = '1';")
+  > source.indexOf('updateTargetRequirement();\n  updateDuration();'));
+assert.ok(source.indexOf("duration.value = '1';")
+  < source.indexOf('if (eventId.value) {'));
+assert.match(source, /duration\.value = '1';[\s\S]{0,80}validateBreakdownDuration\(\);[\s\S]{0,20}if \(eventId\.value\)/);
 assert.match(source, /type\.dispatchEvent\(new Event\('change'\)\)/);
 assert.match(source, /cause\.addEventListener\('change', \(\) => applyCause\(true\)\)/);
 assert.match(source, /if \(forceResolve \|\| !subRelated\.value\)/);

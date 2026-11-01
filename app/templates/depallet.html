@@ -41,12 +41,13 @@
 #depallet-status{min-height:14px;margin:0;font-weight:400;white-space:normal}
 #depallet-warning{min-height:14px;color:#946200}#depallet-status[data-state=error]{color:#9d2525}#depallet-status[data-state=success]{color:#25643b}
 #depallet-balance[data-balanced=true]{color:#25643b}#depallet-balance[data-balanced=false]{color:#946200}
+#depallet-balance-difference[data-warning=true]{color:#946200}
 @media(max-width:950px){ #depallet-rejects{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:760px){ #depallet-selectors{grid-template-columns:1fr 1fr}#depallet-selectors label:nth-child(3){grid-column:1/-1}}
 @media(max-width:620px){ #depallet-rejects{grid-template-columns:minmax(0,1fr)}.depallet-final-remark input{width:min(180px,45vw)}}
 </style>
 {% if error %}<div class="error" role="alert">{{ error }}</div>{% else %}
-<form id="depallet-input" method="post" action="/depallet/save">
+<form id="depallet-input" method="post" action="/depallet/save" data-remembered-depallet-invalid="{{ 'true' if remembered_depallet_invalid else 'false' }}">
 <input id="depallet-date" name="depallet_date" type="hidden" value="{{ production_date }}">
 <fieldset id="depallet-fields">
 <section class="panel">
@@ -56,7 +57,7 @@
 <label>Production Lot<select id="depallet-production-lot" disabled><option value="">Select Production Lot</option></select></label>
 <button id="create-depallet-lot" class="primary" type="button" disabled>CREATE DEPALLET LOT</button>
 </div></section>
-<section class="panel"><div class="depallet-lots-heading"><h2>DEPALLET LOTS</h2><button id="save-depallet" type="submit">SAVE DEPALLET</button></div>
+<section class="panel"><div class="depallet-lots-heading"><h2>DEPALLET LOTS</h2><button id="save-depallet" class="primary" type="submit">SAVE DEPALLET</button></div>
 <div class="table-scroll"><table class="depallet-grid" id="depallet-lots">
 <colgroup><col style="width:34px"><col style="width:42px"><col style="width:58px"><col style="width:78px"><col style="width:300px"><col style="width:42px"><col style="width:68px"><col style="width:82px"><col style="width:78px"><col style="width:68px"><col style="width:58px"><col style="width:100px"></colgroup>
 <thead><tr><th scope="col">Select</th><th scope="col">Move</th><th scope="col">Order</th><th scope="col">Lot No.</th><th scope="col">Product</th><th scope="col">Shift</th><th scope="col">Produced</th><th scope="col">Depalleted</th><th scope="col">Remaining</th><th scope="col">Depallet</th><th scope="col">Good</th><th scope="col">Remark</th></tr></thead>
@@ -84,6 +85,7 @@
 <span>Calculated Reject <output id="depallet-reject-calculated">—</output></span>
 <span>Final Classified Reject <output id="depallet-reject-final-classified">{{ depallet_reject_final_classified }}</output></span>
 <span>Difference / Unclassified <output id="depallet-difference">{{ depallet_reject_difference if depallet_reject_difference is not none else '—' }}</output></span>
+<span>Depallet Balance Difference <output id="depallet-balance-difference">—</output></span>
 </div></div>
 <p id="depallet-final-status" class="depallet-final-status" role="status" aria-live="polite"></p>
 <div id="depallet-detail"><div id="depallet-rejects"></div></div>
@@ -101,6 +103,7 @@
   if (!form) return;
   const fieldset = document.getElementById('depallet-fields');
   const date = document.getElementById('depallet-date');
+  const rememberedInvalid = form.dataset.rememberedDepalletInvalid === 'true';
   const family = document.getElementById('depallet-family');
   const product = document.getElementById('depallet-product');
   const lotChoice = document.getElementById('depallet-production-lot');
@@ -128,9 +131,28 @@
     calculated:document.getElementById('depallet-reject-calculated'),
     classified:document.getElementById('depallet-reject-final-classified'),
     difference:document.getElementById('depallet-difference'),
+    balanceDifference:document.getElementById('depallet-balance-difference'),
   };
   const calculatedRawByRun = {};
   let selectedRow = null, busy = false, nextRunKey = 1;
+  const selectionStorageKey = 'fittingmes.depallet.' + date.value;
+  function rememberSelected(row) {
+    if (!row || !row.dataset.depalletId) return;
+    try {
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.setItem(selectionStorageKey, row.dataset.depalletId);
+      }
+    } catch (error) {
+      console.warn('Unable to remember Depallet selection.', error);
+    }
+  }
+  if (rememberedInvalid) {
+    try {
+      if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(selectionStorageKey);
+    } catch (error) {
+      console.warn('Unable to clear remembered Depallet selection.', error);
+    }
+  }
 
   function setMessage(state, text) {
     const target = status || warning;
@@ -322,6 +344,8 @@
       outputs.calculated.value = '—';
       outputs.classified.value = '0';
       outputs.difference.value = '';
+      outputs.balanceDifference.value = '—';
+      outputs.balanceDifference.dataset.warning = 'false';
       saveFinalButton.disabled = true;
       calFinalButton.disabled = true;
       return false;
@@ -338,11 +362,15 @@
       outputs.calculated.value = calculatedRawByRun[selectedRow.dataset.runKey] ?? '—';
       outputs.classified.value = '';
       outputs.difference.value = '';
+      outputs.balanceDifference.value = '—';
+      outputs.balanceDifference.dataset.warning = 'false';
       saveFinalButton.disabled = true;
       calFinalButton.disabled = true;
       return false;
     }
     const total = Number(depalletQty) - Number(goodQty);
+    const rawTotal = calculatedRawByRun[selectedRow.dataset.runKey] ??
+      state.final_reject_context?.depallet_reject_raw_total;
     const inputs = Array.from(rejects.querySelectorAll('[data-reject-reason-id]'));
     const quantities = inputs.map(input => input.value.trim() === ''
       ? 0 : valid(input.value.trim()) ? Number(input.value) : null);
@@ -352,13 +380,21 @@
     outputs.calculated.value = calculatedRawByRun[selectedRow.dataset.runKey] ?? '—';
     outputs.classified.value = classified === null ? '' : String(classified);
     outputs.difference.value = classified === null ? '' : String(total - classified);
+    if (Number.isSafeInteger(Number(rawTotal))) {
+      const balanceDifference = Number(depalletQty) - Number(goodQty) - Number(rawTotal);
+      outputs.balanceDifference.value = String(balanceDifference);
+      outputs.balanceDifference.dataset.warning = String(balanceDifference !== 0);
+    } else {
+      outputs.balanceDifference.value = '—';
+      outputs.balanceDifference.dataset.warning = 'false';
+    }
     const original = state.depallet;
     const initialFields = state.initial_fields || {};
-    const changedPhysicalContext = ['shift','depallet_qty','good_qty'].some(name =>
+    const changedPhysicalContext = ['shift','depallet_qty'].some(name =>
       rowFields[name].value !== initialFields[name]);
     saveFinalButton.disabled = selectedRow.dataset.saved !== 'true' ||
       !inputs.length || classified === null || classified > total ||
-      changedPhysicalContext || busy;
+      changedPhysicalContext || !state.final_dirty || busy;
     calFinalButton.disabled = selectedRow.dataset.saved !== 'true' ||
       !original.ShiftID || busy;
     return !saveFinalButton.disabled;
@@ -388,6 +424,7 @@
   function selectRow(row) {
     if (busy || !row || selectedRow === row) return;
     rememberRejects(); selectedRow = row;
+    rememberSelected(row);
     for (const candidate of tableBody.querySelectorAll('[data-production-id]')) {
       candidate.setAttribute('aria-selected',String(candidate === row));
       const radio = candidate.querySelector('[data-row-select]'); if (radio) radio.checked = candidate === row;
@@ -441,6 +478,7 @@
       const state = entryFor(selectedRow.dataset.runKey);
       state.final_quantities = state.final_quantities || {};
       state.final_quantities[event.target.dataset.rejectReasonId] = event.target.value;
+      state.final_dirty = true;
       calculateFinal();
     }
     updateMoveButtons();
@@ -476,6 +514,15 @@
         state.final_quantities[input.dataset.rejectReasonId] = input.value;
       }
       calculatedRawByRun[selectedRow.dataset.runKey] = Number(result.raw_total);
+      const selectedGood = fields(selectedRow).good_qty;
+      const selectedQty = Number(fields(selectedRow).depallet_qty.value);
+      if (Number.isInteger(result.calculated_good) &&
+          result.calculated_good >= 0 &&
+          result.calculated_good <= selectedQty) {
+        selectedGood.value = String(result.calculated_good);
+        state.initial_fields.good_qty = selectedGood.value;
+        state.final_dirty = true;
+      }
       calculateFinal();
       setFinalMessage('success', 'RAW REJECT calculated for this RUN. Save to persist FINAL.');
     } catch (error) {

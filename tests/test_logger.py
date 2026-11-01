@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime, time
+from datetime import date, datetime, time
 from unittest.mock import patch
 
 from app.logger import (
@@ -17,10 +17,40 @@ from app.logger import (
     read_logger_masters,
     save_logger_event,
     update_logger_event,
+    delete_logger_event,
     suggest_cause,
     sub_related_options_for_instance,
     _validate_logger_masters,
 )
+
+
+class DeleteCursor:
+    def __init__(self, row=(date(2026, 10, 1),), rowcount=1):
+        self.row = row
+        self.rowcount = rowcount
+        self.queries = []
+
+    def execute(self, query, *params):
+        self.queries.append((query, params))
+
+    def fetchone(self):
+        return self.row
+
+
+class DeleteConnection:
+    def __init__(self, row=(date(2026, 10, 1),), rowcount=1):
+        self.cursor_instance = DeleteCursor(row, rowcount)
+        self.commits = 0
+        self.rollbacks = 0
+
+    def cursor(self):
+        return self.cursor_instance
+
+    def commit(self):
+        self.commits += 1
+
+    def rollback(self):
+        self.rollbacks += 1
 
 
 class QueueCursor:
@@ -171,6 +201,45 @@ class LoggerResolverTests(unittest.TestCase):
         self.assertIsNone(values["stop_datetime"])
         self.assertIsNone(values["start_datetime"])
         self.assertEqual(values["duration_min"], 2.5)
+
+    def test_breakdown_requires_at_least_ten_manual_minutes(self):
+        for duration in ("1", "9", "9.9"):
+            with self.subTest(duration=duration):
+                with self.assertRaisesRegex(
+                        LoggerValidationError,
+                        "BD requires at least 10 minutes\\."):
+                    _validate_logger_masters(self.save_input(
+                        stop="", start="", duration_min=duration,
+                        stop_id=7, sub_stop_id=21), self.masters())
+        for duration in ("10", "15"):
+            with self.subTest(duration=duration):
+                values = _validate_logger_masters(self.save_input(
+                    stop="", start="", duration_min=duration,
+                    stop_id=7, sub_stop_id=21), self.masters())
+                self.assertEqual(values["duration_min"], float(duration))
+
+    def test_invalid_breakdown_create_does_not_insert(self):
+        connection = SaveConnection()
+        with self.assertRaisesRegex(
+                LoggerValidationError,
+                "BD requires at least 10 minutes\\."):
+            save_logger_event(connection, self.save_input(
+                stop="", start="", duration_min="1",
+                stop_id=7, sub_stop_id=21), self.masters())
+        self.assertEqual(connection.cursor_instance.inserted, [])
+        self.assertEqual(connection.commits, 0)
+
+    def test_invalid_breakdown_update_does_not_update(self):
+        connection = SaveConnection()
+        with self.assertRaisesRegex(
+                LoggerValidationError,
+                "BD requires at least 10 minutes\\."):
+            update_logger_event(connection, 42, self.save_input(
+                stop="", start="", duration_min="9",
+                stop_id=7, sub_stop_id=21), self.masters())
+        self.assertFalse(any("UPDATE dbo.LoggerEvent" in query
+                             for query, _ in connection.cursor_instance.executed))
+        self.assertEqual(connection.commits, 0)
 
     def test_duration_only_uses_preset_shift_and_timestamp_uses_stop_rule(self):
         duration = SaveConnection()
@@ -409,6 +478,34 @@ class LoggerResolverTests(unittest.TestCase):
         self.assertIn("UPDATE dbo.LoggerEvent", query)
         self.assertEqual(params[-1], 42)
         self.assertEqual(connection.cursor_instance.inserted, [])
+
+    def test_delete_uses_id_and_date_transaction(self):
+        connection = DeleteConnection()
+        self.assertEqual(
+            delete_logger_event(connection, "42", date(2026, 10, 1)), 42
+        )
+        self.assertEqual(connection.commits, 1)
+        self.assertEqual(connection.rollbacks, 0)
+        query, params = connection.cursor_instance.queries[-1]
+        self.assertIn("DELETE FROM dbo.LoggerEvent", query)
+        self.assertNotIn("ProductionLot", query)
+        self.assertNotIn("PressProduction", query)
+        self.assertNotIn("Reject", query)
+        self.assertNotIn("Depallet", query)
+        self.assertEqual(params, (42, date(2026, 10, 1)))
+
+    def test_delete_rejects_missing_cross_date_and_invalid_entries(self):
+        for connection, event_id, production_date, message in (
+            (DeleteConnection(row=None), 42, date(2026, 10, 1), "no longer exists"),
+            (DeleteConnection(row=(date(2026, 10, 2),)), 42,
+             date(2026, 10, 1), "selected Production Date"),
+            (DeleteConnection(), "bad", date(2026, 10, 1), "valid LOGGER entry"),
+        ):
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(LoggerValidationError, message):
+                    delete_logger_event(connection, event_id, production_date)
+                self.assertEqual(connection.commits, 0)
+                self.assertEqual(connection.rollbacks, 1)
 
     def test_duration_only_update_preserves_persisted_shift(self):
         connection = SaveConnection(existing_event=(None, 1))

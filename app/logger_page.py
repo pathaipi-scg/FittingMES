@@ -15,7 +15,8 @@ def _json(value):
 
 def logger_page_context(masters: LoggerMasters, production_date, logger_events=None,
                         saved=False, error=None, form=None, shift_rules=None,
-                        preset_shift_id=None):
+                        preset_shift_id=None, production_id=None,
+                        assigned_press_codes=None):
     main_categories = main_machine_categories(masters.main_machines)
     main_instances = [instance for machine in masters.main_machines
                       for instance in expand_main_machine(machine)]
@@ -29,6 +30,19 @@ def logger_page_context(masters: LoggerMasters, production_date, logger_events=N
                 masters.main_machines, masters.sub_machines,
                 instance["mc_id"], instance["mc_instance_no"])
     form = dict(form or {})
+    if assigned_press_codes is not None:
+        assigned_press_codes = {
+            str(code).strip().upper() for code in assigned_press_codes if code
+        }
+        press_machine = next(
+            (machine for machine in masters.main_machines if machine["Machine"] == "F"),
+            None,
+        )
+        if press_machine is not None and not form.get("mc_id"):
+            form["mc_id"] = press_machine["McId"]
+    assigned_press_instances = (
+        sorted(assigned_press_codes) if assigned_press_codes is not None else None
+    )
     shift_rules = sorted(
         list(shift_rules or []),
         key=lambda item: (item["StartTime"], item["ShiftID"]),
@@ -51,6 +65,7 @@ def logger_page_context(masters: LoggerMasters, production_date, logger_events=N
         event_rows.append(event_row)
     return dict(
         page_title="LOGGER", active_tab="logger", production_date=production_date,
+        production_id=production_id,
         saved=saved, error=error, form=form, logger_events=event_rows,
         shift_rules=shift_rules, preset_shift_id=selected_shift,
         main_categories=main_categories, main_instances=main_instances,
@@ -61,6 +76,7 @@ def logger_page_context(masters: LoggerMasters, production_date, logger_events=N
         main_machines_json=_json(masters.main_machines),
         main_instances_json=_json(main_instances),
         instance_options_json=_json(instance_options),
+        assigned_press_instances_json=_json(assigned_press_instances),
         sub_related_options_json=_json(sub_related_options),
         sub_machines_json=_json(masters.sub_machines),
         stop_types_json=_json(masters.stop_types),

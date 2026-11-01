@@ -54,8 +54,7 @@ class FinalCursor:
                 1 for item in self.connection.raw
                 if item["DepalletID"] == params[0]
                 and (item["ProductionDate"] != run["DepalletDate"]
-                     or item["ProductionID"] != run["ProductionID"]
-                     or item["ShiftID"] != run["ShiftID"])
+                     or item["ProductionID"] != run["ProductionID"])
             )
             self._set(("MismatchedRows",), [(count,)])
         elif "SUM(CONVERT(bigint,Qty)) AS RawQty" in query:
@@ -63,8 +62,7 @@ class FinalCursor:
             for item in self.connection.raw:
                 if (item["DepalletID"] == params[0]
                         and item["ProductionDate"] == params[1]
-                        and item["ProductionID"] == params[2]
-                        and item["ShiftID"] == params[3]):
+                        and item["ProductionID"] == params[2]):
                     reason_id = item["RejectReasonID"]
                     totals[reason_id] = totals.get(reason_id, 0) + item["Qty"]
             self._set(("RejectReasonID", "RawQty"), list(totals.items()))
@@ -179,12 +177,13 @@ class FinalConnection:
 
 
 class DepalletRejectFinalTests(unittest.TestCase):
-    def test_cal_is_exact_run_shift_scoped_and_includes_null_sources(self):
+    def test_cal_is_exact_run_scoped_and_includes_null_sources(self):
         connection = FinalConnection()
         result = read_depallet_reject_cal(connection.cursor(), 71, DAY, 12)
 
         self.assertEqual(result["quantities"], {201: 5, 202: 1})
         self.assertEqual(result["raw_total"], 6)
+        self.assertEqual(result["calculated_good"], 94)
         self.assertEqual(result["total_reject"], 10)
         raw_query = next(
             query for query, _ in connection.calls
@@ -193,6 +192,25 @@ class DepalletRejectFinalTests(unittest.TestCase):
         self.assertIn("WHERE DepalletID=?", raw_query)
         self.assertNotIn("SourceEquipmentID IS NOT NULL", raw_query)
         self.assertNotIn("SourceEquipmentID IS NULL", raw_query)
+
+    def test_cal_includes_saved_rejects_from_another_shift_for_same_run(self):
+        connection = FinalConnection()
+        connection.raw.append(dict(
+            DepalletID=71, ProductionDate=DAY, ProductionID=7,
+            ShiftID=99, RejectReasonID=202, Qty=4, SourceEquipmentID=None,
+        ))
+        result = read_depallet_reject_cal(connection.cursor(), 71, DAY, 12)
+        self.assertEqual(result["raw_total"], 10)
+        self.assertEqual(result["calculated_good"], 90)
+
+    def test_cal_rejects_total_above_depallet_qty(self):
+        connection = FinalConnection()
+        connection.raw.append(dict(
+            DepalletID=71, ProductionDate=DAY, ProductionID=7,
+            ShiftID=99, RejectReasonID=202, Qty=95, SourceEquipmentID=None,
+        ))
+        with self.assertRaisesRegex(ValueError, "exceeds Depallet Qty"):
+            read_depallet_reject_cal(connection.cursor(), 71, DAY, 12)
 
     def test_cal_for_second_run_excludes_raw_from_first_run(self):
         connection = FinalConnection()

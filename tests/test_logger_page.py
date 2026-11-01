@@ -9,7 +9,7 @@ from starlette.requests import Request
 from app.logger import LoggerMasters, LoggerValidationError
 from app.logger_page import logger_form_input, logger_page_context
 from app.main import (app, logger_page, logger_load_context, save_logger_form,
-                      save_logger_route)
+                      save_logger_route, delete_logger_route)
 
 
 def request():
@@ -61,6 +61,60 @@ class LoggerPageTests(unittest.TestCase):
         self.assertEqual(options[0]["kind"], "DIRECT_SUB")
         self.assertEqual(options[-1]["kind"], "RELATED_MAIN")
         self.assertEqual(context["active_tab"], "logger")
+
+    def test_selected_lot_filters_f_instances_and_selects_f_machine(self):
+        masters = LoggerMasters(
+            main_machines=[{"McId": 7, "Machine": "F", "No": 14, "Relate": 0},
+                           self.masters.main_machines[1]],
+            sub_machines=self.masters.sub_machines,
+            stop_types=self.masters.stop_types,
+            sub_stop_types=self.masters.sub_stop_types,
+            causes=self.masters.causes,
+        )
+        context = logger_page_context(
+            masters, date(2026, 9, 4), production_id=24,
+            assigned_press_codes=["F10", "F11"],
+        )
+        self.assertEqual(context["form"]["mc_id"], 7)
+        self.assertEqual(
+            json.loads(context["assigned_press_instances_json"]), ["F10", "F11"]
+        )
+        self.assertEqual(len(json.loads(context["main_instances_json"])), 16)
+
+    def test_selected_lot_with_no_press_assignments_is_distinct_from_no_lot(self):
+        selected = logger_page_context(
+            self.masters, date(2026, 9, 4), production_id=24,
+            assigned_press_codes=[],
+        )
+        direct = logger_page_context(self.masters, date(2026, 9, 4))
+        self.assertEqual(json.loads(selected["assigned_press_instances_json"]), [])
+        self.assertEqual(json.loads(direct["assigned_press_instances_json"]), None)
+        self.assertEqual(selected["form"]["mc_id"], 7)
+        self.assertNotIn("mc_id", direct["form"])
+
+    def test_selected_lot_uses_its_different_press_set(self):
+        context = logger_page_context(
+            self.masters, date(2026, 9, 4), production_id=25,
+            assigned_press_codes=["F3", "F12"],
+        )
+        self.assertEqual(
+            json.loads(context["assigned_press_instances_json"]), ["F12", "F3"]
+        )
+
+    def test_lot_context_does_not_filter_logger_causes(self):
+        direct = logger_page_context(self.masters, date(2026, 9, 4))
+        selected = logger_page_context(
+            self.masters, date(2026, 9, 4), production_id=24,
+            assigned_press_codes=["F10", "F11"],
+        )
+        self.assertEqual(
+            json.loads(selected["causes_json"]),
+            json.loads(direct["causes_json"]),
+        )
+        self.assertEqual(
+            json.loads(selected["main_machines_json"]),
+            json.loads(direct["main_machines_json"]),
+        )
 
     def test_context_exposes_categories_and_instance_scoped_options(self):
         context = logger_page_context(self.masters, date(2026, 10, 1), logger_events=[])
@@ -229,6 +283,61 @@ class LoggerPageTests(unittest.TestCase):
                  for route in app.routes if hasattr(route, "methods")}
         self.assertIn(("/logger", ("GET",)), paths)
         self.assertIn(("/logger/save", ("POST",)), paths)
+        self.assertIn(("/logger/delete", ("POST",)), paths)
+
+    def test_logger_delete_controls_reuse_selection_and_confirm_details(self):
+        source = Path("app/templates/logger.html").read_text(encoding="utf-8")
+        self.assertIn('id="logger-delete" type="button" disabled', source)
+        self.assertIn('id="logger-delete-form" method="post" action="/logger/delete"', source)
+        self.assertIn("Machine: ${selected.MachineNameSnapshot || '-'}", source)
+        self.assertIn("Shift: ${shift}", source)
+        self.assertIn("Type: ${selected.StopTypeSnapshot || '-'}", source)
+        self.assertIn("Duration: ${durationText}", source)
+        self.assertIn("Entry ID: ${selected.LoggerEventID}", source)
+        self.assertIn("if (window.confirm(message)) deleteForm.requestSubmit();", source)
+        self.assertIn("deleteButton.disabled = false", source)
+
+    def test_delete_route_redirects_with_date_shift_and_success_state(self):
+        async def run_delete(function, values):
+            return date(2026, 10, 1)
+
+        with patch("app.main.get_connection", return_value=MagicMock()), \
+             patch("app.main.delete_logger_event", return_value=42), \
+             patch("app.main.run_in_threadpool", side_effect=run_delete):
+            response = asyncio.run(delete_logger_route(FormRequest({
+                "production_date": "2026-10-01",
+                "logger_event_id": "42",
+                "preset_shift_id": "2",
+            })))
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(
+            response.headers["location"],
+            "/logger?production_date=2026-10-01&preset_shift_id=2&deleted=true",
+        )
+
+    def test_delete_route_rejects_invalid_context_without_delete(self):
+        with patch("app.main.delete_logger_event",
+                   side_effect=LoggerValidationError(
+                       "LOGGER_EVENT_CONTEXT", "LOGGER entry does not belong to the selected Production Date.")), \
+             patch("app.main.get_connection", return_value=MagicMock()), \
+             patch("app.main.logger_load_context", return_value={
+                 "page_title": "LOGGER", "active_tab": "logger",
+                 "production_date": date(2026, 10, 1), "logger_events": [],
+                 "form": {}, "shift_rules": [], "preset_shift_id": "",
+                 "main_categories": [], "main_instances": [],
+                 "main_categories_json": "[]", "main_machines_json": "[]",
+                 "instance_options_json": "{}", "sub_machines_json": "[]",
+                 "stop_types": [], "sub_stop_types": [], "causes": [],
+                 "instance_options_json": "{}", "sub_related_options_json": "[]",
+                 "sub_stop_types_json": "[]", "stop_types_json": "[]",
+                 "causes_json": "[]", "logger_events_json": [],
+             }), \
+             patch("app.main.templates.TemplateResponse",
+                   return_value=type("Response", (), {"status_code": 400})()):
+            response = asyncio.run(delete_logger_route(FormRequest({
+                "production_date": "2026-10-01", "logger_event_id": "42",
+            })))
+        self.assertEqual(response.status_code, 400)
 
     def test_get_logger_renders_selected_date_and_navigation(self):
         events = [{"LoggerEventID": 1, "ProductionDate": date(2026, 10, 1),
@@ -255,6 +364,19 @@ class LoggerPageTests(unittest.TestCase):
         self.assertIn('2026-10-02 00:05', body)
         self.assertNotIn('No LOGGER entries for this Production Date.', body)
         read_events.assert_called_once_with(unittest.mock.ANY, date(2026, 10, 1))
+
+    def test_get_logger_reads_exact_lot_press_assignments(self):
+        with patch("app.main.get_connection", return_value=MagicMock()), \
+             patch("app.main.read_logger_masters", return_value=self.masters), \
+             patch("app.main.read_logger_events", return_value=[]), \
+             patch("app.main.read_assigned_press_codes",
+                   return_value=["F10", "F11"]) as read_assignments:
+            response = logger_page(request(), date(2026, 9, 4), production_id=24)
+        self.assertEqual(response.status_code, 200)
+        read_assignments.assert_called_once_with(unittest.mock.ANY, 24)
+        body = response.body.decode()
+        self.assertIn('name="production_id" value="24"', body)
+        self.assertIn('"F10", "F11"', body)
 
     def test_empty_logger_history_message(self):
         context = logger_page_context(self.masters, date(2026, 10, 1), logger_events=[])
@@ -295,6 +417,19 @@ class LoggerPageTests(unittest.TestCase):
         self.assertEqual(response.status_code, 303)
         self.assertEqual(response.headers["location"], "/logger?production_date=2026-10-01&saved=true")
         self.assertNotIn("stale", response.headers["location"])
+
+    def test_successful_save_preserves_selected_lot_context(self):
+        async def run_save(function, values):
+            return date(2026, 9, 4)
+
+        with patch("app.main.run_in_threadpool", side_effect=run_save):
+            response = asyncio.run(save_logger_route(FormRequest(
+                self.form(production_id="24")
+            )))
+        self.assertEqual(
+            response.headers["location"],
+            "/logger?production_date=2026-09-04&production_id=24&saved=true",
+        )
 
     def test_controller_parse_failure_does_not_call_save(self):
         async def reject_parse(function, values):

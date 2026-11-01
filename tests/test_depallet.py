@@ -183,6 +183,13 @@ class MemoryCursor:
                 for d in c.work['depallets'] if d['DepalletDate']==args[0]],
                 key=lambda d:(d['RunSequence'],d['DepalletID']))
             self.set_rows(found)
+        elif 'FROM dbo.DepalletRejectEntry' in sql and 'SavedRejectQty' in sql:
+            self.set_rows([{'SavedRejectQty': sum(
+                item.get('Qty', 0) for item in c.work.get('depallet_reject_entries', [])
+                if item['DepalletID'] == args[0]
+                and item['ProductionDate'] == args[1]
+                and item['ProductionID'] == args[2]
+            )}])
         elif 'UPDATE dbo.Depallet SET RunSequence=?' in sql:
             row=next(d for d in c.work['depallets'] if d['DepalletID']==args[1] and d['DepalletDate']==args[2])
             row['RunSequence']=args[0]
@@ -274,6 +281,29 @@ class DepalletTests(unittest.TestCase):
         self.assertEqual(json.loads(response.body)['depallet']['LotNo'],SAVED['LotNo'])
         self.assertEqual(conn.commits,0)
         self.assertTrue(all(sql.lstrip().startswith('SELECT') for sql,_ in conn.sql))
+
+    def test_remembered_depallet_id_restores_run_for_requested_date(self):
+        conn = MemoryConnection(existing=True)
+        with patch('app.main.get_connection', return_value=conn):
+            response = depallet_page(
+                request(), production_date=date(2026, 9, 23),
+                remembered_depallet_id=10,
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['current_run_id'], 10)
+        self.assertFalse(response.context['remembered_depallet_invalid'])
+        self.assertIn('data-selected="true"', response.body.decode())
+
+    def test_stale_remembered_depallet_id_is_rejected_and_marked_invalid(self):
+        conn = MemoryConnection(existing=True)
+        with patch('app.main.get_connection', return_value=conn):
+            response = depallet_page(
+                request(), production_date=date(2026, 9, 23),
+                remembered_depallet_id=999,
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertNotEqual(response.context['current_run_id'], 999)
+        self.assertTrue(response.context['remembered_depallet_invalid'])
 
     def test_explicit_depalet_id_loads_one_run_when_same_lot_has_multiple_runs(self):
         conn=MemoryConnection(existing=True)
@@ -411,6 +441,40 @@ class DepalletTests(unittest.TestCase):
         self.assertEqual(sum(row['DepalletQty'] for row in conn.db['depallets']),600)
         with self.assertRaisesRegex(ValueError,'Remaining Curing Qty 400'):
             save_depallet(conn,7,dict(EDIT_RAW,DepalletQty='401'))
+
+    def test_save_enforces_maximum_good_without_changing_saved_reject_entries(self):
+        conn=MemoryConnection(existing=True)
+        raw_entries = [
+            dict(DepalletID=10, ProductionDate=date(2026, 9, 23),
+                 ProductionID=7, ShiftID=2, Qty=10),
+            dict(DepalletID=10, ProductionDate=date(2026, 9, 23),
+                 ProductionID=7, ShiftID=9, Qty=5),
+        ]
+        conn.work['depallet_reject_entries'] = raw_entries
+        conn.db['depallet_reject_entries'] = raw_entries.copy()
+        with self.assertRaisesRegex(ValueError, 'cannot exceed Depallet Qty minus'):
+            save_depallet(conn, 7, dict(EDIT_RAW, DepalletQty='100', GoodQty='90'))
+        saved = save_depallet(conn, 7, dict(EDIT_RAW, DepalletQty='100', GoodQty='85'))
+        self.assertEqual(saved['GoodQty'], 85)
+        self.assertEqual(
+            conn.db.get('depallet_reject_entries'),
+            raw_entries,
+        )
+
+    def test_save_allows_full_good_when_no_saved_raw_rejects(self):
+        conn=MemoryConnection(existing=True)
+        saved = save_depallet(conn, 7, dict(
+            EDIT_RAW, DepalletQty='100', GoodQty='100', rejects={}))
+        self.assertEqual(saved['GoodQty'], 100)
+
+    def test_save_rejects_raw_total_greater_than_depallet_qty(self):
+        conn=MemoryConnection(existing=True)
+        conn.work['depallet_reject_entries'] = [
+            dict(DepalletID=10, ProductionDate=date(2026, 9, 23),
+                 ProductionID=7, ShiftID=2, Qty=101),
+        ]
+        with self.assertRaisesRegex(ValueError, 'Saved REJECT quantity exceeds'):
+            save_depallet(conn, 7, dict(EDIT_RAW, DepalletQty='100', GoodQty='0'))
 
     def test_batch_save_is_atomic_and_rejects_duplicate_production_ids(self):
         conn=MemoryConnection()

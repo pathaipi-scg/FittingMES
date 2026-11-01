@@ -48,6 +48,38 @@ assert.equal(prevented,false);
 assert.ok(selects.every(select => select.error === ''));
 console.log('All inline JavaScript syntax passed; family dropdown clearing and preview behavior passed in all 16 selection directions.');
 
+const createLotSource = source.match(/\(\(\) => \{\s*const lotForm = document\.getElementById\('create-lot-form'\);[\s\S]*?\n\}\)\(\);/);
+assert.ok(createLotSource);
+function createLotControls(maximum, value, exhausted = false) {
+  const suffix = { value, handlers: {}, setCustomValidity(message) { this.validityMessage = message; },
+    addEventListener(name, callback) { this.handlers[name] = callback; } };
+  const create = { disabled: false };
+  const warning = { textContent: '' };
+  const previewElement = { dataset: { historicalMax: String(maximum), exhausted: String(exhausted) } };
+  const formElement = { querySelector(selector) {
+    return { '.lot-number-preview': previewElement, '#running_suffix': suffix,
+      '#create-lot-button': create, '.running-suffix-warning': warning }[selector];
+  }};
+  vm.runInNewContext(createLotSource[0], {
+    document: { getElementById(id) { return id === 'create-lot-form' ? formElement : null; } }
+  });
+  return { suffix, create, warning };
+}
+const editableLot = createLotControls(2, '03');
+assert.equal(editableLot.create.disabled, false);
+editableLot.suffix.value = '04'; editableLot.suffix.handlers.input();
+assert.equal(editableLot.create.disabled, false);
+editableLot.suffix.value = '02'; editableLot.suffix.handlers.input();
+assert.equal(editableLot.create.disabled, true);
+assert.match(editableLot.warning.textContent, /greater than the historical maximum 02/);
+editableLot.suffix.value = '٠3'; editableLot.suffix.handlers.input();
+assert.equal(editableLot.create.disabled, true);
+assert.match(editableLot.warning.textContent, /exactly two ASCII digits/);
+const exhaustedLot = createLotControls(99, '', true);
+assert.equal(exhaustedLot.create.disabled, true);
+assert.match(exhaustedLot.warning.textContent, /sequence exhausted/);
+console.log('Lot suffix validation accepts overrides above MAX, rejects invalid/stale values, and disables exhausted sequences.');
+
 // Exercise shared date navigation without submitting any form or making requests.
 const navigationHTML = fs.readFileSync('app/templates/navigation.html', 'utf8');
 const productionSubmenu = navigationHTML.slice(
@@ -70,9 +102,9 @@ function dateNavigation(path, query = 'production_date=2026-09-14', action = pat
   const navigations = [];
   const dateInput = {value:'2026-09-14',validity:{valid:true},handlers:{},
     addEventListener(event, handler) { this.handlers[event] = handler; }};
-  const dateForm = {action,submit() { assert.fail('Date change must not submit'); },
+  const dateForm = {action,handlers:{},submit() { assert.fail('Date change must not submit'); },
     requestSubmit() { assert.fail('Date change must not requestSubmit'); },
-    addEventListener() { assert.fail('Manual REFRESH behavior must remain unchanged'); }};
+    addEventListener(event, handler) { this.handlers[event] = handler; }};
   vm.runInNewContext(navigationScripts[0], {
     document:{getElementById:id => ({'shared-production-date':dateForm,production_date:dateInput}[id]),
       querySelector() { return null; }, querySelectorAll() { return []; }},
@@ -128,7 +160,7 @@ const depalletToggle = {attrs:{'aria-expanded':'false'},handlers:{},
 const depalletTabs = {hidden:true};
 const pageTabs = {classList:{values:new Set(),toggle(name,active) { active ? this.values.add(name) : this.values.delete(name); }}};
 const settingDateInput = {value:'2026-09-14',validity:{valid:true},addEventListener() {}};
-const settingDateForm = {action:'/press-mc'};
+const settingDateForm = {action:'/press-mc',addEventListener() {}};
 vm.runInNewContext(navigationScripts[0], {
   document:{getElementById:id => ({
     'shared-production-date':settingDateForm,
@@ -197,6 +229,7 @@ function rememberedNavigation(path, productionActive, depalletActive, saved = {}
   const makeLink = (href, active) => ({
     href: new URL(href, 'http://local').href,
     getAttribute(name) { return name === 'aria-current' && active ? 'page' : null; },
+    addEventListener(name, handler) { this.handlers = this.handlers || {}; this.handlers[name] = handler; },
   });
   const productionLinks = [
     makeLink('/?production_date=2026-09-14', productionActive === '/'),
@@ -222,10 +255,14 @@ function rememberedNavigation(path, productionActive, depalletActive, saved = {}
   const emptyToggle = makeToggle(false);
   const input = {value:'2026-09-15',validity:{valid:true},addEventListener() {}};
   const tabs = {hidden:true};
+  const location = {
+    href:`http://local${path}`,
+    assign:url => navigations.push(new URL(url)),
+  };
   vm.runInNewContext(navigationScripts[0], {
     document:{
       getElementById:id => ({
-        'shared-production-date':{action:path},
+        'shared-production-date':{action:path,addEventListener() {}},
         production_date:input,
         'settings-toggle':emptyToggle,
         'settings-tabs':{hidden:true},
@@ -243,12 +280,9 @@ function rememberedNavigation(path, productionActive, depalletActive, saved = {}
       getItem:key => values.get(key) || null,
       setItem:(key,value) => values.set(key,value),
     },
-    window:{location:{
-      href:`http://local${path}`,
-      assign:url => navigations.push(new URL(url)),
-    }},
+    window:{location},
   });
-  return {productionLinks, depalletLinks, prodToggle, depToggle, navigations, values};
+  return {productionLinks, depalletLinks, prodToggle, depToggle, navigations, values, location};
 }
 
 const savedDepalletReject =
@@ -287,4 +321,24 @@ const depalletReject = rememberedNavigation(
 depalletReject.prodToggle.handlers.click();
 assert.equal(depalletReject.navigations[0].searchParams.get('workflow'), 'production');
 assert.equal(depalletReject.navigations[0].searchParams.has('depallet_id'), false);
+
+const selectedRunNavigation = rememberedNavigation(
+  '/depallet?production_date=2026-09-14',
+  null, '/depallet',
+  {depallet: '/depallet?production_date=2026-09-14'},
+);
+selectedRunNavigation.location.href =
+  'http://local/depallet?production_date=2026-09-14&production_id=7&depallet_id=13';
+const selectedRunLink = selectedRunNavigation.depalletLinks[1];
+selectedRunLink.handlers.click({preventDefault() {}});
+assert.equal(selectedRunNavigation.navigations[0].pathname, '/reject');
+assert.equal(selectedRunNavigation.navigations[0].searchParams.get('depallet_id'), '13');
+const returnedRunNavigation = rememberedNavigation(
+  '/reject?production_date=2026-09-14&workflow=depallet&depallet_id=13',
+  null, '/reject',
+  JSON.parse(selectedRunNavigation.values.get('fittingmes.main-menu.submenu.v1')),
+);
+returnedRunNavigation.depalletLinks[0].handlers.click({preventDefault() {}});
+assert.equal(returnedRunNavigation.navigations[0].pathname, '/depallet');
+assert.equal(returnedRunNavigation.navigations[0].searchParams.get('depallet_id'), '13');
 console.log('Remembered Production/Depallet submenu destinations, date preservation, and workflow-specific context passed.');

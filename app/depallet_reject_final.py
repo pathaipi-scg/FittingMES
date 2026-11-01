@@ -88,17 +88,17 @@ def _raw_totals(cursor, run, lock=False):
         SELECT COUNT_BIG(*) AS MismatchedRows
         FROM dbo.DepalletRejectEntry{lock_hint}
         WHERE DepalletID=? AND
-              (ProductionDate<>? OR ProductionID<>? OR ShiftID<>?)
-    """, run["DepalletID"], run["DepalletDate"], run["ProductionID"], run["ShiftID"])
+              (ProductionDate<>? OR ProductionID<>?)
+    """, run["DepalletID"], run["DepalletDate"], run["ProductionID"])
     mismatch = rows(cursor)
     if mismatch and int(mismatch[0]["MismatchedRows"] or 0):
         raise ValueError("RAW REJECT entries do not match the selected Depallet run context.")
     cursor.execute(f"""
         SELECT RejectReasonID,SUM(CONVERT(bigint,Qty)) AS RawQty
         FROM dbo.DepalletRejectEntry{lock_hint}
-        WHERE DepalletID=? AND ProductionDate=? AND ProductionID=? AND ShiftID=?
+        WHERE DepalletID=? AND ProductionDate=? AND ProductionID=?
         GROUP BY RejectReasonID
-    """, run["DepalletID"], run["DepalletDate"], run["ProductionID"], run["ShiftID"])
+    """, run["DepalletID"], run["DepalletDate"], run["ProductionID"])
     return {
         int(item["RejectReasonID"]): int(item["RawQty"] or 0)
         for item in rows(cursor)
@@ -123,6 +123,10 @@ def read_depallet_reject_cal(cursor, depallet_id, production_date=None,
     if not reasons:
         raise ValueError("No active Reject Reasons are configured for this Product Family.")
     quantities = _raw_totals(cursor, run)
+    raw_total = sum(quantities.values())
+    depallet_qty = int(run["DepalletQty"] or 0)
+    if raw_total > depallet_qty:
+        raise ValueError("Saved REJECT quantity exceeds Depallet Qty.")
     applicable_ids = {int(reason["RejectReasonID"]) for reason in reasons}
     _validate_raw_reasons(quantities, applicable_ids)
     return dict(
@@ -131,7 +135,8 @@ def read_depallet_reject_cal(cursor, depallet_id, production_date=None,
         depallet_date=run["DepalletDate"],
         shift_id=int(run["ShiftID"]),
         quantities=quantities,
-        raw_total=sum(quantities.values()),
+        raw_total=raw_total,
+        calculated_good=depallet_qty - raw_total,
         total_reject=_physical_total(run),
     )
 

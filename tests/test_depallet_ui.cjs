@@ -3,6 +3,7 @@ const vm = require('node:vm');
 const assert = require('node:assert/strict');
 
 const html = fs.readFileSync('app/templates/depallet.html', 'utf8');
+const mainSource = fs.readFileSync('app/main.py', 'utf8');
 assert.doesNotMatch(html, /<h1>\s*DEPALLET\s*<\/h1>/);
 assert.doesNotMatch(html, /<h2>\s*CREATE DEPALLET LOT\s*<\/h2>/);
 assert.match(html, /<section class="panel">\s*<div id="depallet-selectors">/);
@@ -54,6 +55,7 @@ const rejectHeader = html.slice(rejectHeaderStart,
   html.indexOf('id="depallet-final-status"', rejectHeaderStart));
 for (const id of ['reject-detail-title','depallet-reject-remark',
   'depallet-reject-save','depallet-reject-cal','depallet-total-reject',
+  'depallet-balance-difference',
   'depallet-reject-calculated','depallet-reject-final-classified',
   'depallet-difference']) {
   assert.ok(rejectHeader.includes(`id="${id}"`), `${id} remains in the compact header`);
@@ -66,6 +68,13 @@ assert.match(source, /row\.dataset\.depalletId \? ' \/ RUN ' \+ row\.dataset\.de
 assert.match(source, /Math\.floor\(source\.length \/ 3\)/);
 assert.match(source, /data-reject-reason-id/);
 assert.match(source, /\/depallet\/\$\{depalletId\}\/reject-final/);
+assert.match(mainSource, /"calculated_good": result\["calculated_good"\]/);
+assert.match(source, /result\.calculated_good/);
+assert.match(source, /fields\(selectedRow\)\.good_qty/);
+assert.match(source, /state\.final_dirty = true/);
+assert.match(source, /!state\.final_dirty \|\| busy/);
+assert.match(source, /Number\(depalletQty\) - Number\(goodQty\) - Number\(rawTotal\)/);
+assert.match(source, /const changedPhysicalContext = \['shift','depallet_qty'\]/);
 assert.match(source, /Save to persist FINAL/);
 assert.match(html, /#depallet-lots tr\[aria-selected=true\]/);
 assert.match(html, /SEQ \{\{ run\.RunSequence \}\} \/ RUN \{\{ run\.DepalletID \}\}/);
@@ -73,6 +82,9 @@ assert.match(html, /data-move="up"/);
 assert.match(html, /data-move="down"/);
 assert.match(html, /\/depallet\/\$\{row\.dataset\.depalletId\}\/move/);
 assert.match(html, /Save or remove NEW RUN rows before reordering saved runs\./);
+assert.match(source, /fittingmes\.depallet\.' \+ date\.value/);
+assert.match(source, /sessionStorage\.setItem\(selectionStorageKey, row\.dataset\.depalletId\)/);
+assert.match(html, /data-remembered-depallet-invalid/);
 
 class Element {
   constructor(tag = 'div') {
@@ -115,6 +127,7 @@ const ids = ['depallet-input','depallet-fields','depallet-date','depallet-family
   'depallet-reject-save','depallet-reject-cal','depallet-final-status','depallet-reject-remark',
   'reject-detail-title','depallet-status','depallet-warning','depallet-reject-calculated',
   'depallet-reject-final-classified','depallet-difference','depallet-total-reject',
+  'depallet-balance-difference',
   'depallet-balance','depallet-lots-data','depallet-products-data','depallet-entries','depallet-runs-data',
   'depallet-reasons-data','depallet-daily-totals','depallet-day-start-time'];
 const nodes = Object.fromEntries(ids.map(id => [id, new Element(id.includes('select') || id.includes('family') || id.includes('product') ? 'select' : 'div')]));

@@ -241,6 +241,10 @@ class ProductFamilyTests(unittest.TestCase):
         database.executemany('INSERT INTO dbo.ProductionLot VALUES (?,?,?,?,?,?)', [
             (1, '06', '2026-09-01', 'B066909', 1, 1),
             (1, '06', '2026-09-01', 'B066909', 2, 1),
+            (1, '06', '2026-09-01', 'B066909', 5, 0),
+            (1, '07', '2026-09-01', 'B076909', 4, 1),
+            (1, '08', '2026-09-01', 'B086909', 1, 1),
+            (1, '08', '2026-09-01', 'B086909', 2, 1),
             (3, '06', '2026-09-01', 'I066909', 1, 1),
             (3, '06', '2026-09-01', 'I066909', 2, 0),
             (None, '06', '2026-09-01', 'B006909', 1, 1),
@@ -248,11 +252,20 @@ class ProductFamilyTests(unittest.TestCase):
         ])
         cursor = SqliteCursor(database.cursor())
         self.assertEqual(next_running_no(
-            cursor, product_family_id=1, product_code='06', plan_date=date(2026, 9, 21)), 3)
+            cursor, 'B066909', product_family_id=1, product_code='06',
+            plan_date=date(2026, 9, 21)), 6)
         self.assertEqual(next_running_no(
-            cursor, product_family_id=3, product_code='06', plan_date=date(2026, 9, 21)), 2)
+            cursor, 'B076909', product_family_id=1, product_code='07',
+            plan_date=date(2026, 9, 21)), 5)
         self.assertEqual(next_running_no(
-            cursor, product_family_id=1, product_code='06', plan_date=date(2026, 10, 1)), 1)
+            cursor, 'B086909', product_family_id=1, product_code='08',
+            plan_date=date(2026, 9, 21)), 3)
+        self.assertEqual(next_running_no(
+            cursor, 'I066909', product_family_id=3, product_code='06',
+            plan_date=date(2026, 9, 21)), 3)
+        self.assertEqual(next_running_no(
+            cursor, 'B066910', product_family_id=1, product_code='06',
+            plan_date=date(2026, 10, 1)), 1)
         self.assertEqual(next_running_no(cursor, 'B006909'), 3)
 
     def test_new_lot_rejects_unresolved_family_before_insert(self):
@@ -260,7 +273,7 @@ class ProductFamilyTests(unittest.TestCase):
         plan = dict(StartTime=date(2026, 9, 21), Shift='1', PlanName='Plan',
                     MaterialCode='12345678XX', MaterialName='Product', PlanCount=10)
         with self.assertRaisesRegex(ValueError, 'valid Product Family ID'):
-            insert_lot(conn, plan, '06', 'I066909', 1)
+            insert_lot(conn, plan, '06', 'I066909', '01')
         conn.rollback.assert_called_once()
         conn.commit.assert_not_called()
         self.assertFalse(any('INSERT INTO dbo.ProductionLot' in call.args[0]

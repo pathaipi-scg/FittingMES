@@ -136,6 +136,63 @@ class ProductionDataTests(unittest.TestCase):
                 self.assertNotIn('PlanQty',shift[0])
                 conn.commit.assert_called_once()
 
+    def test_save_uses_saved_production_reject_total_as_maximum_curing(self):
+        conn = self.connection(exists=True)
+        conn.cursor.return_value.fetchall.side_effect = [[], [(6,)]]
+        saved = save_production_data(
+            conn, 7, dict(RAW, CounterQty='4090', CuringQty='4084'),
+            date(2026, 9, 4),
+        )
+        self.assertEqual(saved['WetRejectQty'], 6)
+        raw_query = next(
+            call.args for call in conn.cursor.return_value.execute.call_args_list
+            if 'FROM dbo.ProductionRejectEntry' in call.args[0]
+        )
+        self.assertEqual(raw_query[1:], (7, date(2026, 9, 4)))
+
+    def test_save_allows_curing_below_maximum_without_reject_writes(self):
+        conn = self.connection(exists=True)
+        conn.cursor.return_value.fetchall.side_effect = [[], [(6,)]]
+        saved = save_production_data(
+            conn, 7, dict(RAW, CounterQty='4090', CuringQty='3975'),
+            date(2026, 9, 4),
+        )
+        self.assertEqual(saved['WetRejectQty'], 115)
+        self.assertFalse(any(
+            'ProductionRejectEntry' in call.args[0]
+            and any(keyword in call.args[0] for keyword in ('INSERT', 'UPDATE', 'DELETE'))
+            for call in conn.cursor.return_value.execute.call_args_list
+        ))
+
+    def test_save_rejects_curing_above_maximum(self):
+        conn = self.connection(exists=True)
+        conn.cursor.return_value.fetchall.side_effect = [[], [(6,)]]
+        with self.assertRaisesRegex(ValueError, 'cannot exceed Counter minus saved'):
+            save_production_data(
+                conn, 7, dict(RAW, CounterQty='4090', CuringQty='4085'),
+                date(2026, 9, 4),
+            )
+        conn.commit.assert_not_called()
+
+    def test_save_allows_full_counter_when_no_saved_production_rejects(self):
+        conn = self.connection(exists=True)
+        conn.cursor.return_value.fetchall.side_effect = [[], [(0,)]]
+        saved = save_production_data(
+            conn, 7, dict(RAW, CounterQty='4090', CuringQty='4090'),
+            date(2026, 9, 4),
+        )
+        self.assertEqual(saved['WetRejectQty'], 0)
+
+    def test_saved_production_reject_total_exceeding_counter_is_rejected(self):
+        conn = self.connection(exists=True)
+        conn.cursor.return_value.fetchall.side_effect = [[], [(4091,)]]
+        with self.assertRaisesRegex(ValueError, 'exceeds Counter'):
+            save_production_data(
+                conn, 7, dict(RAW, CounterQty='4090', CuringQty='0'),
+                date(2026, 9, 4),
+            )
+        conn.commit.assert_not_called()
+
     def test_repeated_save_updates_same_row(self):
         conn=MagicMock()
         cursor=conn.cursor.return_value
@@ -167,9 +224,11 @@ class ProductionDataTests(unittest.TestCase):
         conn.rollback.assert_called_once(); conn.commit.assert_not_called()
 
     def test_new_lot_defaults_shift_from_effective_plan(self):
-        conn=MagicMock(); conn.cursor.return_value.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),None,(1,),(1,),(7,)]
+        conn=MagicMock(); conn.cursor.return_value.fetchone.side_effect=[
+            (0,), ('NeuFit / NeuStile',), (1, '06'), None, (1,), None, (1,), (7,),
+        ]
         with patch('app.lots.lot_prefix', return_value='B066909'):
-            insert_lot(conn,dict(PLAN,Shift='3'),'06','B066909',1,product_family_id=1)
+            insert_lot(conn,dict(PLAN,Shift='3'),'06','B066909','01',product_family_id=1)
         args=next(c.args for c in conn.cursor.return_value.execute.call_args_list if 'INSERT INTO dbo.ProductionLot\n' in c.args[0])
         self.assertEqual(args[2],'3')
 

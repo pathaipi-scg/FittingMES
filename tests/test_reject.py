@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 from starlette.requests import Request
 from app.reject import (
     RejectValidationError,
+    delete_reject_entry,
     read_reject_page_data,
     save_reject_entry,
 )
@@ -843,6 +844,95 @@ class RejectEntryTests(unittest.TestCase):
         self.assertNotRegex(source + page, r"ProductFamilyID\s*==\s*\d+")
         self.assertNotRegex(source + page, r"ReasonCode\s*(?:>=|<=|>|<)")
         self.assertNotIn("R319", source + page)
+
+
+class RejectDeleteTests(unittest.TestCase):
+    class Cursor:
+        def __init__(self, found=True, rowcount=1):
+            self.found = found
+            self.rowcount = rowcount
+            self.calls = []
+            self.description = []
+            self.result = []
+
+        def execute(self, query, *params):
+            self.calls.append((query, params))
+            if query.lstrip().startswith("SELECT"):
+                self.description = [("EntryID",)]
+                self.result = [(44,)] if self.found else []
+            else:
+                self.description = []
+                self.result = []
+            return self
+
+        def fetchall(self):
+            result, self.result = self.result, []
+            return result
+
+    def test_deletes_only_context_validated_production_entry(self):
+        cursor = self.Cursor()
+        connection = FakeConnection(cursor)
+        entry_id = delete_reject_entry(connection, {
+            "workflow": "production",
+            "production_date": "2026-10-06",
+            "entry_id": "44",
+            "production_id": "17701",
+            "shift_id": "734",
+            "line_equipment_id": "620",
+        })
+        self.assertEqual(entry_id, 44)
+        self.assertEqual(connection.commits, 1)
+        self.assertIn("DELETE FROM dbo.ProductionRejectEntry", cursor.calls[-1][0])
+        self.assertEqual(cursor.calls[-1][1], (44, date(2026, 10, 6), 17701, 734, 620))
+
+    def test_missing_entry_rolls_back_without_delete(self):
+        cursor = self.Cursor(found=False)
+        connection = FakeConnection(cursor)
+        with self.assertRaises(RejectValidationError) as raised:
+            delete_reject_entry(connection, {
+                "workflow": "production",
+                "production_date": "2026-10-06",
+                "entry_id": "44",
+                "production_id": "17701",
+                "shift_id": "734",
+                "line_equipment_id": "620",
+            })
+        self.assertEqual(raised.exception.code, "ENTRY_NOT_FOUND")
+        self.assertEqual(connection.commits, 0)
+        self.assertEqual(connection.rollbacks, 1)
+        self.assertFalse(any("DELETE FROM" in query for query, _ in cursor.calls))
+
+    def test_deletes_only_context_validated_depallet_entry(self):
+        cursor = self.Cursor()
+        connection = FakeConnection(cursor)
+        entry_id = delete_reject_entry(connection, {
+            "workflow": "depallet",
+            "production_date": "2026-10-06",
+            "entry_id": "44",
+            "production_id": "17701",
+            "depallet_id": "16001",
+            "shift_id": "734",
+            "line_equipment_id": "620",
+        })
+        self.assertEqual(entry_id, 44)
+        self.assertEqual(connection.commits, 1)
+        self.assertIn("DELETE FROM dbo.DepalletRejectEntry", cursor.calls[-1][0])
+        self.assertEqual(
+            cursor.calls[-1][1],
+            (44, date(2026, 10, 6), 17701, 16001, 734, 620),
+        )
+
+    def test_depallet_delete_requires_run_context(self):
+        with self.assertRaises(RejectValidationError) as raised:
+            delete_reject_entry(FakeConnection(self.Cursor()), {
+                "workflow": "depallet",
+                "production_date": "2026-10-06",
+                "entry_id": "44",
+                "production_id": "17701",
+                "shift_id": "734",
+                "line_equipment_id": "620",
+            })
+        self.assertEqual(raised.exception.code, "INVALID_DEPALLET_RUN")
 
 
 class RejectCalTests(unittest.TestCase):

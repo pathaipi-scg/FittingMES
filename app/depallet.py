@@ -255,6 +255,21 @@ def _save_depallet_locked(cursor, production_id, raw, day_start_time=None):
     retained = {r['ReasonCode']: r['Qty'] for r in old_rejects if r['ReasonCode'] not in active_codes}
     authoritative = dict(raw, LotNo=lot['LotNo'])
     data, rejects = validate(authoritative, active_codes, retained)
+    saved_reject_total = 0
+    if depallet_id is not None:
+        cursor.execute("""
+            SELECT COALESCE(SUM(CONVERT(bigint,Qty)),0) AS SavedRejectQty
+            FROM dbo.DepalletRejectEntry
+            WHERE DepalletID=? AND ProductionDate=? AND ProductionID=?
+        """, depallet_id, selected_date, production_id)
+        saved_reject_total = int(cursor.fetchone()[0] or 0)
+    if saved_reject_total > data['DepalletQty']:
+        raise ValueError('Saved REJECT quantity exceeds Depallet Qty.')
+    maximum_good = data['DepalletQty'] - saved_reject_total
+    if data['GoodQty'] > maximum_good:
+        raise ValueError(
+            'Good Qty cannot exceed Depallet Qty minus saved DEPALLET REJECT quantity.'
+        )
     if day_start_time is None:
         day_start_time = read_day_start_time(cursor, selected_date)
     has_start = bool(str(raw.get('Start') or '').strip())

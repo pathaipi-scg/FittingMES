@@ -73,8 +73,10 @@ assert.ok(html.indexOf('id="reject-production"') < html.indexOf('id="reject-sour
 assert.ok(html.indexOf('id="reject-source"') < html.indexOf('id="reject-qty"'));
 assert.ok(html.indexOf('id="reject-qty"') < html.indexOf('id="reject-reason"'));
 assert.ok(html.indexOf('id="reject-reason"') < html.indexOf('id="reject-save"'));
+assert.ok(html.indexOf('id="reject-save"') < html.indexOf('id="reject-delete"'));
 assert.ok(html.indexOf('id="reject-save"') < html.indexOf('id="reject-cal"'));
 assert.match(html, /id="reject-cal" type="button">REJECT CAL<\/button>/);
+assert.match(html, /id="reject-delete" type="button" disabled>DELETE<\/button>/);
 assert.doesNotMatch(html, /id="reject-depallet-run"/);
 assert.doesNotMatch(html, /<h1>REJECT<\/h1>|New Fitting REJECT quantities are separate/);
 assert.doesNotMatch(html, /<a[^>]*reject-cal-link/);
@@ -83,6 +85,11 @@ assert.doesNotMatch(html, /id="reject-workflow"/);
 assert.match(source, /window\.location\.href = `\/reject\/cal\?/);
 assert.match(source, /save\.textContent = 'SAVE EDIT'/);
 assert.match(source, /cancel\.addEventListener\('click', clearEdit\)/);
+assert.match(source, /deleteButton\.addEventListener\('click'/);
+assert.match(source, /\/reject\/delete\?workflow=\$\{encodeURIComponent\(workflow\)\}/);
+assert.match(source, /window\.confirm\(`Delete this \$\{workflowLabel\} REJECT entry/);
+assert.match(source, /name = 'depallet_id'/);
+assert.match(source, /row\.depallet_id/);
 assert.match(source, /const workflow = "production"/);
 assert.match(source, /item\.EquipmentType === scopeCode/);
 assert.match(source, /item\.SourceScopeCode === scopeCode/);
@@ -370,9 +377,10 @@ function runPageScript({storage = createSessionStorage(), date = '2026-10-06',
   const context = {
     page: pageData,
     Option: FakeOption,
+    URL,
     URLSearchParams,
     sessionStorage: storage,
-    window: {location: {href: ''}},
+    window: {location: {href: 'http://local/reject'}, history: {replaceState() {}}},
     document: {
       getElementById: id => elements[id],
       querySelectorAll: () => entryRadios,
@@ -440,7 +448,10 @@ const restoredContextPage = runPageScript({
 assert.equal(storageOperations[0].type, 'get');
 assert.ok(storageOperations.every(operation =>
   operation.type !== 'set' ||
-  JSON.parse(operation.value).lineId === savedContext.lineId));
+  (operation.key === contextKey
+    ? JSON.parse(operation.value).lineId === savedContext.lineId
+    : operation.key === 'fittingmes.depallet.2026-10-06' &&
+      operation.value === '52')))
 assert.equal(restoredContextPage['reject-shift'].value, '2');
 assert.equal(restoredContextPage['reject-line'].value, '621');
 assert.equal(restoredContextPage['reject-production'].value, '52');

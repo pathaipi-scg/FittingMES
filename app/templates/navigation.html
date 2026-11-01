@@ -42,7 +42,9 @@
 {% set production_active = tab in ('production', 'logger', 'logger-summary', 'usage') or (tab in ('reject', 'reject-cal') and reject_workflow != 'depallet') %}
 {% set depallet_active = tab == 'depallet' or (tab in ('reject', 'reject-cal') and reject_workflow == 'depallet') %}
 {% set production_tab_query = tab_date_query %}
+{% set logger_tab_query = tab_date_query %}
 {% if current is defined and current and current.ProdDate == production_date %}{% if tab_date %}{% set production_tab_query = production_tab_query ~ '&' %}{% else %}{% set production_tab_query = production_tab_query ~ '?' %}{% endif %}{% set production_tab_query = production_tab_query ~ 'production_id=' ~ current.ProductionID %}{% endif %}
+{% if current is defined and current and current.ProdDate == production_date %}{% if tab_date %}{% set logger_tab_query = logger_tab_query ~ '&' %}{% else %}{% set logger_tab_query = logger_tab_query ~ '?' %}{% endif %}{% set logger_tab_query = logger_tab_query ~ 'production_id=' ~ current.ProductionID %}{% endif %}
 {% set current_path = '/reject/cal?workflow=depallet' if tab == 'reject-cal' and reject_workflow == 'depallet' else '/reject/cal?workflow=production' if tab == 'reject-cal' else '/reject?workflow=depallet' if tab == 'reject' and reject_workflow == 'depallet' else '/reject?workflow=production' if tab == 'reject' else '/depallet' if tab == 'depallet' else '/logger/summary' if tab == 'logger-summary' else '/logger/master' if tab == 'logger-master' else '/logger' if tab == 'logger' else '/usage' if tab == 'usage' else '/prod-api' if tab == 'prod-api' else '/reject-api' if tab == 'reject-api' else '/press-mc' if tab == 'press-mc' else '/mould' if tab == 'mould' else '/print-prod' if tab == 'print-prod' else '/print-oee' if tab == 'print-oee' else '/' %}
 <div class="shared-header-row">
 <div class="shared-header-primary-row">
@@ -69,7 +71,7 @@
 <a href="/{{ production_tab_query }}" {% if tab == 'production' %}aria-current="page"{% endif %}>PRODUCTION</a>
 {% for key, label, path in [('logger','LOGGER','/logger'),('reject','REJECT','/reject'),('usage','USAGE','/usage')] %}
 {% if key == 'reject' %}<a href="/reject{{ tab_date_query }}{% if tab_date_query %}&amp;{% else %}?{% endif %}workflow=production" {% if key == 'reject' and tab in ('reject','reject-cal') and reject_workflow != 'depallet' %}aria-current="page"{% endif %}>{{ label }}</a>
-{% else %}<a href="{{ path }}{{ tab_date_query }}" {% if tab == key or key == 'logger' and tab == 'logger-summary' %}aria-current="page"{% endif %}>{{ label }}</a>{% endif %}
+{% else %}<a href="{{ path }}{{ logger_tab_query if key == 'logger' else tab_date_query }}" {% if tab == key or key == 'logger' and tab == 'logger-summary' %}aria-current="page"{% endif %}>{{ label }}</a>{% endif %}
 {% endfor %}
 </nav>
 </div>
@@ -131,7 +133,45 @@
     return null;
   };
   const currentGroup = menuGroupForUrl(currentUrl);
+  const liveCurrentUrl = () => new URL(window.location.href);
+  const rememberedLotForDate = productionDate => {
+    try {
+      if (typeof sessionStorage === 'undefined') return null;
+      return sessionStorage.getItem('fittingmes.production-lot.' + productionDate);
+    } catch (error) {
+      console.warn('Unable to read remembered Production Lot.', error);
+      return null;
+    }
+  };
+  const rememberedDepalletForDate = productionDate => {
+    try {
+      if (typeof sessionStorage === 'undefined') return null;
+      return sessionStorage.getItem('fittingmes.depallet.' + productionDate);
+    } catch (error) {
+      console.warn('Unable to read remembered Depallet selection.', error);
+      return null;
+    }
+  };
+  const applyRememberedLot = destination => {
+    if (destination.pathname !== '/') return;
+    destination.searchParams.delete('production_id');
+    destination.searchParams.delete('remembered_production_id');
+    const remembered = rememberedLotForDate(destination.searchParams.get('production_date'));
+    if (remembered) destination.searchParams.set('remembered_production_id', remembered);
+  };
+  const applyRememberedDepallet = destination => {
+    if (destination.pathname !== '/depallet') return;
+    destination.searchParams.delete('depallet_id');
+    destination.searchParams.delete('remembered_depallet_id');
+    const remembered = rememberedDepalletForDate(
+      destination.searchParams.get('production_date'),
+    );
+    if (remembered) {
+      destination.searchParams.set('remembered_depallet_id', remembered);
+    }
+  };
   const preserveRouteContext = (destination, group) => {
+    const currentUrl = liveCurrentUrl();
     const pathname = destination.pathname;
     const isRejectRoute = pathname.startsWith('/reject');
     const supportsProductionId = pathname === '/' || pathname === '/depallet' ||
@@ -152,18 +192,41 @@
     if (supportsShiftId && currentUrl.searchParams.has('shift_id')) {
       destination.searchParams.set('shift_id', currentUrl.searchParams.get('shift_id'));
     }
+    if (group === 'production' && pathname === '/' &&
+        !currentUrl.searchParams.has('production_id')) {
+      applyRememberedLot(destination);
+    }
+    if (group === 'depallet' && pathname === '/depallet' &&
+        !currentUrl.searchParams.has('depallet_id')) {
+      applyRememberedDepallet(destination);
+    }
   };
-  const routeForGroup = (group, link) => {
+  const routeForGroup = (group, link, useStored = true) => {
+    const currentUrl = liveCurrentUrl();
     const destination = new URL(
-      storedNavigation[group] || link.href,
+      useStored ? (storedNavigation[group] || link.href) : link.href,
       window.location.href,
     );
     destination.searchParams.set('production_date', dateInput.value);
     if (menuGroupForUrl(currentUrl) === group) {
       preserveRouteContext(destination, group);
     }
+    if (group === 'depallet' && destination.pathname === '/depallet' &&
+        !currentUrl.searchParams.has('depallet_id')) {
+      applyRememberedDepallet(destination);
+    }
     return destination;
   };
+  for (const group of ['production', 'depallet']) {
+    groupLinks[group].forEach(link => {
+      link.addEventListener('click', event => {
+        event.preventDefault();
+        const destination = routeForGroup(group, link, false);
+        saveDestination(group, destination.pathname + destination.search);
+        window.location.assign(destination.toString());
+      });
+    });
+  }
   for (const group of ['production', 'depallet']) {
     const activeLink = groupLinks[group].find(
       link => link.getAttribute('aria-current') === 'page',
@@ -177,6 +240,12 @@
       saveDestination(group, destination.pathname + destination.search);
     }
   }
+  groupLinks.production.forEach(link => {
+    const destination = new URL(link.href, window.location.href);
+    destination.searchParams.set('production_date', dateInput.value);
+    if (!currentUrl.searchParams.has('production_id')) applyRememberedLot(destination);
+    link.href = destination.toString();
+  });
   const loadedDate = dateInput.value;
   dateInput.addEventListener('change', () => {
     if (!dateInput.value || !dateInput.validity.valid || dateInput.value === loadedDate) return;
@@ -246,6 +315,21 @@
     if (group.toggle === productionToggle) group.menuGroup = 'production';
     if (group.toggle === depalletToggle) group.menuGroup = 'depallet';
     bindToggle(group);
+  });
+  dateForm.addEventListener('submit', () => {
+    if (currentUrl.pathname !== '/depallet') return;
+    const staleProduction = dateForm.querySelector('input[name="production_id"]');
+    if (staleProduction) staleProduction.remove();
+    const remembered = rememberedDepalletForDate(dateInput.value);
+    if (!remembered) return;
+    let input = dateForm.querySelector('input[name="remembered_depallet_id"]');
+    if (!input) {
+      input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = 'remembered_depallet_id';
+      dateForm.appendChild(input);
+    }
+    input.value = remembered;
   });
 })();
 </script>

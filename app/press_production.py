@@ -212,6 +212,18 @@ def read_press_production(cursor, production_id):
     return rows(cursor)
 
 
+def read_assigned_press_codes(cursor, production_id):
+    """Read the press equipment assigned to one exact Production Lot."""
+    cursor.execute('''SELECT DISTINCT pp.MachineCode
+        FROM dbo.PressProduction AS pp
+        JOIN dbo.EquipmentMaster AS equipment
+          ON equipment.EquipmentCode=pp.MachineCode
+        WHERE pp.ProductionID=?
+          AND equipment.EquipmentType='PRESS'
+        ORDER BY pp.MachineCode''', production_id)
+    return [row[0] for row in cursor.fetchall()]
+
+
 def _optional_quantity(value, label):
     text = str(value if value is not None else '').strip()
     if not text:

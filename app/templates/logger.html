@@ -15,7 +15,7 @@
 .logger-form label:has(#logger-sub-stop-type){width:8rem}.logger-form label:has(#logger-sub-stop-type) select{width:8rem}
 .logger-form label:has(select[name="meo"]){width:2.5rem}.logger-form label:has(select[name="meo"]) select{width:2.5rem}
 .logger-form label.logger-note{width:14rem}.logger-form label.logger-note input{width:14rem}
-.logger-actions{display:flex;gap:6px;align-items:center;flex:0 0 auto}.logger-duration-field{display:grid;gap:2px;width:3rem;flex:0 0 auto}.logger-duration-field output{box-sizing:border-box;width:3rem;height:24px;padding:1.5px 4.5px;border:0.75px solid #c7d2df;border-radius:2.25px;background:white;font-variant-numeric:tabular-nums;font-weight:600}.logger-help{margin:4px 0;color:#718096}
+.logger-actions{display:flex;gap:6px;align-items:center;flex:0 0 auto}.logger-duration-field{display:grid;gap:2px;width:3rem;flex:0 0 auto}.logger-duration-field output{box-sizing:border-box;width:3rem;height:24px;padding:1.5px 4.5px;border:0.75px solid #c7d2df;border-radius:2.25px;background:white;font-variant-numeric:tabular-nums;font-weight:600}.logger-help{margin:4px 0;color:#718096}.logger-delete{color:#af3030;border-color:#ecc1c1}
 .logger-error{background:#fff0ef;color:#9d2525;padding:4px;margin-bottom:5px;white-space:pre-line}.logger-success{background:#e7f4eb;color:#25643b;padding:4px;margin-bottom:5px}
 .logger-toolbar{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.logger-heading{display:flex;align-items:center;gap:1rem}.logger-heading h1{margin:0}.logger-preset{display:flex;align-items:center;gap:4px;font-weight:600}.logger-preset select{height:24px}.logger-nav{display:flex;align-items:center;gap:4.5px;margin:0;white-space:nowrap}.logger-nav .button{font:400 9.75px/1.2 system-ui,sans-serif;height:22.5px;border:0.75px solid #c7d2df;border-radius:2.25px;padding:1.5px 4.5px;background:white;color:inherit;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;white-space:nowrap}
 .logger-form label[hidden],.logger-event-shift[hidden]{display:none}
@@ -26,9 +26,11 @@
 <div class="logger-toolbar"><div class="logger-heading"><h1>LOGGER</h1><label class="logger-preset">Shift:<select id="logger-preset-shift">{% for rule in shift_rules %}<option value="{{ rule.ShiftID }}" {% if preset_shift_id|string == rule.ShiftID|string %}selected{% endif %}>{{ rule.ShiftID }}</option>{% endfor %}</select></label></div><nav class="logger-nav"><a class="button" href="/logger/summary?production_date={{ production_date }}">LOG CAL</a></nav></div>
 {% if error %}<div class="logger-error" role="alert">{{ error }}</div>{% endif %}
 {% if saved %}<div class="logger-success" role="status">LOGGER entry saved.</div>{% endif %}
+{% if deleted %}<div class="logger-success" role="status">LOGGER entry deleted.</div>{% endif %}
 <section class="panel" aria-label="LOGGER entry">
 <form id="logger-form" class="logger-form" method="post" action="/logger/save">
 <input type="hidden" name="production_date" value="{{ production_date }}">
+{% if production_id is not none %}<input type="hidden" name="production_id" value="{{ production_id }}">{% endif %}
 <input type="hidden" name="preset_shift_id" id="logger-preset-shift-value" value="{{ preset_shift_id }}">
 <input type="hidden" name="logger_event_id" id="logger-event-id" value="{{ form.get('logger_event_id', '') }}">
 <div class="logger-event-shift logger-wide" id="logger-event-shift" hidden><label id="logger-event-shift-edit" hidden>Event Shift<select name="event_shift_id" id="logger-event-shift-value" disabled><option value="">-</option>{% for rule in shift_rules %}<option value="{{ rule.ShiftID }}">{{ rule.ShiftID }}</option>{% endfor %}</select></label><output id="logger-event-shift-auto" hidden></output></div>
@@ -47,7 +49,13 @@
 <input type="hidden" name="sub_mc_id" id="logger-sub-id"><input type="hidden" name="sub_mc_instance_no" id="logger-sub-instance">
 <label class="logger-note">Note<input name="note" maxlength="1000" value="{{ form.get('note', '') }}"></label>
 <input type="hidden" id="logger-classification-edited" name="classification_edited" value="{{ form.get('classification_edited', 'false') }}">
-<div class="logger-actions logger-wide"><button class="primary" id="logger-save" type="submit">SAVE</button><button id="logger-cancel" type="button" hidden>CANCEL</button><span id="logger-status" role="status" aria-live="polite"></span></div>
+<div class="logger-actions logger-wide"><button class="primary" id="logger-save" type="submit">SAVE</button><button id="logger-cancel" type="button" hidden>CANCEL</button><button class="logger-delete" id="logger-delete" type="button" disabled>DELETE</button><span id="logger-status" role="status" aria-live="polite"></span></div>
+</form>
+<form id="logger-delete-form" method="post" action="/logger/delete">
+<input type="hidden" name="production_date" value="{{ production_date }}">
+{% if production_id is not none %}<input type="hidden" name="production_id" value="{{ production_id }}">{% endif %}
+<input type="hidden" name="preset_shift_id" value="{{ preset_shift_id }}">
+<input type="hidden" name="logger_event_id" id="logger-delete-event-id">
 </form>
 <p class="logger-help">Duration is informational. LOGGER calculates and validates the saved time and classification on the server.</p>
 </section>
@@ -57,12 +65,13 @@
 <div class="table-scroll"><table><thead><tr><th>Select</th><th>Machine</th><th>Shift</th><th>Sub / Related M/C</th><th>Cause</th><th>Type</th><th>Sub Type</th><th>M/E/O</th><th>Stop</th><th>Start</th><th>Duration</th><th>Note</th></tr></thead><tbody>
 {% for event in logger_events %}
 {% set hierarchy = event.RelatedMachineSnapshot ~ ' / ' ~ event.SubMachineSnapshot if event.RelatedMachineSnapshot and event.SubMachineSnapshot else event.RelatedMachineSnapshot if event.RelatedMachineSnapshot else event.SubMachineSnapshot if event.SubMachineSnapshot else '-' %}
-<tr><td><input type="radio" name="logger-row-select" value="{{ event.LoggerEventID }}" aria-label="Edit LOGGER entry {{ event.LoggerEventID }}"></td><td>{{ event.MachineNameSnapshot or '-' }}</td><td>{{ event.ShiftID if event.ShiftID is not none else event.ResolvedShiftID if event.ResolvedShiftID is not none else '-' }}</td><td>{{ hierarchy }}</td><td>{{ event.CauseSnapshot or '-' }}</td><td>{{ event.StopTypeSnapshot or '-' }}</td><td>{{ event.SubStopTypeSnapshot or '-' }}</td><td>{{ event.MEO or '-' }}</td><td>{{ event.StopDateTime.strftime('%Y-%m-%d %H:%M') if event.StopDateTime else '-' }}</td><td>{% if event.StartDateTime %}{{ event.StartDateTime.strftime('%Y-%m-%d %H:%M') }}{% else %}-{% endif %}</td><td>{% if event.DurationMin is not none %}{{ '%g'|format(event.DurationMin) }} min{% else %}-{% endif %}</td><td>{{ event.Note or '-' }}</td></tr>
+<tr><td><input type="radio" name="logger-row-select" value="{{ event.LoggerEventID }}" aria-label="Edit LOGGER entry {{ event.LoggerEventID }}"></td><td>{{ event.MachineNameSnapshot or '-' }}</td><td>{{ event.ShiftID if event.ShiftID is not none else event.ResolvedShiftID if event.ResolvedShiftID is not none else '-' }}</td><td>{{ hierarchy }}</td><td>{{ event.CauseSnapshot or '-' }}</td><td>{{ event.StopTypeSnapshot or '-' }}</td><td>{{ event.SubStopTypeSnapshot or '-' }}</td><td>{{ event.MEO or '-' }}</td><td>{% if event.StopDateTime %}{{ event.StopDateTime.strftime('%Y-%m-%d %H:%M') }}{% else %}-{% endif %}</td><td>{% if event.StartDateTime %}{{ event.StartDateTime.strftime('%Y-%m-%d %H:%M') }}{% else %}-{% endif %}</td><td>{% if event.DurationMin is not none %}{{ '%g'|format(event.DurationMin) }} min{% else %}-{% endif %}</td><td>{{ event.Note or '-' }}</td></tr>
 {% endfor %}
 </tbody></table></div>
 {% else %}<p>No LOGGER entries for this Production Date.</p>{% endif %}
 </section>
 <script type="application/json" id="logger-main-data">{{ main_instances_json|safe }}</script>
+<script type="application/json" id="logger-assigned-press-data">{{ assigned_press_instances_json|safe }}</script>
 <script type="application/json" id="logger-main-machine-data">{{ main_machines_json|safe }}</script>
 <script type="application/json" id="logger-category-data">{{ main_categories_json|safe }}</script>
 <script type="application/json" id="logger-instance-options-data">{{ instance_options_json|safe }}</script>
@@ -184,6 +193,7 @@ function defaultCauseTarget(compatible, selectedCause, machineId, instanceNo,
   const startInput = document.getElementById('logger-start');
   const classificationEdited = document.getElementById('logger-classification-edited');
   const instances = JSON.parse(document.getElementById('logger-main-data').textContent);
+  const assignedPressInstances = JSON.parse(document.getElementById('logger-assigned-press-data').textContent);
   const mainMachines = JSON.parse(document.getElementById('logger-main-machine-data').textContent);
   const instanceOptions = JSON.parse(document.getElementById('logger-instance-options-data').textContent);
   const subMachines = JSON.parse(document.getElementById('logger-sub-machine-data').textContent);
@@ -198,6 +208,9 @@ function defaultCauseTarget(compatible, selectedCause, machineId, instanceNo,
   const eventShift = document.getElementById('logger-event-shift-value');
   const eventShiftAuto = document.getElementById('logger-event-shift-auto');
   const eventId = document.getElementById('logger-event-id');
+  const deleteButton = document.getElementById('logger-delete');
+  const deleteForm = document.getElementById('logger-delete-form');
+  const deleteEventId = document.getElementById('logger-delete-event-id');
   const saveButton = document.getElementById('logger-save');
   const cancelButton = document.getElementById('logger-cancel');
   const duration = document.getElementById('logger-duration'), timeMessage = document.getElementById('logger-time-message');
@@ -205,8 +218,56 @@ function defaultCauseTarget(compatible, selectedCause, machineId, instanceNo,
     .map(input => [input, window.FittingMES.attachManualHHmm(input)]));
   const hidden = {related_mc_id:document.getElementById('logger-related-id'),related_mc_instance_no:document.getElementById('logger-related-instance'),sub_mc_id:document.getElementById('logger-sub-id'),sub_mc_instance_no:document.getElementById('logger-sub-instance')};
   const selectedForm = {{ form|tojson }};
+  const selectionStorageKey = 'fittingmes.logger.selection';
+  const assignedPressSet = assignedPressInstances === null
+    ? null : new Set(assignedPressInstances);
   let manualStopTypeOverride = Boolean(selectedForm.stop_id);
   let causeDrivenTargetFilter = false;
+  function readStoredSelection() {
+    try {
+      const value = sessionStorage.getItem(selectionStorageKey);
+      const selection = value ? JSON.parse(value) : null;
+      return selection && selection.mc_id ? selection : null;
+    } catch (error) {
+      return null;
+    }
+  }
+  function storeSelection() {
+    if (!machine.value) return;
+    try {
+      sessionStorage.setItem(selectionStorageKey, JSON.stringify({
+        mc_id: machine.value,
+        mc_instance_no: machineInstance.value || '',
+      }));
+    } catch (error) {
+      // Session persistence is best effort and must not affect LOGGER use.
+    }
+  }
+  function selectedMachineDefinition(machineId) {
+    return mainMachines.find(item => String(item.McId) === String(machineId));
+  }
+  function visibleInstances(machineId) {
+    const selectedMachine = selectedMachineDefinition(machineId);
+    return instances.filter(item => String(item.mc_id) === String(machineId))
+      .filter(item => assignedPressSet === null || selectedMachine?.Machine !== 'F'
+        || assignedPressSet.has(item.display_label));
+  }
+  function populateInstances(preferredInstance = '', chooseFirstPress = false) {
+    machineInstance.replaceChildren(new Option('Select instance',''));
+    const options = visibleInstances(machine.value);
+    options.forEach(item => machineInstance.add(
+      new Option(item.display_label, item.mc_instance_no)
+    ));
+    const preferred = options.find(item =>
+      String(item.mc_instance_no) === String(preferredInstance));
+    if (preferred) {
+      machineInstance.value = String(preferred.mc_instance_no);
+    } else if (chooseFirstPress && assignedPressSet !== null
+               && selectedMachineDefinition(machine.value)?.Machine === 'F'
+               && options.length) {
+      machineInstance.value = String(options[0].mc_instance_no);
+    }
+  }
   function optionKey(item) { return JSON.stringify(item); }
   function clearCause() { cause.value = ''; form.elements.meo.value = ''; }
   function isSmdt(stopId) { return stopTypes.some(item => String(item.StopId) === String(stopId) && item.StopType === 'SMDT'); }
@@ -250,9 +311,11 @@ function defaultCauseTarget(compatible, selectedCause, machineId, instanceNo,
   }
   function rebuildOptions(selected, selectedCauseId, optionsOverride) {
     const options = optionsOverride || availableOptions();
-    renderOptions(options, selected);
-    rebuildCauses(selected, type.value, subType.value, selectedCauseId,
-      selected ? null : options);
+    const validSelected = selected && options.some(option =>
+      optionKey(option) === optionKey(selected)) ? selected : null;
+    renderOptions(options, validSelected);
+    rebuildCauses(validSelected, type.value, subType.value,
+      validSelected ? selectedCauseId : null, validSelected ? null : options);
   }
   function rebuildSubTypes(selected) {
     subType.replaceChildren(new Option('No Sub Type',''));
@@ -314,6 +377,22 @@ function defaultCauseTarget(compatible, selectedCause, machineId, instanceNo,
     duration.value = String(preview.minutes);
     applyDurationDefault(preview.minutes);
   }
+  function validateBreakdownDuration() {
+    const message = 'BD requires at least 10 minutes.';
+    const invalid = String(type.value) === '7'
+      && duration.value.trim() !== ''
+      && Number(duration.value) < 10;
+    if (invalid) {
+      timeMessage.textContent = message;
+      timeMessage.hidden = false;
+      return false;
+    }
+    if (timeMessage.textContent === message) {
+      timeMessage.textContent = '';
+      timeMessage.hidden = true;
+    }
+    return true;
+  }
   function editTime(value) {
     if (!value) return '';
     const match = String(value).match(/T(\d{2}:\d{2})/);
@@ -366,6 +445,26 @@ function defaultCauseTarget(compatible, selectedCause, machineId, instanceNo,
     form.elements.note.value = event.Note || '';
     window.scrollTo({top: 0, behavior: 'smooth'});
   }
+  function selectEvent(event) {
+    enterEditMode(event);
+    deleteButton.disabled = false;
+    deleteEventId.value = event.LoggerEventID;
+  }
+  deleteButton.addEventListener('click', () => {
+    const selected = savedEvents.find(item => String(item.LoggerEventID) === String(deleteEventId.value));
+    if (!selected) return;
+    const shift = selected.ShiftID ?? selected.ResolvedShiftID ?? '-';
+    const durationText = selected.DurationMin == null ? '-' : `${selected.DurationMin} min`;
+    const message = [
+      'Delete this LOGGER entry?',
+      `Machine: ${selected.MachineNameSnapshot || '-'}`,
+      `Shift: ${shift}`,
+      `Type: ${selected.StopTypeSnapshot || '-'}`,
+      `Duration: ${durationText}`,
+      `Entry ID: ${selected.LoggerEventID}`,
+    ].join('\n');
+    if (window.confirm(message)) deleteForm.requestSubmit();
+  });
   cancelButton.addEventListener('click', () => {
     const url = new URL(window.location.href);
     if (presetShift.value) url.searchParams.set('preset_shift_id', presetShift.value);
@@ -373,14 +472,13 @@ function defaultCauseTarget(compatible, selectedCause, machineId, instanceNo,
     window.location.assign(url.toString());
   });
   machine.addEventListener('change', () => {
-    machineInstance.replaceChildren(new Option('Select instance',''));
-    instances.filter(item => String(item.mc_id) === String(machine.value))
-      .forEach(item => machineInstance.add(new Option(item.display_label, item.mc_instance_no)));
-    machineInstance.value = '';
+    populateInstances('', true);
     applySelection(null); clearCause(); rebuildOptions(null);
+    storeSelection();
   });
   machineInstance.addEventListener('change', () => {
     applySelection(null); clearCause(); rebuildOptions(null);
+    storeSelection();
   });
   subRelated.addEventListener('change', () => {
     const selected = subRelated.value ? JSON.parse(subRelated.value) : null;
@@ -405,6 +503,7 @@ function defaultCauseTarget(compatible, selectedCause, machineId, instanceNo,
     const selected = subRelated.value ? JSON.parse(subRelated.value) : null;
     rebuildCauses(selected, type.value, subType.value, null,
       selected ? null : availableOptions());
+    validateBreakdownDuration();
   });
   subType.addEventListener('change', () => {
     classificationEdited.value = classificationAfterManualChange();
@@ -423,29 +522,38 @@ function defaultCauseTarget(compatible, selectedCause, machineId, instanceNo,
     timeMessage.hidden = true;
     const value = duration.value.trim();
     if (/^(?:[1-9]\d*)(?:\.\d)?$/.test(value)) applyDurationDefault(Number(value));
+    validateBreakdownDuration();
   });
   form.addEventListener('submit', event => {
     presetShiftValue.value = presetShift.value;
     form.querySelectorAll('#logger-stop,#logger-start').forEach(input => input.dispatchEvent(new Event('change')));
     updateDuration();
     if (timeMessage.hidden === false) { event.preventDefault(); return; }
+    if (!validateBreakdownDuration()) { event.preventDefault(); return; }
     if (!isMachineLevel(type.value) && !subRelated.value) { event.preventDefault(); subRelated.setCustomValidity('Select a Sub / Related M/C.'); subRelated.reportValidity(); return; }
     subRelated.setCustomValidity('');
     if (form.dataset.busy === 'true') { event.preventDefault(); return; }
     form.dataset.busy = 'true'; document.getElementById('logger-save').disabled = true; document.getElementById('logger-status').textContent = 'Saving LOGGER entry...';
   });
-  const initialMachine = machine.value;
-  if (initialMachine) {
-    instances.filter(item => String(item.mc_id) === String(initialMachine))
-      .forEach(item => machineInstance.add(new Option(item.display_label, item.mc_instance_no)));
-    machineInstance.value = selectedForm.mc_instance_no || '';
-  }
+  const storedSelection = readStoredSelection();
+  const storedMachine = selectedMachineDefinition(storedSelection?.mc_id);
+  if (storedMachine) machine.value = String(storedMachine.McId);
+  const initialInstance = storedMachine
+    ? storedSelection.mc_instance_no
+    : selectedForm.mc_instance_no || '';
+  populateInstances(initialInstance, true);
+  storeSelection();
   const initialSelection = selectedForm.sub_related_selection ? JSON.parse(selectedForm.sub_related_selection) : null;
   rebuildSubTypes(selectedForm.sub_stop_id || null);
   rebuildOptions(initialSelection, selectedForm.cause_id || null);
   if (selectedForm.cause_id) applyCause();
   updateTargetRequirement();
   updateDuration();
+  if (!eventId.value && !duration.value.trim()) {
+    duration.value = '1';
+    applyDurationDefault(1);
+  }
+  validateBreakdownDuration();
   if (eventId.value) {
     const editingEvent = savedEvents.find(item => String(item.LoggerEventID) === eventId.value);
     if (editingEvent) {
@@ -461,12 +569,12 @@ function defaultCauseTarget(compatible, selectedCause, machineId, instanceNo,
   document.querySelectorAll('input[name="logger-row-select"]').forEach(input => {
     input.addEventListener('change', () => {
       const selected = savedEvents.find(item => String(item.LoggerEventID) === input.value);
-      if (selected) enterEditMode(selected);
+      if (selected) selectEvent(selected);
     });
   });
   if (selectedForm.logger_event_id) {
     const selected = savedEvents.find(item => String(item.LoggerEventID) === String(selectedForm.logger_event_id));
-    if (selected) enterEditMode(selected);
+    if (selected) selectEvent(selected);
   }
 })();
 </script>

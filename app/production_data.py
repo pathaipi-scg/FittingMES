@@ -80,6 +80,22 @@ def save_production_data(conn, production_id, raw, production_date=None):
             raise ValueError('This Lot is no longer active.')
         shift_rules = read_shift_rules(cursor, production_date) if production_date is not None else []
         resolved_shift = resolve_shift(production_date, data['ProductionStartTime'], data['Shift'], shift_rules)
+        if production_date is not None:
+            cursor.execute("""
+                SELECT COALESCE(SUM(CONVERT(bigint,Qty)),0)
+                FROM dbo.ProductionRejectEntry
+                WHERE ProductionID=? AND ProductionDate=?
+            """, production_id, production_date)
+            saved_reject_total = sum(
+                int(row[0] or 0) for row in (cursor.fetchall() or [])
+            )
+            if saved_reject_total > data['CounterQty']:
+                raise ValueError('Saved REJECT quantity exceeds Counter.')
+            maximum_curing = data['CounterQty'] - saved_reject_total
+            if data['CuringQty'] > maximum_curing:
+                raise ValueError(
+                    'Curing Qty cannot exceed Counter minus saved Production REJECT quantity.'
+                )
         cursor.execute('SELECT ProductionID FROM dbo.ProductionData WITH (UPDLOCK,HOLDLOCK) WHERE ProductionID=?', production_id)
         exists = cursor.fetchone()
         values = (data['ProductionStartTime'], data['ProductionEndTime'],

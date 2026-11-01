@@ -8,11 +8,26 @@ from unittest.mock import MagicMock, patch
 
 from app.press_production import (read_eligible_moulds, read_eligible_presses,
                                   read_active_shifts,
-                                  read_press_production, save_press_production,
+                                  read_press_production, read_assigned_press_codes,
+                                  save_press_production,
                                   release_press_production, undo_release_press_production,
                                   validate_press_input, calculate_smdt)
 from app.main import production_page, save_press_production_route_action
 from test_production import DAY, LOT, PLAN, PRODUCTION_REJECT_CONTEXT, request
+
+
+class AssignedPressCursor:
+    def __init__(self):
+        self.query = None
+        self.parameters = None
+
+    def execute(self, query, *parameters):
+        self.query = query
+        self.parameters = parameters
+
+    def fetchall(self):
+        # These rows represent assignments on different shifts for one lot.
+        return [('F10',), ('F11',)]
 
 
 class PressProductionCursor:
@@ -340,6 +355,13 @@ class ReadCursor:
 
 
 class PressProductionTests(unittest.TestCase):
+    def test_assigned_press_lookup_uses_exact_lot_and_keeps_cross_shift_assignments(self):
+        cursor = AssignedPressCursor()
+        self.assertEqual(read_assigned_press_codes(cursor, 24), ['F10', 'F11'])
+        self.assertEqual(cursor.parameters, (24,))
+        self.assertIn('WHERE pp.ProductionID=?', cursor.query)
+        self.assertNotIn('ShiftMasterID', cursor.query)
+
     def test_smdt_calculation_does_not_use_logger_guide(self):
         self.assertEqual(calculate_smdt(datetime(2026, 9, 26, 8),
                         datetime(2026, 9, 26, 16),

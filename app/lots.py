@@ -1,6 +1,10 @@
 """Production lot transactions. All writers share a transaction-owned SQL lock."""
 from datetime import datetime
+import re
 from app.products import lot_prefix, month_start, require_product, read_mapping
+
+
+RUNNING_SUFFIX_PATTERN = re.compile(r"[0-9]{2}\Z")
 
 
 def rows(cursor):
@@ -22,9 +26,10 @@ def lock_lots(cursor):
 
 def read_lots(cursor):
     cursor.execute("""SELECT p.*, CASE WHEN EXISTS (
-        SELECT 1 FROM dbo.ProductionLot later WHERE later.IsActive=1
-        AND ((p.ProductFamilyID IS NULL AND later.ProductFamilyID IS NULL AND later.LotPrefix=p.LotPrefix)
-          OR (later.ProductFamilyID=p.ProductFamilyID AND later.ProductCode=p.ProductCode
+        SELECT 1 FROM dbo.ProductionLot later
+        WHERE ((p.ProductFamilyID IS NULL AND later.ProductFamilyID IS NULL
+                AND later.LotPrefix=p.LotPrefix)
+          OR (p.ProductFamilyID IS NOT NULL AND later.LotPrefix=p.LotPrefix
               AND later.SequenceMonth=p.SequenceMonth))
         AND later.RunningNo>p.RunningNo
         ) THEN 0 ELSE 1 END AS CanVoid
@@ -43,12 +48,13 @@ def require_available(cursor, selected, exclude_id=0):
 
 def next_running_no(cursor, prefix=None, product_family_id=None, product_code=None, plan_date=None):
     if product_family_id is None:
-        # Unresolved historic lots keep their existing sequence for VOID only.
-        cursor.execute('SELECT COALESCE(MAX(RunningNo), 0) + 1 FROM dbo.ProductionLot WHERE LotPrefix = ? AND IsActive=1 AND ProductFamilyID IS NULL', prefix)
+        cursor.execute('SELECT COALESCE(MAX(RunningNo), 0) + 1 FROM dbo.ProductionLot WHERE LotPrefix = ? AND ProductFamilyID IS NULL', prefix)
     else:
+        if prefix is None:
+            prefix = lot_prefix(cursor, product_family_id, product_code, day(plan_date))
         cursor.execute('''SELECT COALESCE(MAX(RunningNo), 0) + 1 FROM dbo.ProductionLot
-            WHERE ProductFamilyID=? AND ProductCode=? AND SequenceMonth=? AND IsActive=1''',
-            product_family_id, product_code, month_start(day(plan_date)))
+            WHERE LotPrefix=? AND SequenceMonth=?''',
+            prefix, month_start(day(plan_date)))
     return int(cursor.fetchone()[0])
 
 
@@ -60,8 +66,11 @@ def history(cursor, production_id, old_lot, new_lot, old_plan, new_plan, change)
 
 def insert_lot(conn, selected, product_code, prefix, running_no, product_family_id=None):
     try:
-        if running_no is None or not 1 <= running_no <= 2147483647:
-            raise ValueError('Running No must be a positive whole number.')
+        if not isinstance(running_no, str) or not RUNNING_SUFFIX_PATTERN.fullmatch(running_no):
+            raise ValueError('Running No must contain exactly two ASCII digits from 01 to 99.')
+        if not 1 <= int(running_no) <= 99:
+            raise ValueError('Running No must be between 01 and 99.')
+        running_no = int(running_no)
         cursor = conn.cursor()
         if prefix != lot_prefix(cursor, product_family_id, product_code, day(selected['StartTime'])):
             raise ValueError('Lot prefix does not match the selected family/product and Plan Date.')
@@ -70,9 +79,16 @@ def insert_lot(conn, selected, product_code, prefix, running_no, product_family_
         if read_mapping(cursor, selected['MaterialCode'][:8]) != (product_family_id, product_code):
             raise ValueError('Material mapping changed. Refresh before creating a lot.')
         require_available(cursor, selected)
-        if running_no != next_running_no(cursor, prefix, product_family_id, product_code, selected["StartTime"]):
-            raise ValueError('Running number has changed. Refresh and use the next suggested number.')
+        maximum = next_running_no(cursor, prefix, product_family_id, product_code, selected["StartTime"]) - 1
+        if maximum >= 99:
+            raise ValueError('Running number sequence is exhausted for this Product and month.')
+        if running_no <= maximum:
+            raise ValueError('Running number is no longer available. Refresh MAX and select a number greater than it.')
         lot_no = f'{prefix}{running_no:02d}'
+        cursor.execute('''SELECT 1 FROM dbo.ProductionLot WITH (UPDLOCK,HOLDLOCK)
+            WHERE LotNo=?''', lot_no)
+        if cursor.fetchone():
+            raise ValueError('This Lot No. already exists. Refresh MAX and select another number.')
         cursor.execute('''SELECT ISNULL(MAX(LotSequence),0)+1
             FROM dbo.ProductionLot WITH (UPDLOCK,HOLDLOCK) WHERE ProdDate=? AND IsActive=1''',
             day(selected['StartTime']))

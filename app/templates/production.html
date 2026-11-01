@@ -152,6 +152,10 @@ main>header,main>.panel,main>.error{flex-shrink:0}
 @media(max-width:700px){.production-reject-heading label{margin-left:0}.production-reject-heading input[name="remark"]{width:min(180px,45vw)}}
 
 .material-prefix{white-space:nowrap;flex:none}
+.lot-number-preview{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+.lot-number-preview .preview{display:inline-flex;align-items:center;white-space:nowrap}
+.lot-number-preview input{width:25px;padding:1px 2px;text-align:center;font-variant-numeric:tabular-nums}
+.running-suffix-warning{color:#9d2525;font-size:9px}
 #family-product-form{gap:3px}
 #family-product-form .family-product-field{display:flex;align-items:center;gap:2px}
 .family-product-select{width:auto;max-width:118px}
@@ -173,10 +177,10 @@ main>header,main>.panel,main>.error{flex-shrink:0}
 {% for plan in plans %}<option value="{{ plan.selection_id }}" {% if plan.used_by %}disabled{% endif %} {% if selected and selected.selection_id == plan.selection_id %}selected{% endif %}>{{ plan.PlanName }} | {{ plan.MaterialName }} | {{ '{:,.0f}'.format(plan.PlanCount or 0) }}{% if plan.used_by %} | USED: {{ plan.used_by }}{% endif %}</option>{% endfor %}
 </select></div><button type="submit" onclick="this.form.plan_id.value=''">PLAN REFRESH</button></form>
 {% if selected %}<div class="workflow">
-{% if lot %}<form method="post" action="/lots">
+{% if lot %}<form id="create-lot-form" method="post" action="/lots">
 <input type="hidden" name="production_date" value="{{ production_date }}"><input type="hidden" name="plan_id" value="{{ selected.selection_id }}">
-<div class="product-display"><label>Product</label>{{ product_family }} / {{ product_code }}{% if product_name %} / {{ product_name }}{% endif %} <a class="button" href="/?plan_id={{ selected.selection_id }}&production_date={{ production_date }}&mapping_edit=true">EDIT</a></div><div><label for="running_no">Next Running No</label><input id="running_no" name="running_no" value="{{ running_no }}" readonly></div>
-<div><label>Lot No. preview</label><output class="preview">{{ lot }}{{ '%02d'|format(running_no) }}</output></div><button class="primary" type="submit">CREATE LOT</button></form>
+<div class="product-display"><label>Product</label>{{ product_family }} / {{ product_code }}{% if product_name %} / {{ product_name }}{% endif %} <a class="button" href="/?plan_id={{ selected.selection_id }}&production_date={{ production_date }}&mapping_edit=true">EDIT</a></div><div><label for="running_no">Next Running No</label><input id="running_no" value="{{ running_no }}" readonly></div>
+<div class="lot-number-preview" data-historical-max="{{ running_no - 1 }}" data-exhausted="{{ 'true' if running_no > 99 else 'false' }}"><label for="running_suffix">Lot No. preview</label><span class="preview"><output>{{ lot }}</output><input id="running_suffix" name="running_no" type="text" inputmode="numeric" maxlength="2" pattern="[0-9]{2}" aria-label="Lot running number suffix" value="{{ running_suffix if running_suffix is not none else '' }}" {% if running_no > 99 %}disabled{% endif %}></span><span class="running-suffix-warning" role="status" aria-live="polite">{% if running_no > 99 %}Running number sequence exhausted (maximum 99).{% elif running_suffix_warning %}{{ running_suffix_warning }}{% endif %}</span></div><button id="create-lot-button" class="primary" type="submit" {% if running_no > 99 %}disabled{% endif %}>CREATE LOT</button></form>
 {% else %}<form method="post" action="/" id="family-product-form">
 <input type="hidden" name="production_date" value="{{ production_date }}"><input type="hidden" name="plan_id" value="{{ selected.selection_id }}">
 {% if mapping_edit %}<input type="hidden" name="mapping_edit" value="true">{% endif %}
@@ -206,7 +210,7 @@ main>header,main>.panel,main>.error{flex-shrink:0}
 <div id="lot-status-bar" class="lot-status-bar" role="status" aria-live="polite" aria-atomic="true" aria-label="Lot status messages">{% if data_saved and current %}<span class="lot-status lot-status-success" data-status-id="production-save" data-state="success" title="Production data saved.">Production data saved.</span>{% endif %}</div>
 </div>
 {% for item in lots_for_date %}<form id="production-input-{{ item.ProductionID }}" method="post" action="/lots/{{ item.ProductionID }}/production"><input type="hidden" name="production_date" value="{{ production_date }}"></form>{% endfor %}
-<div class="table-scroll"><table class="depallet-grid lot-table"><thead><tr>
+<div class="table-scroll" data-remembered-lot-invalid="{{ 'true' if remembered_lot_invalid else 'false' }}"><table class="depallet-grid lot-table"><thead><tr>
 <th>Select</th><th>Move</th><th>No.</th><th>Lot No.</th><th>Plan</th><th>Product</th><th>Plan</th>
 <th>Shift</th><th>Start</th><th>End</th><th>Counter</th><th>Curing</th><th>Wet Rej.</th><th>Remark</th><th>Save</th><th>Action</th>
 </tr></thead><tbody>
@@ -215,7 +219,7 @@ main>header,main>.panel,main>.error{flex-shrink:0}
 {% set row_calc = calculated_by_lot.get(item.ProductionID) or {'WetRejectQty': none, 'WetRejectPercent': none} %}
 {% set is_current = current and current.ProductionID == item.ProductionID %}
 <tr class="{{ 'selected' if is_current else '' }}" {% if is_current %}aria-current="true"{% endif %}>
-<td class="select-cell"><input type="radio" name="production-lot" value="{{ item.ProductionID }}" {% if is_current %}checked{% endif %} onchange="location.href='/?production_id={{ item.ProductionID }}&production_date={{ item.ProdDate }}'" aria-label="Select Lot {{ item.LotNo }}"></td>
+<td class="select-cell"><input type="radio" name="production-lot" value="{{ item.ProductionID }}" {% if is_current %}checked{% endif %} data-production-date="{{ item.ProdDate }}" aria-label="Select Lot {{ item.LotNo }}"></td>
 <td class="move-cell"><button type="button" data-move="up" aria-label="Move lot {{ item.LotNo }} up" title="Move up" {% if not item.CanMoveUp %}disabled{% endif %}>↑</button><button type="button" data-move="down" aria-label="Move lot {{ item.LotNo }} down" title="Move down" {% if not item.CanMoveDown %}disabled{% endif %}>↓</button></td>
 <td>{{ item.RunningNo }}</td>
 <td>{{ item.LotNo }}</td>
@@ -319,6 +323,8 @@ main>header,main>.panel,main>.error{flex-shrink:0}
  data-total-wet-reject="{{ production_reject_total if production_reject_total is not none else '' }}">
 <span>Total Wet Reject<strong id="production-reject-total">{{ production_reject_total if production_reject_total is not none else '—' }}</strong></span>
 <span>Calculated Reject<strong id="production-reject-calculated">—</strong></span>
+<span>Maximum Curing<strong id="production-maximum-curing">—</strong></span>
+<span>Curing Balance Difference<strong id="production-curing-balance-difference">—</strong></span>
 <span>Final Classified Reject<strong id="production-reject-final-classified">{{ production_reject_final_classified }}</strong></span>
 <span>Difference / Unclassified<strong id="production-reject-difference">{{ production_reject_difference if production_reject_difference is not none else '—' }}</strong></span>
 </div>
@@ -509,8 +515,59 @@ main>header,main>.panel,main>.error{flex-shrink:0}
   const saveButton = document.getElementById('production-reject-save');
   const totalWetReject = document.getElementById('production-reject-total');
   const calculated = document.getElementById('production-reject-calculated');
+  const maximumCuring = document.getElementById('production-maximum-curing');
+  const curingDifference = document.getElementById('production-curing-balance-difference');
   const classified = document.getElementById('production-reject-final-classified');
   const difference = document.getElementById('production-reject-difference');
+  let maximumCuringValue = null;
+
+  function selectedCuringInput() {
+    const selected = document.querySelector('input[name="production-lot"]:checked');
+    return selected?.closest('tr')?.querySelector('input[name="curing"]') || null;
+  }
+
+  function updateWetRejectDisplay(row) {
+    const counter = row?.querySelector('input[name="counter"]');
+    const curing = row?.querySelector('input[name="curing"]');
+    const display = row?.querySelector('.wet-rej-cell');
+    if (!counter || !curing || !display) return;
+    const counterValue = Number(counter.value);
+    const curingValue = Number(curing.value);
+    if (!Number.isInteger(counterValue) || !Number.isInteger(curingValue) ||
+        counterValue < 0 || curingValue < 0 || curingValue > counterValue) {
+      display.textContent = '';
+      return;
+    }
+    const wetReject = counterValue - curingValue;
+    const percent = counterValue ? wetReject / counterValue * 100 : 0;
+    display.textContent = `${wetReject} / ${percent.toFixed(2)} %`;
+  }
+
+  function updateCuringBalance() {
+    const curing = selectedCuringInput();
+    updateWetRejectDisplay(curing?.closest('tr'));
+    if (!curing || maximumCuringValue === null) {
+      maximumCuring.textContent = '—';
+      curingDifference.textContent = '—';
+      curingDifference.dataset.warning = 'false';
+      return;
+    }
+    const entered = Number(curing.value);
+    maximumCuring.textContent = String(maximumCuringValue);
+    if (!Number.isInteger(entered) || entered < 0) {
+      curingDifference.textContent = '—';
+      curingDifference.dataset.warning = 'false';
+      return;
+    }
+    const balance = maximumCuringValue - entered;
+    curingDifference.textContent = String(balance);
+    curingDifference.dataset.warning = String(balance !== 0);
+    curing.setCustomValidity(
+      entered > maximumCuringValue
+        ? 'Curing Qty cannot exceed Maximum Curing.'
+        : '',
+    );
+  }
 
   function updateTotals() {
     let finalTotal = 0;
@@ -534,6 +591,18 @@ main>header,main>.panel,main>.error{flex-shrink:0}
   }
 
   inputs.forEach(input => input.addEventListener('input', updateTotals));
+  document.querySelectorAll('input[name="counter"], input[name="curing"]')
+    .forEach(input => input.addEventListener('input', event => {
+      const row = event.target.closest('tr');
+      updateWetRejectDisplay(row);
+      if (row?.querySelector('input[name="production-lot"]:checked')) {
+        updateCuringBalance();
+      }
+    }));
+  document.querySelectorAll('input[name="production-lot"]')
+    .forEach(input => input.addEventListener('change', updateCuringBalance));
+  document.querySelectorAll('.lot-table tbody tr:not(.lot-edit-row)')
+    .forEach(row => updateWetRejectDisplay(row));
   document.getElementById('production-reject-cal').addEventListener(
     'click', async event => {
       const button = event.currentTarget;
@@ -558,6 +627,17 @@ main>header,main>.panel,main>.error{flex-shrink:0}
             result.quantities[input.dataset.rejectReasonId] ?? 0,
           );
         }
+        const curing = selectedCuringInput();
+        const counter = curing?.closest('tr')?.querySelector('input[name="counter"]');
+        const counterValue = Number(counter?.value);
+        const rawTotal = Number(result.raw_total);
+        if (!Number.isInteger(counterValue) || !Number.isInteger(rawTotal) ||
+            rawTotal > counterValue) {
+          throw new Error('Saved REJECT quantity exceeds Counter.');
+        }
+        maximumCuringValue = counterValue - rawTotal;
+        if (curing) curing.value = String(maximumCuringValue);
+        updateCuringBalance();
         if (result.total_wet_reject === null) {
           summary.dataset.totalWetReject = '';
           totalWetReject.textContent = '—';
@@ -734,6 +814,43 @@ main>header,main>.panel,main>.error{flex-shrink:0}
 })();
 </script><script>
 (() => {
+  const date = document.getElementById('production_date')?.value;
+  const invalid = document.querySelector('[data-remembered-lot-invalid]')?.dataset.rememberedLotInvalid === 'true';
+  if (!date) return;
+  const key = 'fittingmes.production-lot.' + date;
+  const remember = radio => {
+    try {
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.setItem(key, radio.value);
+      }
+    } catch (error) {
+      console.warn('Unable to remember Production Lot.', error);
+    }
+    window.location.assign(
+      '/?production_id=' + encodeURIComponent(radio.value) +
+      '&production_date=' + encodeURIComponent(radio.dataset.productionDate || date),
+    );
+  };
+  if (invalid) {
+    try {
+      if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(key);
+    } catch (error) {
+      console.warn('Unable to clear remembered Production Lot.', error);
+    }
+  }
+  document.querySelectorAll('input[name="production-lot"]').forEach(radio => {
+    radio.addEventListener('change', () => remember(radio));
+  });
+  const checked = document.querySelector('input[name="production-lot"]:checked');
+  if (checked && !invalid) {
+    try {
+      if (typeof sessionStorage !== 'undefined') sessionStorage.setItem(key, checked.value);
+    } catch (error) {
+      console.warn('Unable to remember Production Lot.', error);
+    }
+  }
+})();
+(() => {
   const counter = document.getElementById('production-counter');
   const curing = document.getElementById('production-curing');
   if (!counter || !curing) return;
@@ -791,6 +908,33 @@ main>header,main>.panel,main>.error{flex-shrink:0}
   });
 })();
 </script><script>
+(() => {
+  const lotForm = document.getElementById('create-lot-form');
+  if (lotForm) {
+    const preview = lotForm.querySelector('.lot-number-preview');
+    const suffix = lotForm.querySelector('#running_suffix');
+    const create = lotForm.querySelector('#create-lot-button');
+    const warning = lotForm.querySelector('.running-suffix-warning');
+    const maximum = Number(preview.dataset.historicalMax);
+    const exhausted = preview.dataset.exhausted === 'true';
+    function validateSuffix() {
+      const value = suffix.value;
+      const number = /^[0-9]{2}$/.test(value) ? Number(value) : 0;
+      let message = '';
+      if (exhausted) message = 'Running number sequence exhausted (maximum 99).';
+      else if (!/^[0-9]{2}$/.test(value) || number < 1 || number > 99) {
+        message = 'Enter exactly two ASCII digits from 01 to 99.';
+      } else if (number <= maximum) {
+        message = `Enter a number greater than the historical maximum ${String(maximum).padStart(2, '0')}.`;
+      }
+      warning.textContent = message;
+      suffix.setCustomValidity(message);
+      create.disabled = Boolean(message);
+    }
+    suffix.addEventListener('input', validateSuffix);
+    validateSuffix();
+  }
+})();
 (() => {
   const form = document.getElementById('family-product-form');
   if (!form) return;

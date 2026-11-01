@@ -19,11 +19,12 @@ After confirmation, the saved mapping resolves automatically on future visits. E
 | Prestige Common | I | None supplied/loaded |
 
 Existing master ProductGroup explicitly identifies NeuFit/Oriental. Migration preserves their codes, names, Thai names and active flags; it introduces no guessed products for the other families.
-New format: letter + two-digit ProductCode + Buddhist YY + MM + running number (minimum two digits). Example: NeuFit 06 on 2026-09-22 starts B06690901, subject to active sequence availability.
-The running identity is family + code + calendar month. UI previews are advisory; creation revalidates product, confirmed mapping, plan availability and next number inside the serialized lot transaction.
-Active LotNo uniqueness is family-scoped, because families sharing B/I can eventually have the same code and printable LotNo. ProductionID is always the transaction identity.
-VOID is latest-only within the saved family/code/month sequence; voided records and history remain. Released numbers may be reused.
-Unresolved legacy lots retain their exact old LotPrefix/LotNo/RunningNo and latest-only legacy-prefix VOID checks. They do not participate in a guessed family sequence. Later historical-family reconciliation requires explicit review and must not silently renumber lots.
+New format: letter + two-digit ProductCode + Buddhist YY + MM + two-digit running number. Example: NeuFit 06 on 2026-09-22 starts B06690901.
+The exact printable prefix identifies the sequence for that product and calendar month. The page suggests historical MAX + 1 from persisted ProductionLot records, including voided Lots; skipped numbers are never reused. Operators may choose a two-ASCII-digit suffix from 01 to 99 greater than historical MAX, including a deliberate skipped number. At MAX 99 the sequence is exhausted.
+UI previews are advisory; creation re-derives the product prefix and selected plan date, then revalidates the confirmed mapping, plan availability, historical MAX and duplicate LotNo inside the serialized lot transaction. The transaction-owned application lock serializes competing CREATE LOT requests.
+ProductionID is always the transaction identity. Exact LotNo duplicates are rejected even when the matching record is voided.
+VOID is latest-only within the saved sequence; voided records and history remain and consume their running numbers.
+Unresolved legacy lots retain their exact old LotPrefix/LotNo/RunningNo and latest-only legacy-prefix VOID checks. Their running numbers also remain consumed. They do not participate in a guessed family sequence. Later historical-family reconciliation requires explicit review and must not silently renumber lots.
 
 ## Migration 003 applied
 Apply migrations in version order. Do not rerun migration 001 after 003: 003 replaces its old global lot/sequence indexes.

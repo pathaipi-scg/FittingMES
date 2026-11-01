@@ -310,6 +310,9 @@ def _validate_logger_masters(data, masters, day_start_time=None):
         start_datetime = None
         duration_min = manual_duration
 
+    if stop_id == BD_STOP_ID and duration_min < 10:
+        _validation_error("INVALID_BD_DURATION", "BD requires at least 10 minutes.")
+
     if timestamp_mode and (duration_min <= 0 or start_datetime <= stop_datetime):
         _validation_error("INVALID_DURATION", "LOGGER duration must be positive.")
 
@@ -551,6 +554,46 @@ def update_logger_event(conn, event_id, data, masters=None):
     except Exception as exc:
         conn.rollback()
         raise LoggerValidationError("DATABASE_UPDATE", "LOGGER transaction UPDATE failed.") from exc
+
+
+def delete_logger_event(conn, event_id, production_date):
+    """Delete one LOGGER event after validating its date-scoped identity."""
+    try:
+        if isinstance(event_id, bool) or not re.fullmatch(r"[0-9]+", str(event_id or "")):
+            _validation_error("INVALID_LOGGER_EVENT", "Select a valid LOGGER entry.")
+        event_id = int(event_id)
+        if event_id < 1:
+            _validation_error("INVALID_LOGGER_EVENT", "Select a valid LOGGER entry.")
+        production_date = _parse_production_date(production_date)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT ProductionDate FROM dbo.LoggerEvent WITH (UPDLOCK,HOLDLOCK) "
+            "WHERE LoggerEventID=?",
+            event_id,
+        )
+        row = cursor.fetchone()
+        if row is None:
+            _validation_error("LOGGER_EVENT_NOT_FOUND", "LOGGER entry no longer exists.")
+        if row[0] != production_date:
+            _validation_error(
+                "LOGGER_EVENT_CONTEXT",
+                "LOGGER entry does not belong to the selected Production Date.",
+            )
+        cursor.execute(
+            "DELETE FROM dbo.LoggerEvent "
+            "WHERE LoggerEventID=? AND ProductionDate=?",
+            event_id, production_date,
+        )
+        if cursor.rowcount != 1:
+            _validation_error("LOGGER_EVENT_NOT_FOUND", "LOGGER entry no longer exists.")
+        conn.commit()
+        return event_id
+    except LoggerValidationError:
+        conn.rollback()
+        raise
+    except Exception as exc:
+        conn.rollback()
+        raise LoggerValidationError("DATABASE_DELETE", "LOGGER transaction DELETE failed.") from exc
 
 
 def _rows(cursor, keys):
