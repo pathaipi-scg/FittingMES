@@ -133,6 +133,7 @@ function rejectSourceOptions(sources, lineId, scopeCode = null, workflow = 'prod
   const productionDate = document.getElementById('reject-production-date');
   const isDepallet = workflow === 'depallet';
   const rejectContextStorageKey = 'fittingmes.reject.context.v1';
+  const rejectSourceStorageKey = 'fittingmes.reject.source.' + workflow;
   const depalletSelectionStorageKey =
     'fittingmes.depallet.' + productionDate.value;
   let contextInitialized = false;
@@ -172,6 +173,36 @@ function rejectSourceOptions(sources, lineId, scopeCode = null, workflow = 'prod
       }
     } catch (error) {
       console.warn('Unable to remember Depallet selection from REJECT.', error);
+    }
+  }
+
+  function rememberSource() {
+    if (entryId.value) return;
+    try {
+      const remembered = hasOption(source, source.value) ? source.value : '';
+      sessionStorage.setItem(rejectSourceStorageKey, remembered);
+    } catch (error) {
+      console.warn('Unable to remember REJECT Source in sessionStorage.', error);
+    }
+  }
+
+  function restoreRememberedSource() {
+    let remembered = '';
+    try {
+      remembered = sessionStorage.getItem(rejectSourceStorageKey) || '';
+    } catch (error) {
+      console.warn('Unable to read remembered REJECT Source from sessionStorage.', error);
+      return;
+    }
+    if (remembered && hasOption(source, remembered)) {
+      source.value = remembered;
+    } else if (remembered) {
+      try {
+        sessionStorage.setItem(rejectSourceStorageKey, '');
+      } catch (error) {
+        console.warn('Unable to clear invalid REJECT Source from sessionStorage.', error);
+      }
+      source.value = '';
     }
   }
 
@@ -347,10 +378,12 @@ function rejectSourceOptions(sources, lineId, scopeCode = null, workflow = 'prod
   shift.addEventListener('change', () => {
     updateLots(lot.value);
     resetEntryFields(true);
+    rememberSource();
     rememberContext();
   });
   line.addEventListener('change', () => {
     resetEntryFields(isDepallet);
+    rememberSource();
     rememberContext();
   });
   lot.addEventListener('change', () => {
@@ -367,15 +400,18 @@ function rejectSourceOptions(sources, lineId, scopeCode = null, workflow = 'prod
     updateSources(null, isDepallet ? source.value : '');
     scopeId.value = '';
     if (isDepallet && source.value) syncForSource('');
+    rememberSource();
     rememberContext();
   });
   reason.addEventListener('change', () => syncForReason());
   source.addEventListener('change', () => {
     syncForSource();
+    rememberSource();
     rememberContext();
   });
   form.addEventListener('submit', () => {
     workflowValue.value = workflow;
+    rememberSource();
     rememberContext();
   });
   cancel.addEventListener('click', clearEdit);
@@ -463,6 +499,7 @@ function rejectSourceOptions(sources, lineId, scopeCode = null, workflow = 'prod
 
   updateWorkflowLabels();
   if (!restoreContext(startupContext)) updateLots(lot.value);
+  restoreRememberedSource();
   const selectedReason = currentReason();
   if (selectedReason) {
     syncForReason(source.value);

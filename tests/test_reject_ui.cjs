@@ -93,6 +93,11 @@ assert.match(source, /row\.depallet_id/);
 assert.match(source, /const workflow = "production"/);
 assert.match(source, /item\.EquipmentType === scopeCode/);
 assert.match(source, /item\.SourceScopeCode === scopeCode/);
+assert.match(source, /const rejectSourceStorageKey = 'fittingmes\.reject\.source\.' \+ workflow/);
+assert.match(source, /function rememberSource\(\)/);
+assert.match(source, /function restoreRememberedSource\(\)/);
+assert.match(source, /restoreRememberedSource\(\);/);
+assert.match(source, /sessionStorage\.setItem\(rejectSourceStorageKey, remembered\)/);
 assert.doesNotMatch(source, /R\d{2,3}/);
 assert.doesNotMatch(source, /ReasonCode\s*(?:>=|<=|>|<)/);
 assert.doesNotMatch(html, /name="(?:RejectOf|RejectOfID|DepalletID|ProductCode|ProductFamilyID|EquipmentCode|ReasonCode|SourceScope|Shift)"/);
@@ -411,10 +416,16 @@ function createSessionStorage(initial = {}) {
       operations.push({type: 'set', key, value: String(value)});
       values.set(key, String(value));
     },
+    removeItem(key) {
+      operations.push({type: 'remove', key});
+      values.delete(key);
+    },
   };
 }
 
 const contextKey = 'fittingmes.reject.context.v1';
+const depalletSourceKey = 'fittingmes.reject.source.depallet';
+const productionSourceKey = 'fittingmes.reject.source.production';
 const persistentStorage = createSessionStorage();
 const savingContextPage = runPageScript({
   storage: persistentStorage, workflow: 'depallet',
@@ -428,6 +439,7 @@ savingContextPage['reject-production'].dispatch('change');
 savingContextPage['reject-qty'].value = '17';
 savingContextPage['reject-source'].value = '707';
 savingContextPage['reject-source'].dispatch('change');
+assert.equal(persistentStorage.getItem(depalletSourceKey), '707');
 savingContextPage['reject-reason'].value = '9233';
 const savedContext = JSON.parse(persistentStorage.getItem(contextKey));
 assert.deepEqual(savedContext, {
@@ -464,6 +476,40 @@ assert.deepEqual(
     .map(item => item.value),
   ['9233'],
 );
+
+const afterSavePage = runPageScript({
+  storage: persistentStorage, workflow: 'depallet',
+});
+assert.equal(afterSavePage['reject-source'].value, '707');
+afterSavePage['reject-source'].value = '701';
+afterSavePage['reject-source'].dispatch('change');
+assert.equal(persistentStorage.getItem(depalletSourceKey), '701');
+const reloadAfterReplacement = runPageScript({
+  storage: persistentStorage, workflow: 'depallet',
+});
+assert.equal(reloadAfterReplacement['reject-source'].value, '701');
+
+const isolatedProductionStorage = createSessionStorage({
+  [depalletSourceKey]: '707',
+  [productionSourceKey]: '701',
+});
+const isolatedProductionPage = runPageScript({
+  storage: isolatedProductionStorage, workflow: 'production',
+});
+assert.equal(isolatedProductionPage['reject-source'].value, '701');
+const isolatedDepalletPage = runPageScript({
+  storage: isolatedProductionStorage, workflow: 'depallet',
+});
+assert.equal(isolatedDepalletPage['reject-source'].value, '707');
+
+const invalidSourceStorage = createSessionStorage({
+  [depalletSourceKey]: '9999',
+});
+const invalidSourcePage = runPageScript({
+  storage: invalidSourceStorage, workflow: 'depallet',
+});
+assert.equal(invalidSourcePage['reject-source'].value, '');
+assert.equal(invalidSourceStorage.getItem(depalletSourceKey), '');
 
 const upstreamContextStorage = createSessionStorage({
   [contextKey]: JSON.stringify(savedContext),
