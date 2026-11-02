@@ -273,7 +273,7 @@ main>header,main>.panel,main>.error{flex-shrink:0}
 {% for pp in press_production %}<form id="press-production-{{ pp.PressProductionID }}" method="post" action="/lots/{{ current.ProductionID }}/press-production/{{ pp.PressProductionID }}"><input type="hidden" name="production_date" value="{{ current.ProdDate }}"></form>{% endfor %}
 <div class="table-scroll press-production-scroll"><table class="depallet-grid press-production-table" data-production-date="{{ current.ProdDate }}" data-day-start-time="{{ day_start_time.strftime('%H:%M') if day_start_time else '' }}"><colgroup>{% for _ in range(17) %}<col>{% endfor %}</colgroup><thead><tr><th>Release</th><th>Shift</th><th>Press</th><th>Mould</th><th>Dispatch</th><th>Counter</th><th>Curing</th><th>Start</th><th>End</th><th>Setup</th><th>ChgOver</th><th>Idle</th><th>Cleaning</th><th>Breakdown</th><th>SMDT</th><th>LOG CAL</th><th>Save</th></tr></thead><tbody>
 {% for pp in press_production %}
-<tr data-guide-url="/lots/{{ current.ProductionID }}/press-production/{{ pp.PressProductionID }}/logger-guide" data-shift-code="{{ pp.ShiftCode or '' }}"{% if pp.ReleasedAt %} class="press-production-released"{% endif %}>
+<tr data-guide-url="/lots/{{ current.ProductionID }}/press-production/{{ pp.PressProductionID }}/logger-guide" data-shift-code="{{ pp.ShiftCode or '' }}" data-press-production-id="{{ pp.PressProductionID }}"{% if pp.ReleasedAt %} class="press-production-released"{% endif %}>
 <td>{% if pp.ReleasedAt %}
 <strong>RELEASED</strong>
 <button form="undo-release-{{ pp.PressProductionID }}" type="submit" {% if pp.LaterPressAssignmentMachineCode or pp.LaterMouldAssignmentPress %}disabled title="Undo Release is blocked by a later conflicting Press or Mould assignment."{% endif %} onclick="return confirm('Restore this Mould assignment to this Press?')">UNDO RELEASE</button>
@@ -521,6 +521,51 @@ main>header,main>.panel,main>.error{flex-shrink:0}
   const difference = document.getElementById('production-reject-difference');
   let maximumCuringValue = null;
 
+  function calculatePressCuring(counterValue, rawRejectValue) {
+    const counterText = String(counterValue ?? '').trim();
+    const rejectText = String(rawRejectValue ?? '').trim();
+    if (!/^[0-9]+$/.test(counterText) || BigInt(counterText) > 2147483647n) {
+      return {curing: null, warning: 'Counter is missing or invalid.'};
+    }
+    if (!/^[0-9]{1,19}$/.test(rejectText)) {
+      return {curing: null, warning: 'Saved RAW Reject quantity is invalid.'};
+    }
+    const counter = BigInt(counterText);
+    const reject = BigInt(rejectText);
+    if (reject > counter) {
+      return {curing: null, warning: 'Saved RAW Reject exceeds Press Counter.'};
+    }
+    return {curing: String(counter - reject), warning: ''};
+  }
+
+  function applyPressCalculations(calculations) {
+    if (!Array.isArray(calculations)) {
+      throw new Error('Production REJECT response is missing Press calculations.');
+    }
+    const rowsById = new Map([...document.querySelectorAll(
+      '.press-production-table tbody tr[data-press-production-id]',
+    )].map(row => [row.dataset.pressProductionId, row]));
+    const warnings = [];
+    for (const item of calculations) {
+      const row = rowsById.get(String(item.press_production_id));
+      const counter = row?.querySelector('input[name="counter_qty"]');
+      const curing = row?.querySelector('input[name="curing_qty"]');
+      if (!counter || !curing) {
+        warnings.push(
+          `${item.machine_code}: Press Counter/Curing fields are unavailable; Curing was not changed.`,
+        );
+        continue;
+      }
+      const result = calculatePressCuring(counter.value, item.raw_reject_qty);
+      if (result.warning) {
+        warnings.push(`${item.machine_code}: ${result.warning} Curing was not changed.`);
+        continue;
+      }
+      curing.value = result.curing;
+    }
+    return warnings;
+  }
+
   function selectedCuringInput() {
     const selected = document.querySelector('input[name="production-lot"]:checked');
     return selected?.closest('tr')?.querySelector('input[name="curing"]') || null;
@@ -622,6 +667,7 @@ main>header,main>.panel,main>.error{flex-shrink:0}
         if (!response.ok) {
           throw new Error(result.error || 'Unable to calculate Production REJECT.');
         }
+        const pressWarnings = applyPressCalculations(result.press_calculations);
         for (const input of inputs) {
           input.value = String(
             result.quantities[input.dataset.rejectReasonId] ?? 0,
@@ -647,9 +693,13 @@ main>header,main>.panel,main>.error{flex-shrink:0}
         }
         calculated.textContent = String(result.raw_total);
         updateTotals();
-        status.className = result.wet_reject_error ? 'error' : '';
-        status.textContent = result.wet_reject_error ||
-          'Whole-Lot REJECT CAL complete. Review quantities before SAVE REJECT.';
+        status.className = result.wet_reject_error || pressWarnings.length
+          ? 'error' : '';
+        status.textContent = [
+          result.wet_reject_error ||
+            'Whole-Lot REJECT CAL complete. Review quantities before SAVE REJECT.',
+          ...pressWarnings,
+        ].join(' ');
         saveButton.disabled = Boolean(result.wet_reject_error);
       } catch (error) {
         status.textContent = error.message;

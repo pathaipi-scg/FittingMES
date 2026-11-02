@@ -51,6 +51,10 @@ assert.doesNotMatch(html, /name="shift[12]_[^"]+"/);
 assert.match(html, /RELEASED/);
 assert.match(html, /UNDO RELEASE/);
 assert.match(html, /EDIT FITTING/);
+assert.doesNotMatch(html, /Saved RAW Reject by Press|production-reject-press-breakdown/);
+assert.match(html, /data-press-production-id="{{ pp\.PressProductionID }}"/);
+assert.match(html, /applyPressCalculations\(result\.press_calculations\)/);
+assert.match(html, /Press Counter\/Curing fields are unavailable; Curing was not changed/);
 assert.match(html, /\.press-production-table col:nth-child\(1\)\{width:6%\}/);
 assert.match(html, /\.press-production-table col:nth-child\(2\)\{width:3%\}/);
 assert.match(html, /\.press-production-table col:nth-child\(8\),\.press-production-table col:nth-child\(9\)\{width:5\.6%\}/);
@@ -80,6 +84,79 @@ assert.equal((pressRows.match(/>SAVE<\/button>/g) || []).length, 1,
   'Each Press Production row has one SAVE button');
 assert.match(pressRows, /button form="undo-release-\{\{ pp\.PressProductionID \}\}" type="submit"/);
 assert.doesNotMatch(pressRows, /\b(?:AM|PM)\b/i);
+
+const pressCuringFunction = html.match(
+  /function calculatePressCuring\(counterValue, rawRejectValue\) \{[\s\S]*?\n  \}/,
+);
+assert.ok(pressCuringFunction, 'Press Curing calculation function exists');
+const calculatePressCuringInVm = vm.runInNewContext(`(${pressCuringFunction[0]})`);
+const calculatePressCuring = (...args) =>
+  JSON.parse(JSON.stringify(calculatePressCuringInVm(...args)));
+assert.deepEqual(
+  calculatePressCuring('2100', '6'),
+  {curing: '2094', warning: ''},
+);
+assert.deepEqual(
+  calculatePressCuring('2090', '0'),
+  {curing: '2090', warning: ''},
+);
+assert.deepEqual(
+  calculatePressCuring('', '6'),
+  {curing: null, warning: 'Counter is missing or invalid.'},
+);
+assert.deepEqual(
+  calculatePressCuring('2100.5', '6'),
+  {curing: null, warning: 'Counter is missing or invalid.'},
+);
+assert.deepEqual(
+  calculatePressCuring('5', '6'),
+  {curing: null, warning: 'Saved RAW Reject exceeds Press Counter.'},
+);
+
+const applyPressFunction = html.match(
+  /function applyPressCalculations\(calculations\) \{[\s\S]*?\n  \}/,
+);
+assert.ok(applyPressFunction, 'Press Curing fields are updated by assignment ID');
+function pressRow(id, counterValue, curingValue) {
+  const fields = {
+    'input[name="counter_qty"]': {value: counterValue},
+    'input[name="curing_qty"]': {value: curingValue},
+  };
+  return {
+    dataset: {pressProductionId: String(id)},
+    querySelector(selector) { return fields[selector] || null; },
+    fields,
+  };
+}
+const curingTestRows = [
+  pressRow(101, '2100', '2000'),
+  pressRow(102, '2090', '2000'),
+];
+const applyPressCalculations = vm.runInNewContext(
+  `(() => { ${pressCuringFunction[0]} ${applyPressFunction[0]} return applyPressCalculations; })()`,
+  {document: {querySelectorAll() { return curingTestRows; }}},
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(applyPressCalculations([
+    {press_production_id: 101, machine_code: 'F10', raw_reject_qty: '6'},
+    {press_production_id: 102, machine_code: 'F11', raw_reject_qty: '0'},
+  ]))),
+  [],
+);
+assert.equal(curingTestRows[0].fields['input[name="curing_qty"]'].value, '2094');
+assert.equal(curingTestRows[1].fields['input[name="curing_qty"]'].value, '2090');
+curingTestRows[0].fields['input[name="counter_qty"]'].value = '';
+curingTestRows[0].fields['input[name="curing_qty"]'].value = 'original';
+curingTestRows[1].fields['input[name="counter_qty"]'].value = '5';
+curingTestRows[1].fields['input[name="curing_qty"]'].value = 'also original';
+const pressWarnings = applyPressCalculations([
+  {press_production_id: 101, machine_code: 'F10', raw_reject_qty: '6'},
+  {press_production_id: 102, machine_code: 'F11', raw_reject_qty: '6'},
+]);
+assert.equal(curingTestRows[0].fields['input[name="curing_qty"]'].value, 'original');
+assert.equal(curingTestRows[1].fields['input[name="curing_qty"]'].value, 'also original');
+assert.match(pressWarnings[0], /F10: Counter is missing or invalid/);
+assert.match(pressWarnings[1], /F11: Saved RAW Reject exceeds Press Counter/);
 
 const scriptMatch = html.match(
   /<script>\s*\(\(\) => \{\s*const form = document\.getElementById\('add-fitting-form'\);[\s\S]*?\}\)\(\);\s*<\/script>/,

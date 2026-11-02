@@ -105,6 +105,42 @@ def _read_raw_totals(cursor, production_id, production_date, lock=False):
     }
 
 
+def _read_press_reject_totals(cursor, production_id, production_date):
+    cursor.execute("""
+        SELECT pp.PressProductionID,pp.MachineCode,
+               equipment.id AS SourceEquipmentID
+        FROM dbo.PressProduction AS pp
+        JOIN dbo.EquipmentMaster AS equipment
+          ON equipment.EquipmentCode=pp.MachineCode
+         AND equipment.EquipmentType='PRESS'
+        WHERE pp.ProductionID=?
+        ORDER BY pp.MachineCode,pp.PressProductionID
+    """, production_id)
+    presses = rows(cursor)
+    cursor.execute("""
+        SELECT entry.SourceEquipmentID,
+               SUM(CONVERT(bigint,entry.Qty)) AS RawRejectQty
+        FROM dbo.ProductionRejectEntry AS entry
+        JOIN dbo.RejectSourceScope AS scope
+          ON scope.id=entry.RejectSourceScopeID
+        WHERE entry.ProductionID=? AND entry.ProductionDate=?
+          AND scope.SourceScopeCode='PRESS'
+        GROUP BY entry.SourceEquipmentID
+    """, production_id, production_date)
+    raw_by_source = {
+        int(item["SourceEquipmentID"]): int(item["RawRejectQty"] or 0)
+        for item in rows(cursor)
+    }
+    return [
+        {
+            "press_production_id": int(press["PressProductionID"]),
+            "machine_code": str(press["MachineCode"]),
+            "raw_reject_qty": raw_by_source.get(int(press["SourceEquipmentID"]), 0),
+        }
+        for press in presses
+    ]
+
+
 def _validate_raw_reasons(raw_by_reason, applicable_ids):
     stale_ids = sorted(set(raw_by_reason) - applicable_ids)
     if stale_ids:
@@ -129,6 +165,9 @@ def read_production_reject_cal(cursor, production_id, expected_date=None):
     applicable_ids = {int(reason["RejectReasonID"]) for reason in reasons}
     totals = _read_raw_totals(cursor, production_id, production_date)
     _validate_raw_reasons(totals, applicable_ids)
+    press_calculations = _read_press_reject_totals(
+        cursor, production_id, production_date
+    )
     total_wet_reject = None
     wet_reject_error = None
     try:
@@ -140,6 +179,7 @@ def read_production_reject_cal(cursor, production_id, expected_date=None):
         production_date=production_date,
         quantities=totals,
         raw_total=sum(totals.values()),
+        press_calculations=press_calculations,
         total_wet_reject=total_wet_reject,
         wet_reject_error=wet_reject_error,
     )

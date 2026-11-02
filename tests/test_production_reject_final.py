@@ -48,6 +48,25 @@ class FinalCursor:
                 ("RejectReasonID", "QtyPerDay"),
                 list(totals.items()),
             )
+        elif "FROM dbo.PressProduction AS pp" in query:
+            self._set(
+                ("PressProductionID", "MachineCode", "SourceEquipmentID"),
+                [(press["PressProductionID"], press["MachineCode"],
+                  press["SourceEquipmentID"])
+                 for press in self.connection.press_sources],
+            )
+        elif "AS RawRejectQty" in query:
+            totals = {}
+            for item in self.connection.raw:
+                if (item["ProductionID"] == params[0]
+                        and item["ProductionDate"] == params[1]
+                        and item.get("SourceScopeCode", "PRESS") == "PRESS"):
+                    source_id = item["SourceEquipmentID"]
+                    totals[source_id] = totals.get(source_id, 0) + item["Qty"]
+            self._set(
+                ("SourceEquipmentID", "RawRejectQty"),
+                list(totals.items()),
+            )
         elif "FROM dbo.ProductionLot" in query:
             if self.connection.lot_active and params[0] == self.connection.production_id:
                 self._set(
@@ -175,6 +194,7 @@ class FinalConnection:
         self.production_data = dict(CounterQty=25, CuringQty=5)
         self.reasons = list(REASONS)
         self.raw = []
+        self.press_sources = []
         self.finals = {}
         self.final_by_production = {}
         self.details = {}
@@ -204,6 +224,72 @@ def submit(**quantities):
 
 
 class ProductionRejectCalTests(unittest.TestCase):
+    def test_cal_calculates_f10_and_f11_independently(self):
+        connection = FinalConnection()
+        connection.press_sources = [
+            dict(PressProductionID=101, MachineCode="F10", SourceEquipmentID=71),
+            dict(PressProductionID=102, MachineCode="F11", SourceEquipmentID=72),
+        ]
+        connection.raw = [
+            dict(ProductionID=13, ProductionDate=DAY, ShiftID=11,
+                 SourceEquipmentID=71, SourceScopeCode="PRESS",
+                 RejectReasonID=301, Qty=3),
+            dict(ProductionID=13, ProductionDate=DAY, ShiftID=11,
+                 SourceEquipmentID=71, SourceScopeCode="PRESS",
+                 RejectReasonID=302, Qty=3),
+        ]
+
+        result = read_production_reject_cal(
+            connection.cursor_instance, 13, expected_date=DAY
+        )
+
+        self.assertEqual(
+            result["press_calculations"],
+            [
+                dict(press_production_id=101, machine_code="F10",
+                     raw_reject_qty=6),
+                dict(press_production_id=102, machine_code="F11",
+                     raw_reject_qty=0),
+            ],
+        )
+        self.assertEqual(result["raw_total"], 6)
+
+    def test_cal_sums_multiple_reject_reasons_for_one_press(self):
+        connection = FinalConnection()
+        connection.press_sources = [
+            dict(PressProductionID=101, MachineCode="F10", SourceEquipmentID=71),
+        ]
+        connection.raw = [
+            dict(ProductionID=13, ProductionDate=DAY, ShiftID=11,
+                 SourceEquipmentID=71, SourceScopeCode="PRESS",
+                 RejectReasonID=301, Qty=3),
+            dict(ProductionID=13, ProductionDate=DAY, ShiftID=12,
+                 SourceEquipmentID=71, SourceScopeCode="PRESS",
+                 RejectReasonID=302, Qty=4),
+        ]
+
+        result = read_production_reject_cal(
+            connection.cursor_instance, 13, expected_date=DAY
+        )
+
+        self.assertEqual(result["press_calculations"][0]["raw_reject_qty"], 7)
+        self.assertEqual(result["raw_total"], 7)
+
+    def test_cal_returns_zero_reject_when_press_has_no_saved_entries(self):
+        connection = FinalConnection()
+        connection.press_sources = [
+            dict(PressProductionID=101, MachineCode="F10", SourceEquipmentID=71),
+            dict(PressProductionID=102, MachineCode="F11", SourceEquipmentID=72),
+        ]
+
+        result = read_production_reject_cal(connection.cursor_instance, 13)
+
+        self.assertEqual(result["raw_total"], 0)
+        self.assertEqual(
+            [press["raw_reject_qty"] for press in result["press_calculations"]],
+            [0, 0],
+        )
+
     def test_cal_succeeds_when_all_raw_reasons_are_applicable(self):
         connection = FinalConnection()
         connection.raw = [
@@ -238,6 +324,10 @@ class ProductionRejectCalTests(unittest.TestCase):
 
     def test_cal_sums_whole_lot_across_shifts_sources_and_lines(self):
         connection = FinalConnection()
+        connection.press_sources = [
+            dict(PressProductionID=101, MachineCode="F10", SourceEquipmentID=71),
+            dict(PressProductionID=102, MachineCode="F11", SourceEquipmentID=72),
+        ]
         connection.raw = [
             dict(ProductionID=13, ProductionDate=DAY, ShiftID=11,
                  SourceEquipmentID=71, LineEquipmentID=61,
@@ -254,6 +344,15 @@ class ProductionRejectCalTests(unittest.TestCase):
         )
         self.assertEqual(result["quantities"], {301: 5, 302: 4})
         self.assertEqual(result["raw_total"], 9)
+        self.assertEqual(
+            result["press_calculations"],
+            [
+                dict(press_production_id=101, machine_code="F10",
+                     raw_reject_qty=3),
+                dict(press_production_id=102, machine_code="F11",
+                     raw_reject_qty=2),
+            ],
+        )
         raw_query = next(
             query for query, _ in connection.calls
             if "SUM(CONVERT(bigint,Qty)) AS RawQty" in query
@@ -264,6 +363,10 @@ class ProductionRejectCalTests(unittest.TestCase):
         self.assertNotIn("SourceEquipmentID", raw_query)
         self.assertNotIn("LineEquipmentID", raw_query)
         self.assertEqual(connection.commits, 0)
+        self.assertFalse(any(
+            query.lstrip().startswith(("INSERT ", "UPDATE ", "DELETE "))
+            for query, _ in connection.calls
+        ))
 
     def test_cal_rejects_requested_or_raw_date_mismatch(self):
         connection = FinalConnection()
@@ -534,6 +637,10 @@ class ProductionRejectFinalTests(unittest.TestCase):
 class ProductionRejectRouteTests(unittest.TestCase):
     def test_cal_route_returns_whole_lot_totals_without_a_commit(self):
         connection = FinalConnection()
+        connection.press_sources = [
+            dict(PressProductionID=101, MachineCode="F10", SourceEquipmentID=71),
+            dict(PressProductionID=102, MachineCode="F11", SourceEquipmentID=72),
+        ]
         connection.raw = [
             dict(ProductionID=13, ProductionDate=DAY, ShiftID=11,
                  SourceEquipmentID=71, LineEquipmentID=61,
@@ -548,8 +655,21 @@ class ProductionRejectRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(payload["quantities"], {"301": 5})
         self.assertEqual(payload["raw_total"], 5)
+        self.assertEqual(
+            payload["press_calculations"],
+            [
+                dict(press_production_id=101, machine_code="F10",
+                     raw_reject_qty="3"),
+                dict(press_production_id=102, machine_code="F11",
+                     raw_reject_qty="2"),
+            ],
+        )
         self.assertEqual(payload["total_wet_reject"], 20)
         self.assertEqual(connection.commits, 0)
+        self.assertFalse(any(
+            query.lstrip().startswith(("INSERT ", "UPDATE ", "DELETE "))
+            for query, _ in connection.calls
+        ))
 
     def test_cal_route_returns_only_clear_error_for_stale_raw_reason(self):
         connection = FinalConnection()

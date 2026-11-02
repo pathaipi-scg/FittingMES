@@ -1097,6 +1097,14 @@ def production_reject_cal_route(production_id: int,
                 str(reason_id): qty
                 for reason_id, qty in result["quantities"].items()
             },
+            "press_calculations": [
+                {
+                    "press_production_id": item["press_production_id"],
+                    "machine_code": item["machine_code"],
+                    "raw_reject_qty": str(item["raw_reject_qty"]),
+                }
+                for item in result["press_calculations"]
+            ],
             "raw_total": result["raw_total"],
             "total_wet_reject": result["total_wet_reject"],
             "wet_reject_error": result["wet_reject_error"],
