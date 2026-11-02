@@ -23,6 +23,11 @@ def reject_page_context(data, production_date, workflow=None, shift_id=None,
     shifts = list(data.get("shifts") or [])
     lines = list(data.get("lines") or [])
     presses = list(data.get("presses") or [])
+    assigned_press_codes = {}
+    for assignment in data.get("press_assignments") or []:
+        assigned_press_codes.setdefault(
+            str(assignment["ProductionID"]), set()
+        ).add(str(assignment["MachineCode"]).strip())
     all_lots = list(data.get("lots") or [])
     all_depallet_runs = list(data.get("depallet_runs") or [])
     all_reasons = list(data.get("reasons") or [])
@@ -97,6 +102,15 @@ def reject_page_context(data, production_date, workflow=None, shift_id=None,
              if str(item["ProductionID"]) == selected_production_id),
             None,
         )
+    assigned_lines = {
+        str(press["LineEquipmentID"])
+        for press in presses
+        if str(press["EquipmentCode"]) in assigned_press_codes.get(
+            selected_production_id, set()
+        )
+    }
+    if chosen_workflow == "production" and len(assigned_lines) == 1:
+        selected_line_id = next(iter(assigned_lines))
     family_id = (
         selected_lot["ProductFamilyID"] if selected_lot is not None else None
     )
@@ -133,6 +147,12 @@ def reject_page_context(data, production_date, workflow=None, shift_id=None,
     source_options = [
         item for item in all_source_options
         if str(item["LineEquipmentID"]) == selected_line_id
+        and (
+            item["EquipmentType"] != "PRESS"
+            or str(item["EquipmentCode"]) in assigned_press_codes.get(
+                selected_production_id, set()
+            )
+        )
         or (
             chosen_workflow == "depallet"
             and item["EquipmentType"] == "PRESS"
@@ -205,6 +225,10 @@ def reject_page_context(data, production_date, workflow=None, shift_id=None,
             "EquipmentName": item["EquipmentName"],
             "EquipmentType": item["EquipmentType"],
             "LineEquipmentID": item["LineEquipmentID"],
+            "ProductionIDs": sorted(
+                production_id for production_id, codes in assigned_press_codes.items()
+                if str(item["EquipmentCode"]) in codes
+            ) if item["EquipmentType"] == "PRESS" else [],
         } for item in all_source_options],
     )
     return dict(
@@ -225,7 +249,12 @@ def reject_page_context(data, production_date, workflow=None, shift_id=None,
         selected_depallet_id=selected_run_id,
         submitted_depallet_id=selected_run_id,
         selected_family_id=family_id,
-        selected_source_id=str(requested_source or ""),
+        selected_source_id=(
+            str(requested_source or "")
+            if any(str(item["EquipmentID"]) == str(requested_source)
+                   for item in source_options)
+            else ""
+        ),
         selected_reason_id=str(requested_reason or ""),
         selected_scope_id=str(requested_scope or ""),
         qty=str(form.get("qty") or ""),

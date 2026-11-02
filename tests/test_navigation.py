@@ -101,6 +101,20 @@ class NavigationTests(unittest.TestCase):
             '/logger?production_date=2026-09-21&production_id=7',
         )
 
+    def test_production_to_reject_preserves_selected_lot_and_date(self):
+        body = self.page('/', 'production_date=2026-09-21&production_id=7')
+        nav = re.search(
+            r'<div class="production-submenu-row".*?</div>', body, re.S
+        )[0]
+        reject_link = next(
+            html.unescape(url) for url in re.findall(r'href="([^"]+)"', nav)
+            if urlsplit(html.unescape(url)).path == '/reject'
+        )
+        self.assertEqual(
+            reject_link,
+            '/reject?production_date=2026-09-21&production_id=7&workflow=production',
+        )
+
     def test_lot_only_deep_link_uses_lot_date_and_plan_form_keeps_date(self):
         body=self.page('/','production_id=7')
         self.assertIn('value="2026-09-21"',self.shared_form(body))

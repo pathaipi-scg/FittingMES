@@ -104,10 +104,12 @@ function rejectReasonOptions(reasons, familyId, scopeCode = null) {
     (!scopeCode || item.SourceScopeCode === scopeCode));
 }
 
-function rejectSourceOptions(sources, lineId, scopeCode = null, workflow = 'production') {
+function rejectSourceOptions(sources, lineId, productionId, scopeCode = null, workflow = 'production') {
   return sources.filter(item =>
     (String(item.LineEquipmentID) === String(lineId) ||
       (workflow === 'depallet' && item.EquipmentType === 'PRESS')) &&
+    (item.EquipmentType !== 'PRESS' || workflow === 'depallet' ||
+      item.ProductionIDs.map(String).includes(String(productionId))) &&
     (!scopeCode || item.EquipmentType === scopeCode));
 }
 
@@ -149,6 +151,19 @@ function rejectSourceOptions(sources, lineId, scopeCode = null, workflow = 'prod
   const currentLot = () => isDepallet
     ? currentRun()
     : page.lots.find(item => String(item.ProductionID) === lot.value);
+  function syncLineForLot(preferredLineId = line.value) {
+    if (isDepallet) return;
+    const assignedLines = new Set(page.sources
+      .filter(item => item.EquipmentType === 'PRESS' &&
+        item.ProductionIDs.map(String).includes(String(productionId.value)))
+      .map(item => String(item.LineEquipmentID)));
+    if (assignedLines.size === 1) {
+      line.value = [...assignedLines][0];
+    } else if (assignedLines.size > 1 &&
+      assignedLines.has(String(preferredLineId))) {
+      line.value = String(preferredLineId);
+    }
+  }
   const syncSelectedIdentity = () => {
     const run = currentRun();
     productionId.value = run ? String(run.ProductionID) : lot.value;
@@ -248,9 +263,9 @@ function rejectSourceOptions(sources, lineId, scopeCode = null, workflow = 'prod
     if (context.workflow !== workflow) return false;
 
     if (hasOption(shift, context.shiftId)) shift.value = context.shiftId;
-    if (hasOption(line, context.lineId)) line.value = context.lineId;
     updateLots(isDepallet
       ? context.depalletRunId : context.productionId);
+    syncLineForLot(context.lineId);
     updateSources(null, context.sourceId);
     if (source.value) {
       syncForSource('');
@@ -260,8 +275,13 @@ function rejectSourceOptions(sources, lineId, scopeCode = null, workflow = 'prod
     return true;
   }
 
-  const startupContext = isDepallet && depalletId.value
-    ? null : readRememberedContext();
+  const requestedProductionId =
+    new URLSearchParams(window.location.search).get('production_id');
+  const hasExplicitProductionLot = !isDepallet && requestedProductionId &&
+    page.lots.some(item =>
+      String(item.ProductionID) === String(requestedProductionId));
+  const startupContext = (isDepallet && depalletId.value) ||
+    hasExplicitProductionLot ? null : readRememberedContext();
 
   function updateWorkflowLabels() {
     source.required = !isDepallet;
@@ -319,7 +339,7 @@ function rejectSourceOptions(sources, lineId, scopeCode = null, workflow = 'prod
 
   function updateSources(scopeCode = null, preferredId = '') {
     const candidates = rejectSourceOptions(
-      page.sources, line.value, scopeCode, workflow);
+      page.sources, line.value, productionId.value, scopeCode, workflow);
     source.replaceChildren(option('', 'Select Source'));
     for (const item of candidates) {
       source.add(option(item.EquipmentID, sourceLabel(item),
@@ -343,7 +363,7 @@ function rejectSourceOptions(sources, lineId, scopeCode = null, workflow = 'prod
     scopeId.value = selected ? selected.RejectSourceScopeID : '';
     const scopeCode = selected ? selected.SourceScopeCode : null;
     const candidates = rejectSourceOptions(
-      page.sources, line.value, scopeCode, workflow);
+      page.sources, line.value, productionId.value, scopeCode, workflow);
     const preferredId = String(preferredSource || '');
     const preferredIsValid = candidates.some(
       item => String(item.EquipmentID) === preferredId);
@@ -382,12 +402,15 @@ function rejectSourceOptions(sources, lineId, scopeCode = null, workflow = 'prod
     rememberContext();
   });
   line.addEventListener('change', () => {
+    syncLineForLot(line.value);
     resetEntryFields(isDepallet);
     rememberSource();
     rememberContext();
   });
   lot.addEventListener('change', () => {
     syncSelectedIdentity();
+    const preferredLine = line.value;
+    syncLineForLot(preferredLine);
     if (isDepallet) {
       rememberDepalletSelection();
       const url = new URL(window.location.href);
@@ -438,6 +461,7 @@ function rejectSourceOptions(sources, lineId, scopeCode = null, workflow = 'prod
       updateLots(isDepallet ? row.depallet_id : row.production_id);
       syncSelectedIdentity();
       line.value = String(row.line_equipment_id);
+      syncLineForLot(line.value);
       updateReasons();
       updateSources();
       entryId.value = String(row.entry_id);
@@ -498,7 +522,18 @@ function rejectSourceOptions(sources, lineId, scopeCode = null, workflow = 'prod
   }
 
   updateWorkflowLabels();
-  if (!restoreContext(startupContext)) updateLots(lot.value);
+  if (!restoreContext(startupContext)) {
+    if (hasExplicitProductionLot) {
+      const remembered = readRememberedContext();
+      if (remembered && remembered.productionDate === productionDate.value &&
+        remembered.workflow === workflow && hasOption(shift, remembered.shiftId)) {
+        shift.value = remembered.shiftId;
+      }
+    }
+    updateLots(lot.value);
+    syncLineForLot(line.value);
+    updateSources(null, source.value);
+  }
   restoreRememberedSource();
   const selectedReason = currentReason();
   if (selectedReason) {

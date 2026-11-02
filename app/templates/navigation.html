@@ -70,7 +70,7 @@
 <nav class="production-tabs" aria-label="Production navigation">
 <a href="/{{ production_tab_query }}" {% if tab == 'production' %}aria-current="page"{% endif %}>PRODUCTION</a>
 {% for key, label, path in [('logger','LOGGER','/logger'),('reject','REJECT','/reject'),('usage','USAGE','/usage')] %}
-{% if key == 'reject' %}<a href="/reject{{ tab_date_query }}{% if tab_date_query %}&amp;{% else %}?{% endif %}workflow=production" {% if key == 'reject' and tab in ('reject','reject-cal') and reject_workflow != 'depallet' %}aria-current="page"{% endif %}>{{ label }}</a>
+{% if key == 'reject' %}<a href="/reject{{ production_tab_query }}{% if production_tab_query %}&amp;{% else %}?{% endif %}workflow=production" {% if key == 'reject' and tab in ('reject','reject-cal') and reject_workflow != 'depallet' %}aria-current="page"{% endif %}>{{ label }}</a>
 {% else %}<a href="{{ path }}{{ logger_tab_query if key == 'logger' else tab_date_query }}" {% if tab == key or key == 'logger' and tab == 'logger-summary' %}aria-current="page"{% endif %}>{{ label }}</a>{% endif %}
 {% endfor %}
 </nav>

@@ -126,6 +126,18 @@ def read_reject_page_data(cursor, production_date, workflow="production"):
         """)
     presses = rows(cursor)
 
+    press_assignments = []
+    if workflow != "depallet":
+        cursor.execute("""
+            SELECT assignment.ProductionID,assignment.MachineCode
+            FROM dbo.PressProduction AS assignment
+            JOIN dbo.ProductionLot AS lot
+              ON lot.ProductionID=assignment.ProductionID
+             AND lot.ProdDate=? AND lot.IsActive=1
+            WHERE assignment.ReleasedAt IS NULL
+        """, production_date)
+        press_assignments = rows(cursor)
+
     cursor.execute("""
         SELECT lot.ProductionID,lot.ProdDate AS ProductionDate,
                lot.Shift AS LotShiftCode,shift.id AS ShiftID,shift.ShiftCode,
@@ -192,6 +204,7 @@ def read_reject_page_data(cursor, production_date, workflow="production"):
         shifts=shifts,
         lines=lines,
         presses=presses,
+        press_assignments=press_assignments,
         lots=lots_for_date,
         depallet_runs=depallet_runs,
         reasons=reasons,
@@ -412,10 +425,17 @@ def _validate_entry(cursor, raw):
             JOIN dbo.EquipmentMaster AS mapped_line
               ON mapped_line.EquipmentCode=press_view.CurrentLine
              AND mapped_line.EquipmentType='LINE'
+            JOIN dbo.PressProduction AS assignment
+              ON assignment.MachineCode=press_view.PressCode
+             AND assignment.ProductionID=?
+             AND assignment.ReleasedAt IS NULL
+            JOIN dbo.ProductionLot AS assigned_lot
+              ON assigned_lot.ProductionID=assignment.ProductionID
+             AND assigned_lot.ProdDate=?
             WHERE press.id=? AND mapped_line.id=?
               AND press.IsActive=1 AND press_view.IsActive=1
               AND mapped_line.IsActive=1
-        """, source_id, line_id)
+        """, production_id, production_date, source_id, line_id)
         if _fetch_one(cursor) is None:
             _invalid(
                 "INVALID_SOURCE",

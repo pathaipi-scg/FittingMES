@@ -548,7 +548,7 @@ class RejectEntryTests(unittest.TestCase):
             if "FROM dbo.vw_PressMcPressList AS press_view" in call[0]
         )
         self.assertIn("press.IsActive=1 AND press_view.IsActive=1", query)
-        self.assertEqual(params, (711, 620))
+        self.assertEqual(params, (17701, date(2026, 10, 6), 711, 620))
 
     def test_cross_line_press_source_is_rejected(self):
         cursor = FakeCursor(scope="PRESS", source_valid=False)
@@ -636,6 +636,10 @@ class RejectEntryTests(unittest.TestCase):
                               "LineEquipmentID", "LineEquipmentCode", "DisplayOrder"), [
                         (711, "F7", "Press 7", 620, "LINE2", 7),
                     ])
+                elif "FROM dbo.PressProduction AS assignment" in query:
+                    self.set(("ProductionID", "MachineCode"), [
+                        (17701, "F7"),
+                    ])
                 elif "FROM dbo.ProductionLot AS lot" in query:
                     self.set(("ProductionID", "ProductionDate", "LotShiftCode",
                               "ShiftID", "ShiftCode", "ProductFamilyID",
@@ -716,6 +720,12 @@ class RejectEntryTests(unittest.TestCase):
                 dict(EquipmentID=13, EquipmentCode="F8", EquipmentName="Press 8",
                      LineEquipmentID=16),
             ],
+            press_assignments=[
+                dict(ProductionID=17701, MachineCode="F7"),
+                dict(ProductionID=17701, MachineCode="F9"),
+                dict(ProductionID=17701, MachineCode="F10"),
+                dict(ProductionID=17702, MachineCode="F8"),
+            ],
             lots=[
                 dict(ProductionID=17701, ShiftID=734, ShiftCode="2",
                      ProductFamilyID=842, LotNo="LOT-1", ProductFamily="NeuFit",
@@ -736,7 +746,7 @@ class RejectEntryTests(unittest.TestCase):
         self.assertEqual(
             [(item["EquipmentID"], item["LineEquipmentID"])
              for item in context["source_options"]],
-            [(15, 15), (1, 15)],
+            [(16, 16), (12, 16)],
         )
         self.assertEqual(
             {(item["EquipmentID"], item["LineEquipmentID"])
@@ -748,6 +758,73 @@ class RejectEntryTests(unittest.TestCase):
              if item["EquipmentType"] == "PRESS" and item["EquipmentCode"] == "F7"],
             [16],
         )
+
+    def test_assigned_lots_select_their_only_line_and_keep_history(self):
+        data = dict(
+            lines=[
+                dict(EquipmentID=15, EquipmentCode="LINE1", EquipmentName="Line 1"),
+                dict(EquipmentID=16, EquipmentCode="LINE2", EquipmentName="Line 2"),
+            ],
+            presses=[
+                dict(EquipmentID=1, EquipmentCode="F1", EquipmentName="Press 1",
+                     LineEquipmentID=15),
+                *[
+                    dict(EquipmentID=equipment_id, EquipmentCode=code,
+                         EquipmentName=code, LineEquipmentID=16)
+                    for equipment_id, code in (
+                        (10, "F7"), (11, "F9"), (12, "F10"), (13, "F11"),
+                    )
+                ],
+            ],
+            press_assignments=[
+                dict(ProductionID=902, MachineCode="F10"),
+                dict(ProductionID=902, MachineCode="F11"),
+                dict(ProductionID=905, MachineCode="F7"),
+                dict(ProductionID=905, MachineCode="F9"),
+                dict(ProductionID=905, MachineCode="F10"),
+            ],
+            lots=[
+                dict(ProductionID=902, ShiftCode="1", ProductFamilyID=1,
+                     LotNo="I13690902", ProductFamily="Family", ProductName="Product"),
+                dict(ProductionID=905, ShiftCode="1", ProductFamilyID=1,
+                     LotNo="I11690905", ProductFamily="Family", ProductName="Product"),
+            ],
+            reasons=[],
+        )
+        history = [dict(EntryID=77, SourceCode="F14")]
+        for production_id, expected in (
+            (902, ["LINE2", "F10", "F11"]),
+            (905, ["LINE2", "F7", "F9", "F10"]),
+        ):
+            stale_source_id = "13" if production_id == 905 else ""
+            context = reject_page_context(
+                data, date(2026, 9, 4), line_equipment_id=15,
+                production_id=production_id, entries=history,
+                form={
+                    "line_equipment_id": "15",
+                    "production_id": str(production_id),
+                    "source_equipment_id": stale_source_id,
+                },
+            )
+            self.assertEqual(context["selected_line_id"], "16")
+            self.assertEqual(
+                [item["EquipmentCode"] for item in context["source_options"]],
+                expected,
+            )
+            self.assertEqual(context["entries"], history)
+            self.assertEqual(
+                context["selected_source_id"],
+                stale_source_id if production_id == 902 else "",
+            )
+
+    def test_lot_line_sync_precedes_restored_source_context(self):
+        template = Path("app/templates/reject.html").read_text(encoding="utf-8")
+        self.assertIn("syncLineForLot(context.lineId)", template)
+        self.assertIn("syncLineForLot(preferredLine)", template)
+        self.assertIn("syncLineForLot(line.value)", template)
+        self.assertIn("hasExplicitProductionLot", template)
+        self.assertIn("hasExplicitProductionLot ? null : readRememberedContext()", template)
+        self.assertIn("if (hasExplicitProductionLot)", template)
 
     def test_workflow_page_labels_are_presentation_only(self):
         base = dict(
@@ -1269,6 +1346,7 @@ class RejectPageRenderTests(unittest.TestCase):
             presses=[dict(EquipmentID=711, EquipmentCode="F7",
                           EquipmentName="Press 7", LineEquipmentID=620,
                           LineEquipmentCode="LINE2", DisplayOrder=7)],
+            press_assignments=[dict(ProductionID=17701, MachineCode="F7")],
             lots=[dict(ProductionID=17701, ProductionDate=production_date,
                        ShiftID=734, ShiftCode="2", ProductFamilyID=842,
                        ProductCode="06", LotNo="LOT-1",
