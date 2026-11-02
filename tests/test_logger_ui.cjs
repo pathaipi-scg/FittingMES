@@ -12,7 +12,8 @@ const source = timeInputSource + '\n' + scripts[0].replace('{{ form|tojson }}', 
   ' causeMatchesOption, causeMEO, durationDefaultStopId, causeCatalogStopId,' +
   ' classificationAfterCause, classificationAfterManualChange, durationDisplay,' +
   ' causeRelates, reverseCauseCandidates, defaultCauseTarget,' +
-  ' subTypeCandidates, previewDuration };';
+  ' subTypeCandidates, isGlobalCauseType, causeOptionsForType,' +
+  ' mappedOptionsForCause, defaultSmdtSubType, previewDuration };';
 new vm.Script(source);
 for (const text of [
   'Sub / Related M/C', 'classification_edited', 'Stop and Start times must differ.',
@@ -42,9 +43,25 @@ assert.match(source, /const validSelected = selected && options\.some/);
 assert.match(source, /const causes = JSON\.parse/);
 assert.match(source, /saveButton\.textContent = 'SAVE EDIT'/);
 assert.match(source, /cancelButton\.addEventListener\('click'/);
-assert.match(source, /causeCandidates\(causes, selectedOption, subMachines, stopId, subStopId, isSmdt\(stopId\)\)/);
+assert.match(source, /causeOptionsForType\(\s*causes, stopTypes, stopId, selectedOption, subMachines, subStopId,/);
 assert.match(source, /rebuildCauses\(validSelected, type\.value, subType\.value,\s*validSelected \? selectedCauseId : null,\s*validSelected \? null : options\)/);
 assert.match(source, /type\.addEventListener\('change'/);
+assert.match(source, /if \(explicitChange && isGlobalCauseType\(stopTypes, type\.value\)\) \{\s*applySelection\(null\);\s*renderOptions\(availableOptions\(\), null\);/);
+assert.match(source, /mappedOptionsForCause\(\s*causes, availableOptions\(\), subMachines, selectedCause\.CauseId\)/);
+assert.match(source, /No active Sub \/ Related M\/C mapping exists for this Cause and Instance/);
+assert.match(source, /causeDrivenTargetFilter = candidates\.length > 0/);
+assert.match(source, /if \(causeDrivenTargetFilter && selectedCause && selected\s*&& causeMatchesOption/);
+assert.match(source, /rebuildSubTypes\(\s*preferSmdtOther \? null : selectedSubTypeId,\s*preferSmdtOther\)/);
+assert.match(source, /const preferSmdtOther = !eventId\.value && isSmdt\(type\.value\)/);
+assert.match(source, /defaultSmdtSubType\(subTypes, stopTypes, type\.value\)/);
+assert.match(source, /const defaultNewSmdtSubType = !eventId\.value && isSmdt\(type\.value\)/);
+assert.match(source, /rebuildSubTypes\(event\.SubStopId\)/);
+assert.match(source, /renderOptions\(availableOptions\(\), target \|\| null\)/);
+assert.match(source, /manualStopTypeOverride\s*\?\s*classificationAfterManualChange\(\)\s*:\s*classificationAfterCause\(\)/);
+assert.match(source, /if \(explicitChange\) \{\s*manualStopTypeOverride = true;\s*classificationEdited\.value = classificationAfterManualChange\(\);/);
+assert.match(source, /if \(selectedCauseId != null\s*&& candidates\.some/);
+assert.match(source, /if \(isGlobalCauseType\(stopTypes, stopId\)\) return causes/);
+assert.doesNotMatch(source, /rebuildSubTypes\(selectedCause\.SubStopId\)/);
 assert.match(source, /subType\.addEventListener\('change'/);
 assert.doesNotMatch(source, /type\.value = selectedCause\.StopId/);
 assert.match(source, /manualStopTypeOverride/);
@@ -64,7 +81,7 @@ assert.match(source, /duration\.value = '1';[\s\S]{0,80}validateBreakdownDuratio
 assert.match(source, /type\.dispatchEvent\(new Event\('change'\)\)/);
 assert.match(source, /cause\.addEventListener\('change', \(\) => applyCause\(true\)\)/);
 assert.match(source, /if \(forceResolve \|\| !subRelated\.value\)/);
-assert.match(source, /rebuildCauses\(null, type\.value, event\.SubStopId, event\.CauseId,\s*availableOptions\(\)\)/);
+assert.match(source, /rebuildCauses\(null, type\.value, subType\.value, event\.CauseId,\s*availableOptions\(\)\)/);
 assert.match(source, /clearCause\(\);/);
 assert.match(source, /form\.elements\.meo\.value = ''/);
 assert.ok(source.indexOf('rebuildSubTypes(selectedForm.sub_stop_id || null)')
@@ -76,7 +93,8 @@ const { chooseUniqueCandidate, causeSubRelatedCandidates, classificationAfterCau
   causeCandidates, causeCandidatesForOptions, compatibleOptionsForCause,
   causeMatchesOption, causeMEO, durationDefaultStopId, causeCatalogStopId, classificationAfterManualChange,
   subTypeCandidates, previewDuration, durationDisplay, causeRelates,
-  reverseCauseCandidates, defaultCauseTarget } = context.loggerTest;
+  reverseCauseCandidates, defaultCauseTarget, isGlobalCauseType,
+  causeOptionsForType, mappedOptionsForCause, defaultSmdtSubType } = context.loggerTest;
 const machineOptions = [{ value: '7', dataset: { instance: '1' } },
   { value: '7', dataset: { instance: '2' } }];
 assert.equal(chooseUniqueCandidate(machineOptions), null);
@@ -100,13 +118,22 @@ assert.deepEqual(reverseCauseCandidates([
 ], instanceCause, 7, 3, relationSubMachines, mainMachines), [instanceTarget]);
 assert.equal(defaultCauseTarget([instanceTarget], instanceCause, 7, 3, relationSubMachines, mainMachines), instanceTarget);
 assert.equal(defaultCauseTarget([otherInstanceTarget], instanceCause, 7, 4, relationSubMachines, mainMachines), otherInstanceTarget);
-assert.equal(defaultCauseTarget(relatedTargets, relatedCause, 7, 3, relationSubMachines, mainMachines), relatedTargets[0]);
+assert.equal(defaultCauseTarget(relatedTargets, relatedCause, 7, 3, relationSubMachines, mainMachines), null);
 assert.equal(defaultCauseTarget([], relatedCause, 7, 3, relationSubMachines, mainMachines), null);
+const singleMappedCause = [{ CauseId: 30, McId: 7, SubMcId: 2, StopId: 1, SubStopId: 1 }];
+const singleMappedOptions = mappedOptionsForCause(
+  singleMappedCause, [instanceTarget, otherInstanceTarget], relationSubMachines, 30);
+const selectedInstanceTargets = reverseCauseCandidates(
+  singleMappedOptions, singleMappedCause[0], 7, 3, relationSubMachines, mainMachines);
+assert.deepEqual(selectedInstanceTargets, [instanceTarget]);
+assert.equal(defaultCauseTarget(
+  singleMappedOptions, singleMappedCause[0], 7, 3, relationSubMachines, mainMachines),
+instanceTarget);
 const causeA = { McId: 7, SubMcId: 2 };
 const causeB = { McId: 7, SubMcId: 14 };
 const causeC = { McId: 7, SubMcId: 2 };
 assert.equal(defaultCauseTarget([instanceTarget], causeA, 7, 3, relationSubMachines, mainMachines), instanceTarget);
-assert.equal(defaultCauseTarget(relatedTargets, causeB, 7, 3, relationSubMachines, mainMachines), relatedTargets[0]);
+assert.equal(defaultCauseTarget(relatedTargets, causeB, 7, 3, relationSubMachines, mainMachines), null);
 assert.equal(defaultCauseTarget([otherInstanceTarget], causeC, 7, 4, relationSubMachines, mainMachines), otherInstanceTarget);
 assert.equal(defaultCauseTarget([instanceTarget], causeA, 7, 3, relationSubMachines, mainMachines), instanceTarget);
 const relatedOptions = [
@@ -120,6 +147,16 @@ const subMachines = [
   { SubMcId: 9, McId: 5, IsActive: true, IsRelated: false },
   { SubMcId: 5, McId: 7, IsActive: true, IsRelated: false },
 ];
+const relatedMappedCause = [{ CauseId: 31, McId: 5, SubMcId: 24, StopId: 2, SubStopId: 2 }];
+const multipleRelatedTargets = [
+  { display_label: 'LINE1', related_mc_id: 5, sub_mc_id: null },
+  { display_label: 'LINE2', related_mc_id: 5, sub_mc_id: null },
+];
+const multipleMappedOptions = mappedOptionsForCause(
+  relatedMappedCause, multipleRelatedTargets, subMachines, 31);
+assert.deepEqual(multipleMappedOptions, multipleRelatedTargets);
+assert.equal(defaultCauseTarget(
+  multipleMappedOptions, relatedMappedCause[0], 7, 3, subMachines, mainMachines), null);
 assert.equal(causeSubRelatedCandidates(relatedOptions, { McId: 5, SubMcId: null }).length, 2);
 assert.equal(chooseUniqueCandidate(causeSubRelatedCandidates(relatedOptions,
   { McId: 4, SubMcId: null })).display_label, 'Robot1');
@@ -154,6 +191,31 @@ assert.deepEqual(compatibleOptionsForCause(reverseCauses, fOptions, subMachines,
 assert.deepEqual(causeCandidatesForOptions(reverseCauses, fOptions.slice(0, 2), subMachines, 6, 20, false)
   .map(item => item.CauseId), [20, 21]);
 const stopTypes = [{ StopId: 6, StopType: 'SMDT' }, { StopId: 7, StopType: 'BD' }];
+const allActiveCauses = [
+  { CauseId: 1, McId: 7, SubMcId: 3, StopId: 6, SubStopId: 20 },
+  { CauseId: 2, McId: 5, SubMcId: 24, StopId: 6, SubStopId: 99 },
+  { CauseId: 3, McId: 4, SubMcId: null, StopId: 2, SubStopId: null },
+];
+for (const stopId of [7, 6, 7]) {
+  assert.equal(isGlobalCauseType(stopTypes, stopId), true);
+  assert.equal(causeOptionsForType(
+    allActiveCauses, stopTypes, stopId, null, subMachines, null, []),
+    allActiveCauses);
+}
+assert.equal(isGlobalCauseType(stopTypes, 2), false);
+assert.deepEqual(subTypeCandidates([
+  { SubStopId: 1, StopId: 6 }, { SubStopId: 2, StopId: 6 },
+  { SubStopId: 3, StopId: 7 },
+], 6).map(item => item.SubStopId), [1, 2]);
+const smdtStopTypes = [{ StopId: 66, StopType: 'SMDT' }, { StopId: 7, StopType: 'BD' }];
+const smdtSubTypes = [
+  { SubStopId: 72, StopId: 66, SubStopType: 'รอวัตถุดิบ' },
+  { SubStopId: 89, StopId: 66, SubStopType: 'อื่นๆ' },
+  { SubStopId: 90, StopId: 7, SubStopType: 'อื่นๆ' },
+];
+assert.equal(defaultSmdtSubType(smdtSubTypes, smdtStopTypes, 66).SubStopId, 89);
+assert.equal(defaultSmdtSubType(smdtSubTypes, smdtStopTypes, 7), null);
+assert.equal(defaultSmdtSubType(smdtSubTypes.slice(0, 1), smdtStopTypes, 66), null);
 assert.equal(durationDefaultStopId(stopTypes, 1), 6);
 assert.equal(durationDefaultStopId(stopTypes, 9), 6);
 assert.equal(durationDefaultStopId(stopTypes, 9.9), 6);

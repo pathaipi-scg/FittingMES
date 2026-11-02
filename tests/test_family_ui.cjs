@@ -50,12 +50,12 @@ console.log('All inline JavaScript syntax passed; family dropdown clearing and p
 
 const createLotSource = source.match(/\(\(\) => \{\s*const lotForm = document\.getElementById\('create-lot-form'\);[\s\S]*?\n\}\)\(\);/);
 assert.ok(createLotSource);
-function createLotControls(maximum, value, exhausted = false) {
+function createLotControls(value, exhausted = false) {
   const suffix = { value, handlers: {}, setCustomValidity(message) { this.validityMessage = message; },
     addEventListener(name, callback) { this.handlers[name] = callback; } };
   const create = { disabled: false };
   const warning = { textContent: '' };
-  const previewElement = { dataset: { historicalMax: String(maximum), exhausted: String(exhausted) } };
+  const previewElement = { dataset: { exhausted: String(exhausted) } };
   const formElement = { querySelector(selector) {
     return { '.lot-number-preview': previewElement, '#running_suffix': suffix,
       '#create-lot-button': create, '.running-suffix-warning': warning }[selector];
@@ -65,20 +65,27 @@ function createLotControls(maximum, value, exhausted = false) {
   });
   return { suffix, create, warning };
 }
-const editableLot = createLotControls(2, '03');
+const editableLot = createLotControls('03');
 assert.equal(editableLot.create.disabled, false);
 editableLot.suffix.value = '04'; editableLot.suffix.handlers.input();
 assert.equal(editableLot.create.disabled, false);
 editableLot.suffix.value = '02'; editableLot.suffix.handlers.input();
-assert.equal(editableLot.create.disabled, true);
-assert.match(editableLot.warning.textContent, /greater than the historical maximum 02/);
+assert.equal(editableLot.create.disabled, false);
+assert.equal(editableLot.warning.textContent, '');
 editableLot.suffix.value = '٠3'; editableLot.suffix.handlers.input();
 assert.equal(editableLot.create.disabled, true);
 assert.match(editableLot.warning.textContent, /exactly two ASCII digits/);
-const exhaustedLot = createLotControls(99, '', true);
+const voidedLot = createLotControls('07');
+assert.equal(voidedLot.create.disabled, false);
+const deletedLot = createLotControls('07');
+assert.equal(deletedLot.create.disabled, false);
+const exhaustedLot = createLotControls('', true);
 assert.equal(exhaustedLot.create.disabled, true);
 assert.match(exhaustedLot.warning.textContent, /sequence exhausted/);
-console.log('Lot suffix validation accepts overrides above MAX, rejects invalid/stale values, and disables exhausted sequences.');
+exhaustedLot.suffix.value = '07'; exhaustedLot.suffix.handlers.input();
+assert.equal(exhaustedLot.create.disabled, false);
+assert.match(exhaustedLot.warning.textContent, /enter an available suffix/);
+console.log('Lot suffix validation accepts reusable values, rejects invalid formatting, and allows manual entry after automatic exhaustion.');
 
 // Exercise shared date navigation without submitting any form or making requests.
 const navigationHTML = fs.readFileSync('app/templates/navigation.html', 'utf8');

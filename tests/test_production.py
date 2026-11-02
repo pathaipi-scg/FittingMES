@@ -4,7 +4,7 @@ from datetime import date
 from unittest.mock import MagicMock, patch
 from starlette.requests import Request
 from app.main import lot_prefix, production_page, read_plans, mark_used, choose_plan
-from app.lots import insert_lot, update_lot, next_running_no, read_lots
+from app.lots import insert_lot, update_lot, delete_lot, lot_has_dependencies, next_running_no, read_lots
 
 DAY = date(2026, 9, 21)
 PLAN = dict(selection_id='p1', StartTime=DAY, Shift='D', PlanName='Plan 1',
@@ -126,7 +126,6 @@ class ProductionTests(unittest.TestCase):
         self.assertIn('ORDER BY p.ProdDate DESC, p.LotSequence, p.ProductionID',sql)
         self.assertIn('WHERE p.IsActive=1',sql)
         self.assertIn('later.LotPrefix=p.LotPrefix',sql)
-        self.assertIn('later.SequenceMonth=p.SequenceMonth',sql)
         self.assertNotIn('later.IsActive=1',sql)
 
     def test_mapping_and_create_redirect(self):
@@ -151,7 +150,7 @@ class ProductionTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn('Prestige Common / 13 / Angle HIP', response.body.decode())
 
-    def test_lot_create_form_suggests_max_plus_one_and_exposes_two_digit_override(self):
+    def test_lot_create_form_suggests_next_historical_suffix_and_exposes_reusable_override(self):
         conn = MagicMock()
         conn.cursor.return_value.fetchone.return_value=('Prestige Common','Angle HIP')
         with patch('app.main.get_connection', return_value=conn), \
@@ -159,18 +158,18 @@ class ProductionTests(unittest.TestCase):
              patch('app.main.read_plans', return_value=[dict(PLAN)]), \
              patch('app.main.read_production_reject_context', return_value=dict(PRODUCTION_REJECT_CONTEXT)), \
              patch('app.main.read_mapping', return_value=(4, '13')), \
-             patch('app.main.next_running_no', return_value=3), \
+             patch('app.main.next_running_no', return_value=8), \
              patch('app.main.lot_prefix', return_value='I136909'):
             response = production_page(request(), 'p1', production_date=DAY)
         text = response.body.decode()
-        self.assertIn('id="running_no" value="3" readonly', text)
+        self.assertIn('id="running_no" value="8" readonly', text)
         self.assertIn('name="running_no" type="text" inputmode="numeric" maxlength="2"', text)
-        self.assertIn('value="03"', text)
-        self.assertIn('data-historical-max="2"', text)
+        self.assertIn('value="08"', text)
+        self.assertNotIn('data-historical-max', text)
         self.assertIn('id="create-lot-button"', text)
-        self.assertIn('create.disabled = Boolean(message);', text)
+        self.assertIn('create.disabled = Boolean(blockingMessage);', text)
 
-    def test_exhausted_sequence_disables_create_lot(self):
+    def test_exhausted_automatic_sequence_still_allows_manual_suffix(self):
         conn = MagicMock()
         conn.cursor.return_value.fetchone.return_value=('Prestige Common','Angle HIP')
         with patch('app.main.get_connection', return_value=conn), \
@@ -183,8 +182,10 @@ class ProductionTests(unittest.TestCase):
             response = production_page(request(), 'p1', production_date=DAY)
         text = response.body.decode()
         self.assertIn('Next Running No</label><input id="running_no" value="100" readonly', text)
-        self.assertIn('Running number sequence exhausted (maximum 99).', text)
-        self.assertIn('id="create-lot-button" class="primary" type="submit" disabled', text)
+        self.assertIn('Automatic sequence exhausted (maximum 99); enter an available suffix.', text)
+        self.assertIn('id="running_suffix" name="running_no"', text)
+        self.assertNotIn('id="running_suffix" name="running_no" type="text" inputmode="numeric" maxlength="2" pattern="[0-9]{2}" aria-label="Lot running number suffix" value="" disabled', text)
+        self.assertIn('id="create-lot-button" class="primary" type="submit">CREATE LOT', text)
 
     def test_workflow_product_does_not_push_lot_controls_right(self):
         response, _ = self.render(production_id=7)
@@ -236,7 +237,7 @@ class TransactionTests(unittest.TestCase):
         conn.commit.assert_called_once()
     def test_create_history_and_lock(self):
         conn=MagicMock(); cursor=conn.cursor.return_value
-        cursor.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),None,(1,),None,(1,),(7,)]
+        cursor.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),None,None,(1,),(7,)]
         self.assertEqual(insert_test_lot(conn),7)
         sqls=[c.args[0] for c in cursor.execute.call_args_list]
         self.assertIn('sp_getapplock',sqls[0])
@@ -249,16 +250,17 @@ class TransactionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'already assigned'): insert_test_lot(conn)
         conn.rollback.assert_called_once(); conn.commit.assert_not_called()
 
-    def test_suffix_at_or_below_historical_max_rejected(self):
+    def test_suffix_at_or_below_historical_max_is_available_without_active_conflict(self):
         for number in ('01','02'):
-            conn=MagicMock(); conn.cursor.return_value.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),None,(3,)]
-            with self.assertRaisesRegex(ValueError,'greater than it'): insert_test_lot(conn,running_no=number)
-            conn.commit.assert_not_called()
+            conn=MagicMock(); conn.cursor.return_value.fetchone.side_effect=[
+                (0,),('NeuFit / NeuStile',),(1,'06'),None,None,(1,),(7,)]
+            self.assertEqual(insert_test_lot(conn,running_no=number),7)
+            conn.commit.assert_called_once()
 
     def test_manual_override_above_max_is_inserted(self):
         for suffix in ('04','05'):
             conn=MagicMock(); cursor=conn.cursor.return_value
-            cursor.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),None,(3,),None,(1,),(7,)]
+            cursor.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),None,None,(1,),(7,)]
             self.assertEqual(insert_test_lot(conn,running_no=suffix),7)
             insert_args=next(call.args for call in cursor.execute.call_args_list
                              if 'INSERT INTO dbo.ProductionLot' in call.args[0])
@@ -275,7 +277,7 @@ class TransactionTests(unittest.TestCase):
                                  for call in conn.cursor.return_value.execute.call_args_list))
 
         conn=MagicMock(); cursor=conn.cursor.return_value
-        cursor.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),None,(1,),None,(1,),(7,)]
+        cursor.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),None,None,(1,),(7,)]
         self.assertEqual(insert_test_lot(conn,running_no='01'),7)
         insert_args=next(call.args for call in cursor.execute.call_args_list
                          if 'INSERT INTO dbo.ProductionLot' in call.args[0])
@@ -283,19 +285,128 @@ class TransactionTests(unittest.TestCase):
 
     def test_duplicate_lot_number_rejected_even_when_above_running_max(self):
         conn=MagicMock(); cursor=conn.cursor.return_value
-        cursor.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),None,(3,),('duplicate',)]
-        with self.assertRaisesRegex(ValueError,'already exists'):
+        cursor.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),None,('duplicate',)]
+        with self.assertRaisesRegex(ValueError,'already assigned to an active Lot'):
             insert_test_lot(conn,running_no='04')
         conn.rollback.assert_called_once()
         self.assertFalse(any('INSERT INTO dbo.ProductionLot' in call.args[0]
                              for call in cursor.execute.call_args_list))
 
-    def test_running_sequence_exhausted_at_99(self):
+    def test_automatic_running_sequence_advances_past_99(self):
         conn=MagicMock(); cursor=conn.cursor.return_value
-        cursor.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),None,(100,)]
-        with self.assertRaisesRegex(ValueError,'exhausted'):
-            insert_test_lot(conn,running_no='99')
+        cursor.fetchone.return_value=(100,)
+        self.assertEqual(next_running_no(cursor,'B066909',1,'06',DAY),100)
+
+    def test_voided_suffix_05_can_be_reused_without_changing_history(self):
+        conn=MagicMock(); cursor=conn.cursor.return_value
+        cursor.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),None,None,(5,),(8,)]
+        self.assertEqual(insert_test_lot(conn,running_no='05'),8)
+        insert_args=next(call.args for call in cursor.execute.call_args_list
+                         if 'INSERT INTO dbo.ProductionLot' in call.args[0])
+        self.assertEqual(insert_args[8:10],(5,'B06690905'))
+        self.assertEqual(insert_args[-1],5)
+        sqls=[call.args[0] for call in cursor.execute.call_args_list]
+        self.assertFalse(any('UPDATE dbo.ProductionLot' in sql or 'DELETE' in sql
+                             for sql in sqls))
+        self.assertNotEqual(7, 8)
+        conn.commit.assert_called_once()
+
+    def test_voided_suffix_02_can_be_reused_below_active_max_05(self):
+        conn=MagicMock(); cursor=conn.cursor.return_value
+        cursor.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),None,None,(5,),(8,)]
+        self.assertEqual(insert_test_lot(conn,running_no='02'),8)
+        insert_args=next(call.args for call in cursor.execute.call_args_list
+                         if 'INSERT INTO dbo.ProductionLot' in call.args[0])
+        self.assertEqual(insert_args[8:10],(2,'B06690902'))
+        self.assertEqual(insert_args[-1],5)
+        conn.commit.assert_called_once()
+
+    def test_active_suffix_07_cannot_be_reused(self):
+        conn=MagicMock(); cursor=conn.cursor.return_value
+        cursor.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),None,(7,)]
+        with self.assertRaisesRegex(ValueError,'already assigned to an active Lot'):
+            insert_test_lot(conn,running_no='07')
         conn.rollback.assert_called_once()
+        self.assertFalse(any('INSERT INTO dbo.ProductionLot' in call.args[0]
+                             for call in cursor.execute.call_args_list))
+
+    def test_deleted_lot_number_can_be_recreated_with_new_production_id_and_create_history(self):
+        conn=MagicMock(); cursor=conn.cursor.return_value
+        cursor.fetchone.side_effect=[
+            (0,), (7,'B06690907','Plan 1'), None, (0,), (7,),
+            (0,), ('NeuFit / NeuStile',), (1,'06'), None, None, (5,), (8,),
+        ]
+        delete_lot(conn,7)
+        new_production_id=insert_test_lot(conn,running_no='07')
+        insert_args=next(call.args for call in cursor.execute.call_args_list
+                         if 'INSERT INTO dbo.ProductionLot' in call.args[0])
+        self.assertEqual(insert_args[8:10],(7,'B06690907'))
+        self.assertNotEqual(new_production_id,7)
+        history_call=next(call for call in cursor.execute.call_args_list
+                          if 'INSERT INTO dbo.ProductionLotHistory' in call.args[0])
+        self.assertEqual(history_call.args[1:],(8,None,'B06690907',None,'Plan 1','CREATE'))
+        self.assertEqual(conn.commit.call_count,2)
+
+    def test_unused_lot_with_create_history_can_be_deleted(self):
+        conn=MagicMock(); cursor=conn.cursor.return_value
+        cursor.fetchone.side_effect=[(0,),(7,'B06690905','Plan 1'),None,(0,),(7,)]
+        delete_lot(conn,7)
+        history_delete=next(call for call in cursor.execute.call_args_list
+                            if 'DELETE FROM dbo.ProductionLotHistory' in call.args[0])
+        self.assertEqual(history_delete.args[1:],(7,'B06690905','Plan 1'))
+        self.assertIn("ChangeType='CREATE'",history_delete.args[0])
+        self.assertIn('OldLotNo IS NULL',history_delete.args[0])
+        self.assertTrue(any(call.args[0].startswith('DELETE FROM dbo.ProductionLot\n')
+                            for call in cursor.execute.call_args_list))
+        conn.commit.assert_called_once()
+        conn.rollback.assert_not_called()
+
+    def test_lot_with_operational_data_cannot_be_deleted(self):
+        conn=MagicMock(); cursor=conn.cursor.return_value
+        cursor.fetchone.side_effect=[(0,),(7,'B06690905','Plan 1'),None,(1,)]
+        with self.assertRaisesRegex(ValueError,'related or historical data'):
+            delete_lot(conn,7)
+        self.assertFalse(any(call.args[0].startswith('DELETE FROM dbo.ProductionLot')
+                             for call in cursor.execute.call_args_list))
+        conn.rollback.assert_called_once()
+        conn.commit.assert_not_called()
+
+    def test_lot_with_meaningful_history_cannot_be_deleted(self):
+        conn=MagicMock(); cursor=conn.cursor.return_value
+        cursor.fetchone.side_effect=[(0,),(7,'B06690905','Plan 1'),(14,)]
+        with self.assertRaisesRegex(ValueError,'related or historical data'):
+            delete_lot(conn,7)
+        history_check=next(call.args[0] for call in cursor.execute.call_args_list
+                           if 'FROM dbo.ProductionLotHistory AS h' in call.args[0])
+        self.assertIn("h.ChangeType='CREATE'",history_check)
+        self.assertFalse(any(call.args[0].startswith('DELETE FROM dbo.ProductionLot')
+                             for call in cursor.execute.call_args_list))
+        conn.rollback.assert_called_once()
+
+    def test_delete_failure_rolls_back_history_and_lot(self):
+        conn=MagicMock(); cursor=conn.cursor.return_value
+        cursor.fetchone.side_effect=[(0,),(7,'B06690905','Plan 1'),None,(0,)]
+        def execute(sql,*args):
+            if sql.startswith('DELETE FROM dbo.ProductionLot\n'):
+                raise RuntimeError('Lot delete failed')
+        cursor.execute.side_effect=execute
+        with self.assertRaisesRegex(RuntimeError,'Lot delete failed'):
+            delete_lot(conn,7)
+        self.assertTrue(any('DELETE FROM dbo.ProductionLotHistory' in call.args[0]
+                            for call in cursor.execute.call_args_list))
+        conn.rollback.assert_called_once()
+        conn.commit.assert_not_called()
+
+    def test_dependency_query_checks_all_production_id_tables(self):
+        conn=MagicMock(); cursor=conn.cursor.return_value
+        cursor.fetchone.side_effect=[None,(1,)]
+        self.assertTrue(lot_has_dependencies(cursor,7,lock=True))
+        queries=[call.args[0] for call in cursor.execute.call_args_list]
+        self.assertIn('ProductionLotHistory',queries[0])
+        self.assertIn('sys.tables',queries[1])
+        self.assertIn('sys.columns',queries[1])
+        self.assertIn('ProductionID',queries[1])
+        self.assertIn('UPDLOCK,HOLDLOCK',queries[1])
 
     def setup_update(self, next_no=2):
         conn=MagicMock(); cursor=conn.cursor.return_value
@@ -314,18 +425,24 @@ class TransactionTests(unittest.TestCase):
         self.assertEqual(cursor.execute.call_args.args[-1],'VOID')
         conn.commit.assert_called_once()
 
-    def test_middle_void_rejected(self):
-        conn,_=self.setup_update(3)
-        with self.assertRaisesRegex(ValueError,'latest'): update_lot(conn,7,void=True)
-        conn.rollback.assert_called_once(); conn.commit.assert_not_called()
+    def test_older_lot_can_be_voided_without_latest_number_check(self):
+        conn,cursor=self.setup_update(3)
+        cursor.fetchone.side_effect=[(0,)]
+        update_lot(conn,7,void=True)
+        sqls=[call.args[0] for call in cursor.execute.call_args_list]
+        self.assertTrue(any('SET IsActive=0' in sql for sql in sqls))
+        self.assertFalse(any('MAX(RunningNo)' in sql for sql in sqls))
+        conn.commit.assert_called_once()
 
-    def test_void_with_press_production_is_blocked_to_preserve_mould_usage(self):
+    def test_void_with_press_and_mould_usage_preserves_related_records(self):
         conn,cursor=self.setup_update()
-        cursor.fetchone.side_effect=[(0,),('press row',)]
-        with self.assertRaisesRegex(ValueError,'Press Production records exist'):
-            update_lot(conn,7,void=True)
-        conn.rollback.assert_called_once()
-        conn.commit.assert_not_called()
+        cursor.fetchone.side_effect=[(0,)]
+        update_lot(conn,7,void=True)
+        sqls=[call.args[0] for call in cursor.execute.call_args_list]
+        self.assertTrue(any('SET IsActive=0' in sql for sql in sqls))
+        self.assertFalse(any('DELETE' in sql for sql in sqls))
+        self.assertFalse(any('FROM dbo.PressProduction' in sql for sql in sqls))
+        conn.commit.assert_called_once()
 
     def test_plan_date_locked(self):
         conn,_=self.setup_update()
@@ -348,12 +465,24 @@ class TransactionTests(unittest.TestCase):
 
     def test_void_releases_plan_but_keeps_running_number_consumed(self):
         conn,cursor=self.setup_update()
+        voided_lot=dict(LOT, LotNo='B06690907', LotPrefix='B066909', RunningNo=7)
+        cursor.fetchall.return_value=[tuple(voided_lot.values())]
         update_lot(conn,7,void=True)
-        cursor.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),None,(2,),None,(1,),(8,)]
-        self.assertEqual(insert_test_lot(conn,running_no='02'),8)
-        checks=[c.args[0] for c in cursor.execute.call_args_list if 'MAX(RunningNo)' in c.args[0]]
-        self.assertTrue(checks)
-        self.assertTrue(all('IsActive=1' not in sql for sql in checks))
+        cursor.fetchone.side_effect=[(0,),('NeuFit / NeuStile',),(1,'06'),None,None,(5,),(8,)]
+        self.assertEqual(insert_test_lot(conn,running_no='07'),8)
+        create_args=next(call.args[1:] for call in cursor.execute.call_args_list
+                         if 'INSERT INTO dbo.ProductionLotHistory' in call.args[0]
+                         and call.args[-1] == 'CREATE')
+        self.assertEqual(create_args,(8,None,'B06690907',None,'Plan 1','CREATE'))
+        void_args=next(call.args[1:] for call in cursor.execute.call_args_list
+                       if 'INSERT INTO dbo.ProductionLotHistory' in call.args[0]
+                       and call.args[-1] == 'VOID')
+        self.assertEqual(void_args[0],7)
+        self.assertFalse(any('DELETE' in call.args[0] for call in cursor.execute.call_args_list))
+        cursor.fetchone.side_effect=None
+        cursor.fetchone.return_value=(8,)
+        self.assertEqual(next_running_no(cursor,'B066909',1,'06',DAY),8)
+        self.assertNotIn('IsActive=1',cursor.execute.call_args.args[0])
 
     def test_history_failure_rolls_back(self):
         conn,cursor=self.setup_update()

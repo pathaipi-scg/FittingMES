@@ -94,9 +94,9 @@ class EffectivePlanTests(unittest.TestCase):
     def test_create_uses_effective_fields(self):
         conn = MagicMock()
         cursor = conn.cursor.return_value
-        cursor.fetchone.side_effect = [(0,), ('NeuFit / NeuStile',), (1,'06'), None, (1,), (1,), (8,)]
+        cursor.fetchone.side_effect = [(0,), ('NeuFit / NeuStile',), (1,'06'), None, None, (1,), (8,)]
         with patch('app.lots.lot_prefix', return_value='B066909'):
-            insert_lot(conn, self.latest(), '06', 'B066909', 1, product_family_id=1)
+            insert_lot(conn, self.latest(), '06', 'B066909', '01', product_family_id=1)
         args = next(call.args for call in cursor.execute.call_args_list
                     if 'INSERT INTO dbo.ProductionLot\n' in call.args[0])
         self.assertEqual(args[1:6], (DAY, 'D', 'Plan 1', 'CODE10', 'Product version 10'))

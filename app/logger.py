@@ -158,6 +158,10 @@ def _master_by_id(rows, key, value):
     return next((row for row in rows if row[key] == value), None)
 
 
+def _active_master(row):
+    return row is not None and bool(row.get("IsActive", True))
+
+
 def _validate_pair(first, second, code, label):
     if (first is None) != (second is None):
         _validation_error(code, f"{label} values must be supplied as a pair.")
@@ -203,14 +207,14 @@ def _validate_logger_masters(data, masters, day_start_time=None):
     mc_id = _positive_int(data.mc_id, "INVALID_MACHINE", "McId")
     mc_instance_no = _positive_int(data.mc_instance_no, "INVALID_MACHINE_INSTANCE", "McInstanceNo")
     machine = _master_by_id(masters.main_machines, "McId", mc_id)
-    if machine is None:
+    if not _active_master(machine):
         _validation_error("INVALID_MACHINE", "McId is not an active Main Machine.")
     if mc_instance_no > int(machine["No"]):
         _validation_error("INVALID_MACHINE_INSTANCE", "McInstanceNo is outside the active Main Machine range.")
 
     stop_id = _positive_int(data.stop_id, "INVALID_STOP", "StopId")
     stop_type = _master_by_id(masters.stop_types, "StopId", stop_id)
-    if stop_type is None:
+    if not _active_master(stop_type):
         _validation_error("INVALID_STOP", "StopId is not an active Stop Type.")
     machine_level = stop_type["StopType"] in {"SETUP", "CHGOVER", "CLEAN", "IDLE"}
 
@@ -221,7 +225,7 @@ def _validate_logger_masters(data, masters, day_start_time=None):
     related_machine = None
     if related_mc_id is not None:
         related_machine = _master_by_id(masters.main_machines, "McId", related_mc_id)
-        if related_machine is None:
+        if not _active_master(related_machine):
             _validation_error("INVALID_RELATED_MACHINE", "RelatedMcId is not an active Main Machine.")
         if related_instance_no > int(related_machine["No"]):
             _validation_error("INVALID_RELATED_INSTANCE", "RelatedMcInstanceNo is outside the active Main Machine range.")
@@ -236,7 +240,7 @@ def _validate_logger_masters(data, masters, day_start_time=None):
     sub_machine = None
     if sub_mc_id is not None:
         sub_machine = _master_by_id(masters.sub_machines, "SubMcId", sub_mc_id)
-        if sub_machine is None:
+        if not _active_master(sub_machine):
             _validation_error("INVALID_SUBMACHINE", "SubMcId is not an active SubMachine.")
         if bool(sub_machine["IsRelated"]):
             _validation_error("PROXY_SUBMACHINE", "An IsRelated proxy cannot be stored as SubMcId.")
@@ -255,19 +259,34 @@ def _validate_logger_masters(data, masters, day_start_time=None):
         kind = RELATED_SUB
         if sub_machine["McId"] != related_mc_id:
             _validation_error("INVALID_HIERARCHY", "The physical SubMachine is not owned by the Related Main Machine.")
+    if kind is not None:
+        selected_hierarchy = (
+            related_mc_id, related_instance_no, sub_mc_id, sub_instance_no)
+        valid_hierarchies = {
+            (option["related_mc_id"], option["related_mc_instance_no"],
+             option["sub_mc_id"], option["sub_mc_instance_no"])
+            for option in sub_related_options_for_instance(
+                masters.main_machines, masters.sub_machines,
+                mc_id, mc_instance_no)
+        }
+        if selected_hierarchy not in valid_hierarchies:
+            _validation_error(
+                "INVALID_HIERARCHY",
+                "Sub / Related M/C is not available for the selected Main Machine instance.")
 
     sub_stop_id = _optional_int(data.sub_stop_id, "INVALID_SUBSTOP", "SubStopId")
     sub_stop_type = None
     if sub_stop_id is not None:
         sub_stop_type = _master_by_id(masters.sub_stop_types, "SubStopId", sub_stop_id)
-        if sub_stop_type is None or sub_stop_type["StopId"] != stop_id:
+        if (not _active_master(sub_stop_type)
+                or sub_stop_type["StopId"] != stop_id):
             _validation_error("INVALID_STOP_SUBSTOP", "SubStopId does not belong to StopId.")
 
     cause = None
     if data.cause_id is not None:
         cause_id = _positive_int(data.cause_id, "INVALID_CAUSE", "CauseId")
         cause = _master_by_id(masters.causes, "CauseId", cause_id)
-        if cause is None:
+        if not _active_master(cause):
             _validation_error("INVALID_CAUSE", "CauseId is not an active Cause.")
         if related_mc_id is not None and sub_mc_id is None:
             if cause.get("McId") != related_mc_id:
@@ -275,9 +294,11 @@ def _validate_logger_masters(data, masters, day_start_time=None):
             cause_sub_mc_id = cause.get("SubMcId")
             if cause_sub_mc_id is not None:
                 proxy = _master_by_id(masters.sub_machines, "SubMcId", cause_sub_mc_id)
-                if (proxy is None or not bool(proxy["IsRelated"])
+                if (not _active_master(proxy) or not bool(proxy["IsRelated"])
                         or proxy["McId"] != related_mc_id):
                     _validation_error("INVALID_CAUSE", "Cause is not mapped to a valid Related Main Machine proxy.")
+        elif sub_mc_id is not None and cause.get("SubMcId") != sub_mc_id:
+            _validation_error("INVALID_CAUSE", "Cause does not match the selected Sub / Related M/C.")
     else:
         cause_id = None
 
@@ -291,7 +312,8 @@ def _validate_logger_masters(data, masters, day_start_time=None):
     else:
         classification_source = "CAUSE_SHORTCUT"
 
-    if timestamp_mode and stop_id == 6 and sub_stop_id == 20:
+    if (timestamp_mode and stop_id == 6 and sub_stop_id == 20
+            and not data.classification_edited):
         stop_datetime, start_datetime = timestamp_datetimes()
         duration_min = int((start_datetime - stop_datetime).total_seconds() // 60)
         if duration_min >= 10:
@@ -683,6 +705,8 @@ def read_logger_events(cursor, production_date):
 
 
 def expand_main_machine(machine):
+    if not _active_master(machine):
+        return []
     return [
         {"mc_id": machine["McId"], "mc_instance_no": instance_no,
          "display_label": f'{machine["Machine"]}{instance_no}'}
@@ -695,6 +719,8 @@ def main_machine_categories(main_machines):
     categories = []
     seen = set()
     for machine in main_machines:
+        if not _active_master(machine):
+            continue
         name = machine["Machine"]
         if name in seen:
             continue
@@ -706,11 +732,13 @@ def main_machine_categories(main_machines):
 def sub_related_options_for_instance(main_machines, sub_machines, mc_id, instance_no):
     """Expand physical equipment and configured related machines for one instance."""
     machine = _master_by_id(main_machines, "McId", mc_id)
-    if machine is None or not 1 <= int(instance_no) <= int(machine["No"]):
+    if (not _active_master(machine)
+            or not 1 <= int(instance_no) <= int(machine["No"])):
         return []
     options = []
     for sub_machine in sub_machines:
-        if bool(sub_machine["IsRelated"]) or sub_machine["McId"] != mc_id:
+        if (not _active_master(sub_machine) or bool(sub_machine["IsRelated"])
+                or sub_machine["McId"] != mc_id):
             continue
         for sub_instance_no in range(1, int(sub_machine["No"]) + 1):
             label = f'{sub_machine["SubMachine"]}{sub_instance_no}'
@@ -737,10 +765,13 @@ def sub_related_options_for_instance(main_machines, sub_machines, mc_id, instanc
 
 
 def expand_sub_related_options(main_machines, sub_machines):
-    main_by_id = {machine["McId"]: machine for machine in main_machines}
+    main_by_id = {machine["McId"]: machine for machine in main_machines
+                  if _active_master(machine)}
     options = []
     related_machines = []
     for sub_machine in sub_machines:
+        if not _active_master(sub_machine):
+            continue
         count = int(sub_machine["No"])
         if bool(sub_machine["IsRelated"]):
             related_machine = main_by_id.get(sub_machine["McId"])
@@ -772,7 +803,10 @@ def expand_sub_related_options(main_machines, sub_machines):
                 "related_machine_snapshot": None,
                 "sub_machine_snapshot": label,
             })
-    physical_sub_machines = [sub for sub in sub_machines if not bool(sub["IsRelated"])]
+    physical_sub_machines = [
+        sub for sub in sub_machines
+        if _active_master(sub) and not bool(sub["IsRelated"])
+    ]
     for related_machine in related_machines:
         for sub_machine in physical_sub_machines:
             if sub_machine["McId"] != related_machine["McId"]:

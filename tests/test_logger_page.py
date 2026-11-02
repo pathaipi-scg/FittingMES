@@ -6,7 +6,7 @@ from datetime import date, datetime
 from unittest.mock import MagicMock, patch
 from starlette.requests import Request
 
-from app.logger import LoggerMasters, LoggerValidationError
+from app.logger import LoggerMasters, LoggerValidationError, sub_related_options_for_instance
 from app.logger_page import logger_form_input, logger_page_context
 from app.main import (app, logger_page, logger_load_context, save_logger_form,
                       save_logger_route, delete_logger_route)
@@ -248,6 +248,53 @@ class LoggerPageTests(unittest.TestCase):
         self.assertEqual(data.sub_mc_id, 2)
         self.assertIsNone(data.related_mc_id)
         self.assertIsNone(data.created_by)
+
+    def test_save_form_rejects_mismatched_target_hierarchy_ids(self):
+        conn = MagicMock()
+        with patch("app.main.get_connection", return_value=conn), \
+             patch("app.main.read_logger_masters", return_value=self.masters), \
+             patch("app.main.save_logger_event") as save:
+            with self.assertRaises(LoggerValidationError):
+                save_logger_form(self.form(sub_mc_id="9"))
+        save.assert_not_called()
+
+    def test_save_form_rejects_target_outside_selected_machine_hierarchy(self):
+        conn = MagicMock()
+        with patch("app.main.get_connection", return_value=conn), \
+             patch("app.main.read_logger_masters", return_value=self.masters), \
+             patch("app.main.save_logger_event") as save:
+            with self.assertRaisesRegex(ValueError, "unavailable for this Main Machine"):
+                save_logger_form(self.form(mc_id="4"))
+        save.assert_not_called()
+
+    def test_f10_mixer_target_serializes_visible_option_to_matching_ids(self):
+        masters = LoggerMasters(
+            main_machines=[{"McId": 7, "Machine": "F", "No": 10, "Relate": 0}],
+            sub_machines=[
+                {"SubMcId": 44, "McId": 7, "SubMachine": "MIXER",
+                 "No": 1, "IsActive": True, "IsRelated": False},
+                {"SubMcId": 45, "McId": 7, "SubMachine": "F proxy",
+                 "No": 1, "IsActive": True, "IsRelated": True},
+            ],
+            stop_types=[{"StopId": 1, "StopType": "RUN"}],
+            sub_stop_types=[{"SubStopId": 1, "StopId": 1, "SubStopType": "--"}],
+            causes=[],
+        )
+        option = next(item for item in sub_related_options_for_instance(
+            masters.main_machines, masters.sub_machines, 7, 10)
+            if item["display_label"] == "F10 / MIXER1")
+        conn = MagicMock()
+        with patch("app.main.get_connection", return_value=conn), \
+             patch("app.main.read_logger_masters", return_value=masters), \
+             patch("app.main.save_logger_event", return_value=101) as save:
+            save_logger_form(self.form(
+                mc_instance_no="10", sub_related_selection=json.dumps(option),
+                related_mc_id="7", related_mc_instance_no="10",
+                sub_mc_id="44", sub_mc_instance_no="1"))
+        data = save.call_args.args[1]
+        self.assertEqual((data.mc_id, data.mc_instance_no), (7, 10))
+        self.assertEqual((data.related_mc_id, data.related_mc_instance_no), (7, 10))
+        self.assertEqual((data.sub_mc_id, data.sub_mc_instance_no), (44, 1))
 
     def test_save_edit_forwards_event_shift_and_header_preset_independently(self):
         conn = MagicMock()

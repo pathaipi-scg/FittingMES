@@ -308,6 +308,38 @@ class LoggerResolverTests(unittest.TestCase):
         self.assertEqual(values["duration_min"], 10)
         self.assertEqual(values["start_datetime"].date().isoformat(), "2026-10-02")
 
+    def test_timestamp_save_cases_keep_required_target_and_derive_duration(self):
+        cases = (
+            ({"stop": "10:00", "start": "10:03", "stop_id": 6,
+              "sub_stop_id": 20}, 3),
+            ({"stop": "11:15", "start": "11:30", "stop_id": 7,
+              "sub_stop_id": 21}, 15),
+        )
+        for overrides, expected_duration in cases:
+            with self.subTest(stop_id=overrides["stop_id"]):
+                connection = SaveConnection()
+                save_logger_event(connection, self.save_input(**overrides), self.masters())
+                inserted = connection.cursor_instance.inserted[0][1]
+                self.assertEqual(inserted[3], expected_duration)
+                self.assertEqual((inserted[8], inserted[9]), (2, 1))
+
+    def test_breakdown_timestamp_duration_must_be_at_least_ten(self):
+        with self.assertRaisesRegex(LoggerValidationError, "BD requires at least 10 minutes"):
+            _validate_logger_masters(self.save_input(
+                stop="11:15", start="11:24", stop_id=7, sub_stop_id=21),
+                self.masters())
+
+    def test_timestamp_duration_preserves_manual_supported_type(self):
+        for stop_id, sub_stop_id, duration in (
+                (1, 1, 15), (2, 2, 15), (3, None, 15), (4, None, 15),
+                (5, None, 15), (6, 20, 3), (7, 21, 15)):
+            with self.subTest(stop_id=stop_id):
+                values = _validate_logger_masters(self.save_input(
+                    stop="10:00", start=f"10:{duration:02d}", stop_id=stop_id,
+                    sub_stop_id=sub_stop_id), self.masters())
+                self.assertEqual(values["duration_min"], duration)
+                self.assertEqual(values["stop_id"], stop_id)
+
     def test_main_machine_categories_are_broad_master_names(self):
         categories = main_machine_categories([self.main_machines[1], self.main_machines[0], self.main_machines[2]])
         self.assertEqual([item["machine"] for item in categories], ["F", "Robot", "LINE"])
@@ -390,6 +422,27 @@ class LoggerResolverTests(unittest.TestCase):
         self.assertEqual(normalized["related_mc_id"], 5)
         self.assertEqual(normalized["sub_mc_id"], 9)
         self.assertEqual(normalized["sub_mc_instance_no"], 3)
+
+    def test_f10_mixer_related_sub_is_accepted_by_backend_hierarchy_validation(self):
+        masters = self.masters()
+        masters.sub_machines.append(
+            {"SubMcId": 44, "McId": 7, "SubMachine": "MIXER",
+             "No": 1, "IsActive": True, "IsRelated": False})
+        masters.sub_machines.append(
+            {"SubMcId": 45, "McId": 7, "SubMachine": "F proxy",
+             "No": 1, "IsActive": True, "IsRelated": True})
+        masters.causes.append(
+            {"CauseId": 30, "Cause": "Mapped MIXER cause", "McId": 7,
+             "SubMcId": 44, "StopId": 6, "SubStopId": 20, "MEO": "M"})
+        connection = SaveConnection()
+        save_logger_event(connection, self.save_input(
+            mc_instance_no=10, related_mc_id=7, related_mc_instance_no=10,
+            sub_mc_id=44, sub_mc_instance_no=1,
+            stop_id=6, sub_stop_id=20, cause_id=30,
+            classification_edited=True), masters)
+        params = connection.cursor_instance.inserted[0][1]
+        self.assertEqual(params[6:13], (7, 10, 44, 1, 6, 20, 30))
+
 
     def test_machine_first_cause_does_not_overwrite_selected_machine(self):
         cause = {"CauseId": 1, "McId": 5, "SubMcId": 9, "StopId": 2, "SubStopId": 3, "MEO": "M"}
@@ -608,7 +661,15 @@ class LoggerResolverTests(unittest.TestCase):
         template = Path("app/templates/logger.html").read_text(encoding="utf-8")
         self.assertIn("subRelated.required = !machineLevel", template)
         self.assertIn("subRelated.disabled = machineLevel", template)
-        self.assertIn("!isMachineLevel(type.value) && !subRelated.value", template)
+        self.assertIn("!isMachineLevel(type.value) && !syncSelectedTarget()", template)
+
+    def test_logger_template_syncs_selected_target_and_preserves_manual_type(self):
+        from pathlib import Path
+        template = Path("app/templates/logger.html").read_text(encoding="utf-8")
+        self.assertIn("function syncSelectedTarget()", template)
+        self.assertIn("applySelection(selected);", template)
+        self.assertIn("if (manualStopTypeOverride) return;", template)
+        self.assertIn("if (explicitChange) {", template)
 
     def test_save_related_main_and_related_sub(self):
         related_main = save_logger_event(
@@ -671,6 +732,44 @@ class LoggerResolverTests(unittest.TestCase):
                 with self.assertRaises(LoggerValidationError):
                     save_logger_event(SaveConnection(), self.save_input(**overrides), self.masters())
 
+    def test_inactive_or_wrong_instance_sub_related_targets_are_rejected(self):
+        inactive = self.masters()
+        inactive.sub_machines[0] = dict(
+            inactive.sub_machines[0], IsActive=False)
+        with self.assertRaisesRegex(LoggerValidationError, "active SubMachine"):
+            save_logger_event(SaveConnection(), self.save_input(), inactive)
+
+        inactive_cause = self.masters()
+        inactive_cause.causes[1] = dict(
+            inactive_cause.causes[1], IsActive=False)
+        with self.assertRaisesRegex(LoggerValidationError, "active Cause"):
+            save_logger_event(SaveConnection(), self.save_input(
+                cause_id=2, stop_id=6, sub_stop_id=20), inactive_cause)
+
+        with self.assertRaisesRegex(LoggerValidationError, "not available"):
+            save_logger_event(SaveConnection(), self.save_input(
+                mc_id=4, mc_instance_no=1, sub_mc_id=2,
+                related_mc_id=None, related_mc_instance_no=None), self.masters())
+
+    def test_cause_must_match_selected_physical_target(self):
+        masters = self.masters()
+        masters.causes.append(
+            {"CauseId": 13, "Cause": "Other target", "McId": 5, "SubMcId": 9,
+             "StopId": 6, "SubStopId": 20, "MEO": "M"})
+        with self.assertRaisesRegex(LoggerValidationError, "Cause does not match"):
+            save_logger_event(SaveConnection(), self.save_input(
+                cause_id=13, stop_id=6, sub_stop_id=20,
+                classification_edited=True), masters)
+
+    def test_update_rejects_invalid_hierarchy_before_update(self):
+        connection = SaveConnection(existing_event=(datetime(2026, 10, 1, 8), 1))
+        with self.assertRaisesRegex(LoggerValidationError, "not available"):
+            update_logger_event(connection, 42, self.save_input(
+                mc_id=4, mc_instance_no=1, sub_mc_id=2,
+                related_mc_id=None, related_mc_instance_no=None), self.masters())
+        self.assertFalse(any("UPDATE dbo.LoggerEvent" in query
+                             for query, _ in connection.cursor_instance.executed))
+
     def test_time_rules_and_equal_time_rejection(self):
         same_day = save_logger_event(SaveConnection(event_id=1), self.save_input(), self.masters())
         midnight_connection = SaveConnection(event_id=2)
@@ -718,7 +817,9 @@ class LoggerResolverTests(unittest.TestCase):
         self.assertEqual(connection.commits, 1)
 
     def test_different_primary_instance_or_machine_is_allowed(self):
-        for overrides in ({"mc_instance_no": 2}, {"mc_id": 5}):
+        for overrides in (
+                {"mc_instance_no": 2},
+                {"mc_id": 5, "sub_mc_id": 9, "sub_mc_instance_no": 1}):
             with self.subTest(overrides=overrides):
                 connection = SaveConnection()
                 save_logger_event(connection, self.save_input(**overrides), self.masters())
@@ -795,6 +896,14 @@ class LoggerResolverTests(unittest.TestCase):
         self.assertEqual(long_params[10:13], (7, 21, 2))
         self.assertEqual(long_params[17:20], ("BD", "--", "SMDT cause"))
         self.assertEqual(long_params[22], "DURATION_RULE")
+
+        manual_smdt_long = SaveConnection()
+        save_logger_event(manual_smdt_long, self.save_input(
+            cause_id=2, stop_id=6, sub_stop_id=20, classification_edited=True,
+            stop="08:00", start="08:10"), self.masters())
+        manual_long_params = manual_smdt_long.cursor_instance.inserted[0][1]
+        self.assertEqual(manual_long_params[10:13], (6, 20, 2))
+        self.assertEqual(manual_long_params[22], "MANUAL")
 
         smdt_long_before_cutoff = SaveConnection()
         save_logger_event(smdt_long_before_cutoff, self.save_input(

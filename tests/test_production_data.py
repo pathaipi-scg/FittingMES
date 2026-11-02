@@ -225,7 +225,7 @@ class ProductionDataTests(unittest.TestCase):
 
     def test_new_lot_defaults_shift_from_effective_plan(self):
         conn=MagicMock(); conn.cursor.return_value.fetchone.side_effect=[
-            (0,), ('NeuFit / NeuStile',), (1, '06'), None, (1,), None, (1,), (7,),
+            (0,), ('NeuFit / NeuStile',), (1, '06'), None, None, (1,), (7,),
         ]
         with patch('app.lots.lot_prefix', return_value='B066909'):
             insert_lot(conn,dict(PLAN,Shift='3'),'06','B066909','01',product_family_id=1)

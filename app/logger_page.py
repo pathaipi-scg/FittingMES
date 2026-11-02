@@ -126,9 +126,19 @@ def logger_form_input(form):
     ), selection
 
 
-def normalize_form_selection(selection, masters):
-    return normalize_sub_related_selection(selection, masters.main_machines,
-                                           masters.sub_machines)
+def normalize_form_selection(selection, masters, mc_id, mc_instance_no):
+    normalized = normalize_sub_related_selection(
+        selection, masters.main_machines, masters.sub_machines)
+    if normalized["kind"] is None:
+        return normalized
+    available = sub_related_options_for_instance(
+        masters.main_machines, masters.sub_machines, mc_id, mc_instance_no)
+    if not any(all(normalized[key] == option[key] for key in (
+            "related_mc_id", "related_mc_instance_no", "sub_mc_id",
+            "sub_mc_instance_no")) for option in available):
+        raise ValueError(
+            "The selected Sub / Related M/C is unavailable for this Main Machine instance.")
+    return normalized
 
 
 def cause_suggestion(cause, selected_machine_id, options):

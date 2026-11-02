@@ -10,7 +10,8 @@ from fastapi.responses import RedirectResponse, JSONResponse, FileResponse, Plai
 from starlette.background import BackgroundTask
 from fastapi.encoders import jsonable_encoder
 from starlette.concurrency import run_in_threadpool
-from app.lots import rows, day, read_lots, update_lot, insert_lot, next_running_no, reorder_lot
+from app.lots import (rows, day, read_lots, update_lot, delete_lot, lot_has_dependencies,
+                      insert_lot, next_running_no, reorder_lot)
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse
@@ -169,13 +170,24 @@ def save_logger_form(form):
     data, selection = logger_form_input(form)
     with closing(get_connection()) as conn:
         masters = read_logger_masters(conn.cursor())
-        normalized = normalize_form_selection(selection, masters)
+        normalized = normalize_form_selection(
+            selection, masters, data.mc_id, data.mc_instance_no)
+        submitted_hierarchy = (
+            data.related_mc_id, data.related_mc_instance_no,
+            data.sub_mc_id, data.sub_mc_instance_no)
+        selected_hierarchy = (
+            normalized['related_mc_id'], normalized['related_mc_instance_no'],
+            normalized['sub_mc_id'], normalized['sub_mc_instance_no'])
+        if submitted_hierarchy != selected_hierarchy:
+            raise LoggerValidationError(
+                'INVALID_HIERARCHY',
+                'Sub / Related M/C selection does not match the submitted hierarchy IDs.')
         data = data.__class__(
             **{**data.__dict__,
-               'related_mc_id': normalized['related_mc_id'],
-               'related_mc_instance_no': normalized['related_mc_instance_no'],
-               'sub_mc_id': normalized['sub_mc_id'],
-               'sub_mc_instance_no': normalized['sub_mc_instance_no']})
+               'related_mc_id': selected_hierarchy[0],
+               'related_mc_instance_no': selected_hierarchy[1],
+               'sub_mc_id': selected_hierarchy[2],
+               'sub_mc_instance_no': selected_hierarchy[3]})
         if data.logger_event_id is None:
             save_logger_event(conn, data, masters)
         else:
@@ -594,7 +606,7 @@ def product_selection_context(cursor, selected):
 
 def production_page(request, plan_id=None, product_code=None, confirm=False, mapping_edit=False,
                     create=False, running_no=None, production_date=None, production_id=None,
-                    remembered_production_id=None, edit=False, save=False, void=False,
+                    remembered_production_id=None, edit=False, save=False, void=False, delete=False,
                     production_input=None, data_saved=False, product_family=None,
                     product_choices=None, press_message=None, press_message_type=None,
                     press_form=None, wet_reject_message=None, wet_reject_message_type=None,
@@ -631,8 +643,7 @@ def production_page(request, plan_id=None, product_code=None, confirm=False, map
                 context["lots_load_failed"] = True
                 raise
             # Navigation may retain a lot only when it belongs to the selected date.
-            # Keep all mutation paths and their validation/save behavior unchanged.
-            if production_id is not None and not (confirm or create or save or void or production_input is not None):
+            if production_id is not None and not (confirm or create or save or void or delete or production_input is not None):
                 selected_lot = next((lot for lot in context['lots'] if lot['ProductionID'] == production_id), None)
                 if selected_lot is not None:
                     if requested_date is None:
@@ -643,7 +654,7 @@ def production_page(request, plan_id=None, product_code=None, confirm=False, map
                         context['edit'] = False
             if (production_id is None and remembered_production_id is not None
                     and requested_date is not None
-                    and not (confirm or create or save or void or production_input is not None)):
+                    and not (confirm or create or save or void or delete or production_input is not None)):
                 remembered = next(
                     (lot for lot in context['lots']
                      if lot['ProductionID'] == remembered_production_id
@@ -655,6 +666,11 @@ def production_page(request, plan_id=None, product_code=None, confirm=False, map
                 else:
                     context['remembered_lot_invalid'] = True
             context["lots_for_date"] = [lot for lot in context["lots"] if day(lot["ProdDate"]) == production_date]
+            if delete:
+                delete_lot(conn, production_id)
+                return RedirectResponse(f"/?production_date={production_date}", status_code=303)
+            for lot in context["lots_for_date"]:
+                lot["CanDelete"] = not lot_has_dependencies(cursor, lot["ProductionID"])
             try:
                 context["shift_rules"] = read_shift_rules(cursor, production_date)
                 context["shift_rules"] = [dict(rule,
@@ -734,7 +750,9 @@ def production_page(request, plan_id=None, product_code=None, confirm=False, map
                 if save or void:
                     replacement = choose_plan(context["edit_plans"], plan_id) if save else None
                     update_lot(conn, production_id, replacement, void=void)
-                    return RedirectResponse("/" if void else f"/?production_id={production_id}", status_code=303)
+                    return RedirectResponse(
+                        f"/?production_date={production_date}" if void
+                        else f"/?production_id={production_id}", status_code=303)
             context["plans"] = mark_used(read_plans(cursor, production_date), context["lots"])
             if plan_id:
                 context["families"] = read_families(cursor)
@@ -899,8 +917,13 @@ def save_plan(request: Request, production_id: int, plan_id: str = Form(...)):
 
 
 @app.post("/lots/{production_id}/void", response_class=HTMLResponse)
-def void_lot(request: Request, production_id: int):
-    return production_page(request, production_id=production_id, void=True)
+def void_lot(request: Request, production_id: int, production_date: date | None = None):
+    return production_page(request, production_id=production_id, production_date=production_date, void=True)
+
+
+@app.post("/lots/{production_id}/delete", response_class=HTMLResponse)
+def delete_production_lot(request: Request, production_id: int, production_date: date | None = None):
+    return production_page(request, production_id=production_id, production_date=production_date, delete=True)
 
 
 @app.post("/lots/{production_id}/production", response_class=HTMLResponse)

@@ -1869,6 +1869,7 @@ class PressProductionTests(unittest.TestCase):
                                   AvailableShiftCodes=['1', '2'])], press_product_error=None)
         with patch('app.main.get_connection', return_value=PressProductionConnection()), \
              patch('app.main.read_lots', return_value=[dict(LOT)]), \
+             patch('app.main.lot_has_dependencies', return_value=False), \
              patch('app.main.read_plans', return_value=[dict(PLAN)]), \
              patch('app.main.read_production_data', return_value={}), \
              patch('app.main.build_press_production_context', return_value=press_context), \
@@ -1878,7 +1879,8 @@ class PressProductionTests(unittest.TestCase):
         page = response.body.decode()
         for item in ('PRESS PRODUCTION', 'F2',
                      'M000001 / Ridge', 'M000002 / Other Mould', 'Counter',
-                     '/lots/7/press-production/30', '/lots/7/press-production'):
+                     '/lots/7/press-production/30', '/lots/7/press-production',
+                     'DELETE LOT', '/lots/7/delete?production_date='):
             self.assertIn(item, page)
         press_row_30 = re.search(
             r'<tr data-guide-url="/lots/7/press-production/30/logger-guide"[^>]*>(.*?)</tr>',
@@ -1964,6 +1966,7 @@ class PressProductionTests(unittest.TestCase):
         form_data = dict(PressProductionID=30, ShiftCode='2', MachineCode='F2', MouldID='4')
         with patch('app.main.get_connection', return_value=PressProductionConnection()), \
              patch('app.main.read_lots', return_value=[dict(LOT)]), \
+             patch('app.main.lot_has_dependencies', return_value=False), \
              patch('app.main.read_plans', return_value=[dict(PLAN)]), \
              patch('app.main.read_production_data', return_value={}), \
              patch('app.main.build_press_production_context', return_value=press_context), \
@@ -2119,6 +2122,7 @@ class PressProductionRouteTests(unittest.IsolatedAsyncioTestCase):
         with patch('app.main.run_in_threadpool', side_effect=dispatch), \
              patch('app.main.get_connection', return_value=PressProductionConnection()), \
              patch('app.main.read_lots', return_value=[dict(LOT)]), \
+             patch('app.main.lot_has_dependencies', return_value=False), \
              patch('app.main.read_plans', return_value=[dict(PLAN)]), \
              patch('app.main.read_production_data', return_value={}), \
              patch('app.main.build_press_production_context', return_value=press_context), \

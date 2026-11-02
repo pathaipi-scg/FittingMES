@@ -40,7 +40,7 @@
 <label class="logger-wide">Cause<select id="logger-cause" name="cause_id"><option value="">No Cause</option></select></label>
 <label>Type<select id="logger-stop-type" name="stop_id" required><option value="">Select Type</option>{% for item in stop_types %}<option value="{{ item.StopId }}" {% if form.get('stop_id')|string == item.StopId|string %}selected{% endif %}>{{ item.StopType }}</option>{% endfor %}</select></label>
 <label>Sub Type<select id="logger-sub-stop-type" name="sub_stop_id"><option value="">No Sub Type</option></select></label>
-<label class="logger-wide">Sub / Rel M/C<select id="logger-sub-related" required><option value="">Select Sub / Rel M/C</option></select></label>
+<label class="logger-wide">Sub / Rel M/C<select id="logger-sub-related" required><option value="">Select Sub / Rel M/C</option></select><span id="logger-target-message" class="logger-error" role="alert" hidden></span></label>
 <label>M/E/O<select name="meo"><option value="">-</option>{% for value in ('M','E','O') %}<option value="{{ value }}" {% if form.get('meo') == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label>
 <label>Stop<input name="stop" id="logger-stop" inputmode="numeric" pattern="(?:[0-9]|[01][0-9]|2[0-3]):[0-5][0-9]" placeholder="HH:mm" maxlength="5" value="{{ form.get('stop', '') }}"></label>
 <label>Start<input name="start" id="logger-start" inputmode="numeric" pattern="(?:[0-9]|[01][0-9]|2[0-3]):[0-5][0-9]" placeholder="HH:mm" maxlength="5" value="{{ form.get('start', '') }}"></label>
@@ -97,6 +97,26 @@ function classificationAfterManualChange() { return 'true'; }
 function subTypeCandidates(subTypes, stopId) {
   return subTypes.filter(item => String(item.StopId) === String(stopId));
 }
+function defaultSmdtSubType(subTypes, stopTypes, stopId) {
+  const isSmdtType = stopTypes.some(item => String(item.StopId) === String(stopId)
+    && item.StopType === 'SMDT');
+  return isSmdtType
+    ? subTypeCandidates(subTypes, stopId).find(item =>
+      String(item.SubStopType || '').trim() === 'อื่นๆ') || null
+    : null;
+}
+function isGlobalCauseType(stopTypes, stopId) {
+  return stopTypes.some(item => String(item.StopId) === String(stopId)
+    && ['BD', 'SMDT'].includes(item.StopType));
+}
+function causeOptionsForType(causes, stopTypes, stopId, selectedOption,
+                             subMachines, subStopId, options) {
+  if (isGlobalCauseType(stopTypes, stopId)) return causes;
+  return selectedOption
+    ? causeCandidates(causes, selectedOption, subMachines, stopId, subStopId, false)
+    : causeCandidatesForOptions(causes, options || [], subMachines,
+      stopId, subStopId, false);
+}
 function durationDefaultStopId(stopTypes, minutes) {
   if (minutes == null) return '';
   const target = minutes < 10 ? 'SMDT' : 'BD';
@@ -141,6 +161,11 @@ function compatibleOptionsForCause(causes, options, subMachines, causeId, stopId
   return options.filter(option => causeCandidates(
     [selectedCause], option, subMachines, stopId, subStopId, allowAnySubStop).length > 0);
 }
+function mappedOptionsForCause(causes, options, subMachines, causeId) {
+  const selectedCause = causes.find(item => String(item.CauseId) === String(causeId));
+  if (!selectedCause) return [];
+  return options.filter(option => causeMatchesOption(selectedCause, option, subMachines));
+}
 function previewDuration(stop, start) {
   if (!/^\d{2}:\d{2}$/.test(stop) || !/^\d{2}:\d{2}$/.test(start)) return null;
   const [sh, sm] = stop.split(':').map(Number), [eh, em] = start.split(':').map(Number);
@@ -174,9 +199,7 @@ function defaultCauseTarget(compatible, selectedCause, machineId, instanceNo,
                             subMachines, mainMachines) {
   const candidates = reverseCauseCandidates(
     compatible, selectedCause, machineId, instanceNo, subMachines, mainMachines);
-  return candidates.length > 0
-    && (candidates.length === 1 || causeRelates(selectedCause, subMachines, mainMachines))
-    ? candidates[0] : null;
+  return candidates.length === 1 ? candidates[0] : null;
 }
 
 (() => {
@@ -185,6 +208,7 @@ function defaultCauseTarget(compatible, selectedCause, machineId, instanceNo,
   const machine = document.getElementById('logger-machine');
   const machineInstance = document.getElementById('logger-machine-instance');
   const subRelated = document.getElementById('logger-sub-related');
+  const targetMessage = document.getElementById('logger-target-message');
   const subSelection = document.getElementById('logger-sub-selection');
   const cause = document.getElementById('logger-cause');
   const type = document.getElementById('logger-stop-type');
@@ -221,7 +245,9 @@ function defaultCauseTarget(compatible, selectedCause, machineId, instanceNo,
   const selectionStorageKey = 'fittingmes.logger.selection';
   const assignedPressSet = assignedPressInstances === null
     ? null : new Set(assignedPressInstances);
-  let manualStopTypeOverride = Boolean(selectedForm.stop_id);
+  let manualStopTypeOverride = selectedForm.classification_edited === true
+    || String(selectedForm.classification_edited).toLowerCase() === 'true';
+  let applyingDurationDefault = false;
   let causeDrivenTargetFilter = false;
   function readStoredSelection() {
     try {
@@ -283,22 +309,36 @@ function defaultCauseTarget(compatible, selectedCause, machineId, instanceNo,
       applySelection(null);
       subSelection.value = '{}';
       causeDrivenTargetFilter = false;
+      targetMessage.hidden = true;
+      targetMessage.textContent = '';
       renderOptions([], null);
     }
   }
   function rebuildCauses(selectedOption, stopId, subStopId, selectedCauseId, optionsOverride) {
     cause.replaceChildren(new Option('No Cause',''));
-    const candidates = selectedOption
-      ? causeCandidates(causes, selectedOption, subMachines, stopId, subStopId, isSmdt(stopId))
-      : causeCandidatesForOptions(causes, optionsOverride || [], subMachines,
-        stopId, subStopId, isSmdt(stopId));
+    const candidates = causeOptionsForType(
+      causes, stopTypes, stopId, selectedOption, subMachines, subStopId,
+      optionsOverride || []);
     candidates
       .forEach(item => cause.add(new Option(item.Cause, item.CauseId)));
-    if (selectedCauseId != null) cause.value = String(selectedCauseId);
+    if (selectedCauseId != null
+        && candidates.some(item => String(item.CauseId) === String(selectedCauseId))) {
+      cause.value = String(selectedCauseId);
+    }
   }
   function applySelection(item) {
     subSelection.value = item ? optionKey(item) : '';
     for (const key of Object.keys(hidden)) hidden[key].value = item?.[key] ?? '';
+  }
+  function syncSelectedTarget() {
+    const selectedValue = subRelated.value;
+    const selected = selectedValue ? JSON.parse(selectedValue) : null;
+    if (!selected || !availableOptions().some(item => optionKey(item) === selectedValue)) {
+      applySelection(null);
+      return false;
+    }
+    applySelection(selected);
+    return true;
   }
   function renderOptions(options, selected) {
     subRelated.replaceChildren(new Option('Select Sub / Rel M/C',''));
@@ -317,49 +357,62 @@ function defaultCauseTarget(compatible, selectedCause, machineId, instanceNo,
     rebuildCauses(validSelected, type.value, subType.value,
       validSelected ? selectedCauseId : null, validSelected ? null : options);
   }
-  function rebuildSubTypes(selected) {
+  function rebuildSubTypes(selected = subType.value, preferSmdtOther = false) {
     subType.replaceChildren(new Option('No Sub Type',''));
     const candidates = subTypeCandidates(subTypes, type.value);
     candidates.forEach(item => subType.add(new Option(item.SubStopType, item.SubStopId)));
-    if (selected != null) subType.value = String(selected);
+    const defaultOther = preferSmdtOther
+      ? defaultSmdtSubType(subTypes, stopTypes, type.value) : null;
+    if (defaultOther) {
+      subType.value = String(defaultOther.SubStopId);
+    } else if (selected != null
+        && candidates.some(item => String(item.SubStopId) === String(selected))) {
+      subType.value = String(selected);
+    }
     else if (candidates.length === 1) subType.value = String(candidates[0].SubStopId);
   }
   function applyDurationDefault(minutes) {
+    if (manualStopTypeOverride) return;
     const defaultStopId = durationDefaultStopId(stopTypes, minutes);
     if (!defaultStopId || String(type.value) === String(defaultStopId)) return;
     manualStopTypeOverride = false;
     type.value = String(defaultStopId);
+    applyingDurationDefault = true;
     type.dispatchEvent(new Event('change'));
+    applyingDurationDefault = false;
   }
   function setClassificationEdited() { classificationEdited.value = 'true'; }
   function applyCause(forceResolve = false) {
-    if (forceResolve) {
-      applySelection(null);
-      subRelated.value = '';
-      causeDrivenTargetFilter = false;
-    }
     const selectedCause = causes.find(item => String(item.CauseId) === String(cause.value));
     if (!selectedCause) {
       form.elements.meo.value = '';
-      if (forceResolve) renderOptions(availableOptions(), null);
+      if (forceResolve) {
+        const selected = availableOptions().find(item => optionKey(item) === subRelated.value);
+        causeDrivenTargetFilter = false;
+        targetMessage.hidden = true;
+        targetMessage.textContent = '';
+        renderOptions(availableOptions(), selected || null);
+      }
       return;
     }
-    classificationEdited.value = classificationAfterCause();
-    if (selectedCause.SubStopId != null) {
-      rebuildSubTypes(selectedCause.SubStopId);
-    }
+    classificationEdited.value = manualStopTypeOverride
+      ? classificationAfterManualChange() : classificationAfterCause();
     const meo = form.elements.meo; if (meo) meo.value = causeMEO(causes, selectedCause.CauseId);
     if (forceResolve || !subRelated.value) {
-      const compatible = compatibleOptionsForCause(
-        causes, availableOptions(), subMachines, selectedCause.CauseId,
-        type.value, subType.value, isSmdt(type.value));
-      causeDrivenTargetFilter = true;
+      const compatible = mappedOptionsForCause(
+        causes, availableOptions(), subMachines, selectedCause.CauseId);
       const candidates = reverseCauseCandidates(
         compatible, selectedCause, machine.value, machineInstance.value, subMachines, mainMachines);
       const defaultTarget = defaultCauseTarget(
         compatible, selectedCause, machine.value, machineInstance.value, subMachines, mainMachines);
-      renderOptions(candidates, defaultTarget);
-      applySelection(defaultTarget);
+      const currentTarget = candidates.find(item => optionKey(item) === subRelated.value);
+      const target = currentTarget || defaultTarget;
+      targetMessage.hidden = candidates.length > 0;
+      targetMessage.textContent = candidates.length > 0
+        ? '' : 'No active Sub / Related M/C mapping exists for this Cause and Instance.';
+      causeDrivenTargetFilter = candidates.length > 0;
+      renderOptions(candidates.length ? candidates : availableOptions(), target);
+      applySelection(target);
     }
   }
   function updateDuration() {
@@ -416,6 +469,10 @@ function defaultCauseTarget(compatible, selectedCause, machineId, instanceNo,
   }
   function enterEditMode(event) {
     eventId.value = event.LoggerEventID;
+    type.value = String(event.StopId);
+    manualStopTypeOverride = true;
+    classificationEdited.value = classificationAfterManualChange();
+    rebuildSubTypes(event.SubStopId);
     showEventShift(event);
     saveButton.textContent = 'SAVE EDIT';
     cancelButton.hidden = false;
@@ -433,14 +490,11 @@ function defaultCauseTarget(compatible, selectedCause, machineId, instanceNo,
       && String(item.related_mc_instance_no ?? '') === String(event.RelatedMcInstanceNo ?? '')
       && String(item.sub_mc_id ?? '') === String(event.SubMcId ?? '')
       && String(item.sub_mc_instance_no ?? '') === String(event.SubMcInstanceNo ?? ''));
-    rebuildCauses(null, type.value, event.SubStopId, event.CauseId,
+    rebuildCauses(null, type.value, subType.value, event.CauseId,
       availableOptions());
-    subRelated.value = '';
-    applySelection(null);
+    renderOptions(availableOptions(), target || null);
+    applySelection(target || null);
     cause.value = event.CauseId == null ? '' : String(event.CauseId);
-    if (cause.value) cause.dispatchEvent(new Event('change'));
-    if (target) { subRelated.value = optionKey(target); applySelection(target); }
-    subType.value = event.SubStopId == null ? subType.value : String(event.SubStopId);
     form.elements.meo.value = event.MEO || '';
     form.elements.note.value = event.Note || '';
     window.scrollTo({top: 0, behavior: 'smooth'});
@@ -474,10 +528,12 @@ function defaultCauseTarget(compatible, selectedCause, machineId, instanceNo,
   machine.addEventListener('change', () => {
     populateInstances('', true);
     applySelection(null); clearCause(); rebuildOptions(null);
+    targetMessage.hidden = true; targetMessage.textContent = '';
     storeSelection();
   });
   machineInstance.addEventListener('change', () => {
     applySelection(null); clearCause(); rebuildOptions(null);
+    targetMessage.hidden = true; targetMessage.textContent = '';
     storeSelection();
   });
   subRelated.addEventListener('change', () => {
@@ -485,30 +541,57 @@ function defaultCauseTarget(compatible, selectedCause, machineId, instanceNo,
     const selectedCause = causes.find(item => String(item.CauseId) === String(cause.value));
     applySelection(selected);
     if (causeDrivenTargetFilter && selectedCause && selected
-        && causeMatchesOption(selectedCause, selected, subMachines)
-        && causeCandidates([selectedCause], selected, subMachines, type.value, subType.value, isSmdt(type.value)).length) {
+        && causeMatchesOption(selectedCause, selected, subMachines)) {
       causeDrivenTargetFilter = false;
       rebuildCauses(selected, type.value, subType.value, selectedCause.CauseId);
       return;
     }
     causeDrivenTargetFilter = false;
+    if (selectedCause && isGlobalCauseType(stopTypes, type.value)) {
+      const targetMatchesCause = selected
+        && causeMatchesOption(selectedCause, selected, subMachines);
+      targetMessage.hidden = !selected || targetMatchesCause;
+      targetMessage.textContent = targetMatchesCause
+        ? '' : 'Selected Cause is not mapped to this Sub / Related M/C.';
+      rebuildCauses(selected, type.value, subType.value, selectedCause.CauseId);
+      return;
+    }
     clearCause(); rebuildCauses(selected, type.value, subType.value);
+    targetMessage.hidden = true;
+    targetMessage.textContent = '';
   });
   cause.addEventListener('change', () => applyCause(true));
   type.addEventListener('change', () => {
-    manualStopTypeOverride = true;
-    rebuildSubTypes(); clearCause(); causeDrivenTargetFilter = false;
+    const explicitChange = !applyingDurationDefault;
+    const selectedCauseId = cause.value;
+    const selectedSubTypeId = subType.value;
+    if (explicitChange) {
+      manualStopTypeOverride = true;
+      classificationEdited.value = classificationAfterManualChange();
+    }
+    const preferSmdtOther = !eventId.value && isSmdt(type.value);
+    rebuildSubTypes(
+      preferSmdtOther ? null : selectedSubTypeId, preferSmdtOther);
+    causeDrivenTargetFilter = false;
+    if (explicitChange && isGlobalCauseType(stopTypes, type.value)) {
+      applySelection(null);
+      renderOptions(availableOptions(), null);
+      targetMessage.hidden = true;
+      targetMessage.textContent = '';
+    } else if (explicitChange) {
+      clearCause();
+    }
     updateTargetRequirement();
-    classificationEdited.value = classificationAfterManualChange();
     const selected = subRelated.value ? JSON.parse(subRelated.value) : null;
-    rebuildCauses(selected, type.value, subType.value, null,
+    rebuildCauses(selected, type.value, subType.value,
+      isGlobalCauseType(stopTypes, type.value) ? selectedCauseId : null,
       selected ? null : availableOptions());
     validateBreakdownDuration();
   });
   subType.addEventListener('change', () => {
     classificationEdited.value = classificationAfterManualChange();
     const selected = subRelated.value ? JSON.parse(subRelated.value) : null;
-    rebuildCauses(selected, type.value, subType.value, null,
+    rebuildCauses(selected, type.value, subType.value, cause.value || null,
       selected ? null : availableOptions());
   });
   form.querySelectorAll('#logger-stop,#logger-start').forEach(input => {
@@ -530,7 +613,7 @@ function defaultCauseTarget(compatible, selectedCause, machineId, instanceNo,
     updateDuration();
     if (timeMessage.hidden === false) { event.preventDefault(); return; }
     if (!validateBreakdownDuration()) { event.preventDefault(); return; }
-    if (!isMachineLevel(type.value) && !subRelated.value) { event.preventDefault(); subRelated.setCustomValidity('Select a Sub / Related M/C.'); subRelated.reportValidity(); return; }
+    if (!isMachineLevel(type.value) && !syncSelectedTarget()) { event.preventDefault(); subRelated.setCustomValidity('Select a Sub / Related M/C.'); subRelated.reportValidity(); return; }
     subRelated.setCustomValidity('');
     if (form.dataset.busy === 'true') { event.preventDefault(); return; }
     form.dataset.busy = 'true'; document.getElementById('logger-save').disabled = true; document.getElementById('logger-status').textContent = 'Saving LOGGER entry...';
@@ -544,7 +627,10 @@ function defaultCauseTarget(compatible, selectedCause, machineId, instanceNo,
   populateInstances(initialInstance, true);
   storeSelection();
   const initialSelection = selectedForm.sub_related_selection ? JSON.parse(selectedForm.sub_related_selection) : null;
-  rebuildSubTypes(selectedForm.sub_stop_id || null);
+  const defaultNewSmdtSubType = !eventId.value && isSmdt(type.value)
+    && !selectedForm.sub_stop_id;
+  rebuildSubTypes(
+    selectedForm.sub_stop_id || null, defaultNewSmdtSubType);
   rebuildOptions(initialSelection, selectedForm.cause_id || null);
   if (selectedForm.cause_id) applyCause();
   updateTargetRequirement();

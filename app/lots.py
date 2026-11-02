@@ -58,6 +58,13 @@ def next_running_no(cursor, prefix=None, product_family_id=None, product_code=No
     return int(cursor.fetchone()[0])
 
 
+def _running_number_scope(prefix, product_family_id, product_code, plan_date):
+    if product_family_id is None:
+        return "LotPrefix=? AND ProductFamilyID IS NULL", (prefix,)
+    return ("ProductFamilyID=? AND ProductCode=? AND SequenceMonth=?",
+            (product_family_id, product_code, month_start(day(plan_date))))
+
+
 def history(cursor, production_id, old_lot, new_lot, old_plan, new_plan, change):
     cursor.execute("""INSERT INTO dbo.ProductionLotHistory
         (ProductionID,OldLotNo,NewLotNo,OldPlanName,NewPlanName,ChangeType)
@@ -79,16 +86,14 @@ def insert_lot(conn, selected, product_code, prefix, running_no, product_family_
         if read_mapping(cursor, selected['MaterialCode'][:8]) != (product_family_id, product_code):
             raise ValueError('Material mapping changed. Refresh before creating a lot.')
         require_available(cursor, selected)
-        maximum = next_running_no(cursor, prefix, product_family_id, product_code, selected["StartTime"]) - 1
-        if maximum >= 99:
-            raise ValueError('Running number sequence is exhausted for this Product and month.')
-        if running_no <= maximum:
-            raise ValueError('Running number is no longer available. Refresh MAX and select a number greater than it.')
         lot_no = f'{prefix}{running_no:02d}'
-        cursor.execute('''SELECT 1 FROM dbo.ProductionLot WITH (UPDLOCK,HOLDLOCK)
-            WHERE LotNo=?''', lot_no)
+        scope, scope_params = _running_number_scope(
+            prefix, product_family_id, product_code, selected["StartTime"])
+        cursor.execute(f'''SELECT TOP (1) ProductionID FROM dbo.ProductionLot WITH (UPDLOCK,HOLDLOCK)
+            WHERE IsActive=1 AND (LotNo=? OR ({scope} AND RunningNo=?))''',
+            lot_no, *scope_params, running_no)
         if cursor.fetchone():
-            raise ValueError('This Lot No. already exists. Refresh MAX and select another number.')
+            raise ValueError('This Lot No. or running number is already assigned to an active Lot.')
         cursor.execute('''SELECT ISNULL(MAX(LotSequence),0)+1
             FROM dbo.ProductionLot WITH (UPDLOCK,HOLDLOCK) WHERE ProdDate=? AND IsActive=1''',
             day(selected['StartTime']))
@@ -104,6 +109,69 @@ def insert_lot(conn, selected, product_code, prefix, running_no, product_family_
         history(cursor, production_id, None, lot_no, None, selected['PlanName'], 'CREATE')
         conn.commit()
         return production_id
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def lot_has_dependencies(cursor, production_id, lock=False):
+    lock_hint = ' WITH (UPDLOCK,HOLDLOCK)' if lock else ''
+    cursor.execute(f"""SELECT TOP (1) h.HistoryID
+        FROM dbo.ProductionLotHistory AS h{lock_hint}
+        JOIN dbo.ProductionLot AS lot ON lot.ProductionID=h.ProductionID
+        WHERE h.ProductionID=?
+          AND NOT (h.ChangeType='CREATE'
+            AND h.OldLotNo IS NULL
+            AND h.OldPlanName IS NULL
+            AND h.NewLotNo IS NOT NULL
+            AND h.NewPlanName IS NOT NULL
+            AND h.NewLotNo=lot.LotNo
+            AND h.NewPlanName=lot.PlanName)""", production_id)
+    if cursor.fetchone():
+        return True
+    cursor.execute(f"""DECLARE @predicate nvarchar(max);
+        SELECT @predicate = STUFF((
+            SELECT N' OR EXISTS (SELECT 1 FROM ' + QUOTENAME(s.name) + N'.' + QUOTENAME(t.name)
+                + N'{lock_hint} WHERE ' + QUOTENAME(c.name) + N'=@production_id)'
+            FROM sys.tables AS t
+            JOIN sys.schemas AS s ON s.schema_id=t.schema_id
+            JOIN sys.columns AS c ON c.object_id=t.object_id
+            WHERE c.name=N'ProductionID'
+              AND NOT (s.name=N'dbo' AND t.name IN (N'ProductionLot',N'ProductionLotHistory'))
+            ORDER BY s.name,t.name
+            FOR XML PATH(''), TYPE
+        ).value('.', 'nvarchar(max)'), 1, 4, N'');
+        DECLARE @sql nvarchar(max)=N'SELECT CONVERT(bit,CASE WHEN '
+            + COALESCE(NULLIF(@predicate,N''),N'1=0')
+            + N' THEN 1 ELSE 0 END)';
+        EXEC sys.sp_executesql @sql, N'@production_id bigint', @production_id=?;""",
+        production_id)
+    return bool(cursor.fetchone()[0])
+
+
+def delete_lot(conn, production_id):
+    try:
+        cursor = conn.cursor()
+        lock_lots(cursor)
+        cursor.execute('''SELECT ProductionID,LotNo,PlanName FROM dbo.ProductionLot WITH (UPDLOCK,HOLDLOCK)
+            WHERE ProductionID=? AND IsActive=1''', production_id)
+        lot = cursor.fetchone()
+        if not lot:
+            raise ValueError('This Lot is no longer active.')
+        if lot_has_dependencies(cursor, production_id, lock=True):
+            raise ValueError('This Lot has related or historical data and cannot be deleted. VOID it to preserve its records.')
+        cursor.execute('''DELETE FROM dbo.ProductionLotHistory
+            WHERE ProductionID=? AND ChangeType='CREATE'
+              AND OldLotNo IS NULL AND OldPlanName IS NULL
+              AND NewLotNo IS NOT NULL AND NewPlanName IS NOT NULL
+              AND NewLotNo=? AND NewPlanName=?''',
+            production_id, lot[1], lot[2])
+        cursor.execute('''DELETE FROM dbo.ProductionLot
+            OUTPUT DELETED.ProductionID
+            WHERE ProductionID=? AND IsActive=1''', production_id)
+        if not cursor.fetchone():
+            raise ValueError('This Lot is no longer active.')
+        conn.commit()
     except Exception:
         conn.rollback()
         raise
@@ -152,18 +220,6 @@ def update_lot(conn, production_id, selected=None, void=False):
             raise ValueError('This Lot is no longer active.')
         lot = found[0]
         if void:
-            cursor.execute('''SELECT TOP (1) press.PressProductionID
-                FROM dbo.PressProduction AS press
-                LEFT JOIN dbo.MouldUsage AS usage
-                  ON usage.PressProductionID=press.PressProductionID
-                WHERE press.ProductionID=?
-                  AND (usage.MouldUsageID IS NOT NULL
-                       OR (press.MouldID IS NOT NULL AND press.CounterQty>0))
-                ORDER BY press.PressProductionID''', production_id)
-            if cursor.fetchone():
-                raise ValueError('This Lot cannot be VOID because Press Production records exist; preserve their Mould usage attribution.')
-            if next_running_no(cursor, lot['LotPrefix'], lot.get('ProductFamilyID'), lot['ProductCode'], lot['ProdDate']) - 1 != lot['RunningNo']:
-                raise ValueError('Only the latest active running number can be VOID.')
             cursor.execute('UPDATE dbo.ProductionLot SET IsActive=0, UpdatedAt=SYSDATETIME() WHERE ProductionID=?', production_id)
             change, new_plan = 'VOID', lot['PlanName']
         else:
