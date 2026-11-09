@@ -3,7 +3,7 @@ import json
 import unittest
 from datetime import date
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlsplit
 from unittest.mock import MagicMock, patch
 
 from starlette.requests import Request
@@ -28,7 +28,9 @@ class FakeCursor:
     def __init__(self, scope="LINE", reason_family=842, reason_exists=True,
                  source_valid=True, existing_ids=None, lot_family=842,
                  active_shifts=None, lot_valid=True, lot_date=None,
-                 lot_shift_code="2", depallet_shift_code="2"):
+                 lot_shift_code="2", depallet_shift_code="2",
+                 press_assignment_rows=1, production_id=17701,
+                 line_id=620, press_id=711):
         self.scope = scope
         self.reason_family = reason_family
         self.reason_exists = reason_exists
@@ -40,6 +42,10 @@ class FakeCursor:
         self.lot_date = lot_date or date(2026, 10, 6)
         self.lot_shift_code = lot_shift_code
         self.depallet_shift_code = depallet_shift_code
+        self.press_assignment_rows = press_assignment_rows
+        self.production_id = production_id
+        self.line_id = line_id
+        self.press_id = press_id
         self.calls = []
         self.description = []
         self.result = []
@@ -61,7 +67,7 @@ class FakeCursor:
         elif "FROM dbo.ProductionLot AS lot WITH" in query:
             lot_matches = (
                 self.lot_valid
-                and params[:2] == (17701, self.lot_date)
+                and params[:2] == (self.production_id, self.lot_date)
                 and (
                     "LTRIM(RTRIM(lot.Shift))=?" not in query
                     or params[2] == self.lot_shift_code
@@ -69,7 +75,7 @@ class FakeCursor:
             )
             self._set(
                 ("ProductionID", "ProductFamilyID", "LotShiftCode"),
-                [(17701, self.lot_family, self.lot_shift_code)]
+                [(self.production_id, self.lot_family, self.lot_shift_code)]
                 if lot_matches else [],
             )
         elif "FROM dbo.Depallet AS run WITH" in query:
@@ -105,15 +111,23 @@ class FakeCursor:
             and "EquipmentType='PRESS'" in query
             and "WHERE id=?" in query
         ):
-            values = [(711,)] if self.source_valid else []
+            values = [(self.press_id,)] if self.source_valid else []
             self._set(("EquipmentID",), values)
         elif "SELECT id AS EquipmentID,EquipmentCode" in query:
             self._set(
                 ("EquipmentID", "EquipmentCode"),
-                [(620, "LINE2")] if params[0] == 620 else [],
+                [(self.line_id, "LINE2")]
+                if params[0] == self.line_id else [],
             )
         elif "FROM dbo.vw_PressMcPressList AS press_view" in query:
-            values = [(711,)] if self.source_valid else []
+            row_count = (
+                1 if "SELECT DISTINCT press.id" in query
+                else self.press_assignment_rows
+            )
+            values = (
+                [(self.press_id,)] * row_count
+                if self.source_valid else []
+            )
             self._set(("EquipmentID",), values)
         elif query.lstrip().startswith("SELECT id AS EntryID"):
             table = "ProductionRejectEntry" if "ProductionRejectEntry" in query else "DepalletRejectEntry"
@@ -548,7 +562,68 @@ class RejectEntryTests(unittest.TestCase):
             if "FROM dbo.vw_PressMcPressList AS press_view" in call[0]
         )
         self.assertIn("press.IsActive=1 AND press_view.IsActive=1", query)
-        self.assertEqual(params, (17701, date(2026, 10, 6), 711, 620))
+        self.assertEqual(
+            params, (17701, 734, date(2026, 10, 6), 711, 620)
+        )
+
+    def test_press_assigned_in_both_shifts_saves_each_shift_for_overnight_lot(self):
+        for shift_id in (733, 734):
+            with self.subTest(shift_id=shift_id):
+                cursor = FakeCursor(
+                    scope="PRESS", press_assignment_rows=2,
+                    production_id=62, line_id=16, press_id=6,
+                    lot_date=date(2026, 11, 4),
+                )
+                connection = FakeConnection(cursor)
+                save_reject_entry(
+                    connection,
+                    valid_form(
+                        production_date="2026-11-04",
+                        production_id="62",
+                        shift_id=str(shift_id),
+                        line_equipment_id="16",
+                        source_equipment_id="6",
+                        reject_reason_id="901",
+                        reject_source_scope_id="95",
+                        qty="3",
+                        entry_id="",
+                    ),
+                )
+                insert = next(
+                    params for query, params in cursor.calls
+                    if query.lstrip().startswith(
+                        "INSERT INTO dbo.ProductionRejectEntry"
+                    )
+                )
+                self.assertEqual(insert, (
+                    date(2026, 11, 4), shift_id, 16, 6, 95, 62, 901, 3,
+                ))
+                press_query, press_params = next(
+                    (query, params) for query, params in cursor.calls
+                    if "FROM dbo.vw_PressMcPressList AS press_view" in query
+                )
+                self.assertIn("SELECT DISTINCT press.id", press_query)
+                self.assertIn(
+                    "press.EquipmentCode=press_view.PressCode", press_query
+                )
+                self.assertIn("assignment.ShiftMasterID=?", press_query)
+                self.assertEqual(
+                    press_params,
+                    (62, shift_id, date(2026, 11, 4), 6, 16),
+                )
+                self.assertEqual(connection.commits, 1)
+                writes = [
+                    query.lstrip() for query, _ in cursor.calls
+                    if query.lstrip().startswith(
+                        ("INSERT INTO dbo.", "UPDATE dbo.", "DELETE FROM dbo.")
+                    )
+                ]
+                self.assertEqual(len(writes), 1)
+                self.assertTrue(
+                    writes[0].startswith(
+                        "INSERT INTO dbo.ProductionRejectEntry"
+                    )
+                )
 
     def test_cross_line_press_source_is_rejected(self):
         cursor = FakeCursor(scope="PRESS", source_valid=False)
@@ -1458,6 +1533,17 @@ class RejectSaveRouteTests(unittest.TestCase):
             "root_path": "",
         }, receive)
 
+    @staticmethod
+    def get_request(query_string=b""):
+        return Request({
+            "type": "http", "asgi": {"version": "3.0"},
+            "http_version": "1.1", "method": "GET", "scheme": "http",
+            "path": "/reject", "raw_path": b"/reject",
+            "query_string": query_string, "headers": [],
+            "server": ("localhost", 80), "client": ("127.0.0.1", 12345),
+            "root_path": "",
+        })
+
     def test_save_route_enforces_parent_workflow_over_tampered_form(self):
         for request_workflow, posted_workflow in (
             ("production", "depallet"),
@@ -1475,6 +1561,71 @@ class RejectSaveRouteTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 303)
                 submitted = save.call_args.args[0]
                 self.assertEqual(submitted["workflow"], request_workflow)
+
+    def test_empty_entry_id_saves_and_redirects_with_saved_not_deleted(self):
+        values = valid_form(entry_id="")
+        with patch("app.main.save_reject_form") as save, \
+                patch("app.main.delete_reject_form") as delete:
+            response = asyncio.run(save_reject_route(
+                self.post_request(values),
+                workflow="production",
+            ))
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(save.call_args.args[0]["entry_id"], "")
+        self.assertIn("saved=true", response.headers["location"])
+        self.assertNotIn("deleted", response.headers["location"])
+        self.assertNotIn(str(values), response.body.decode())
+        delete.assert_not_called()
+
+        query = urlsplit(response.headers["location"]).query
+        query_values = parse_qs(query)
+        saved_page_context = reject_page_context(
+            {}, date(2026, 10, 6), workflow="production", saved=True,
+        )
+        with patch(
+            "app.main.reject_load_context", return_value=saved_page_context
+        ):
+            page = reject_page(
+                self.get_request(query.encode()),
+                production_date=date.fromisoformat(
+                    query_values["production_date"][0]
+                ),
+                workflow=query_values["workflow"][0],
+                shift_id=int(query_values["shift_id"][0]),
+                line_equipment_id=int(query_values["line_equipment_id"][0]),
+                production_id=int(query_values["production_id"][0]),
+                saved=query_values["saved"][0] == "true",
+            )
+        body = page.body.decode()
+        self.assertIn("REJECT entry saved.", body)
+        self.assertNotIn("REJECT entry deleted.", body)
+        self.assertNotIn(str(values), body)
+
+    def test_invalid_save_never_renders_deletion_success(self):
+        values = valid_form(entry_id="")
+
+        async def run_in_threadpool(function, *args, **kwargs):
+            if function.__name__ == "save_reject_form":
+                raise RejectValidationError("INVALID_SOURCE", "Select an active Source.")
+            return reject_page_context(
+                {}, date(2026, 10, 6), workflow="production",
+                error="Select an active Source.", form=values,
+            )
+
+        with patch("app.main.run_in_threadpool", side_effect=run_in_threadpool), \
+                patch("app.main.delete_reject_form") as delete:
+            response = asyncio.run(save_reject_route(
+                self.post_request(values),
+                workflow="production",
+            ))
+        body = response.body.decode()
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Select an active Source.", body)
+        self.assertNotIn("REJECT entry saved.", body)
+        self.assertNotIn("REJECT entry deleted.", body)
+        self.assertNotIn("debug", body.lower())
+        self.assertNotIn(str(values), body)
+        delete.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -263,6 +263,7 @@ function rejectSourceOptions(sources, lineId, productionId, scopeCode = null, wo
     if (context.workflow !== workflow) return false;
 
     if (hasOption(shift, context.shiftId)) shift.value = context.shiftId;
+    if (hasOption(line, context.lineId)) line.value = context.lineId;
     updateLots(isDepallet
       ? context.depalletRunId : context.productionId);
     syncLineForLot(context.lineId);

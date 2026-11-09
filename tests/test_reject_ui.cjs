@@ -27,8 +27,8 @@ const reasons = [
   { ProductFamilyID: 843, ReasonCode: 'R401', SourceScopeCode: 'PRESS' },
 ];
 const sources = [
-  { EquipmentID: 620, LineEquipmentID: 620, EquipmentCode: 'LINE2', EquipmentType: 'LINE' },
-  { EquipmentID: 711, LineEquipmentID: 620, EquipmentCode: 'F7', EquipmentType: 'PRESS' },
+  { EquipmentID: 620, LineEquipmentID: 620, EquipmentCode: 'LINE2', EquipmentType: 'LINE', ProductionIDs: [] },
+  { EquipmentID: 711, LineEquipmentID: 620, EquipmentCode: 'F7', EquipmentType: 'PRESS', ProductionIDs: ['PRESS'] },
 ];
 
 assert.deepEqual(
@@ -48,11 +48,12 @@ assert.deepEqual(
   ['LINE2'],
 );
 assert.deepEqual(
-  rejectSourceOptions(sources, 620, 'PRESS').map(item => item.EquipmentCode),
+  rejectSourceOptions(sources, 620, 'PRESS', 'PRESS')
+    .map(item => item.EquipmentCode),
   ['F7'],
 );
 assert.deepEqual(
-  rejectSourceOptions(sources, 999, 'PRESS', 'depallet')
+  rejectSourceOptions(sources, 999, 'PRESS', 'PRESS', 'depallet')
     .map(item => item.EquipmentCode),
   ['F7'],
 );
@@ -67,6 +68,23 @@ assert.deepEqual(
   rejectReasonOptions(reasons, 842, pressSource.EquipmentType)
     .map(item => item.ReasonCode),
   ['R301'],
+);
+const lotAwareSources = [
+  ...sources,
+  {
+    EquipmentID: 712, LineEquipmentID: 620, EquipmentCode: 'F8',
+    EquipmentType: 'PRESS', ProductionIDs: ['OTHER'],
+  },
+];
+assert.deepEqual(
+  rejectSourceOptions(lotAwareSources, 620, 'PRESS', 'PRESS')
+    .map(item => item.EquipmentCode),
+  ['F7'],
+);
+assert.deepEqual(
+  rejectSourceOptions(lotAwareSources, 620, 'OTHER', 'PRESS')
+    .map(item => item.EquipmentCode),
+  ['F8'],
 );
 
 assert.ok(html.indexOf('id="reject-production"') < html.indexOf('id="reject-source"'));
@@ -279,18 +297,21 @@ const pageData = {
       LineEquipmentID: 620,
       EquipmentCode: 'LINE1',
       EquipmentType: 'LINE',
+      ProductionIDs: [],
     },
     {
       EquipmentID: 621,
       LineEquipmentID: 621,
       EquipmentCode: 'LINE2',
       EquipmentType: 'LINE',
+      ProductionIDs: [],
     },
     ...['F1', 'F2', 'F3', 'F4', 'F5'].map((EquipmentCode, index) => ({
       EquipmentID: 701 + index,
       LineEquipmentID: 620,
       EquipmentCode,
       EquipmentType: 'PRESS',
+      ProductionIDs: ['1001', '1002', '1003'],
     })),
     ...['F7', 'F8', 'F9', 'F10', 'F11', 'F12', 'F13', 'F14']
       .map((EquipmentCode, index) => ({
@@ -298,6 +319,7 @@ const pageData = {
         LineEquipmentID: 621,
         EquipmentCode,
         EquipmentType: 'PRESS',
+        ProductionIDs: ['1001', '1002', '1003'],
       })),
   ],
 };
@@ -770,8 +792,7 @@ assert.deepEqual(
     .filter(item => item.value)
     .map(item => item.textContent),
   [
-    'LINE1',
-    'LINE2',
+    'LINE1 (DRY)',
     'F1', 'F2', 'F3', 'F4', 'F5',
     'F7', 'F8', 'F9', 'F10', 'F11', 'F12', 'F13', 'F14',
   ],

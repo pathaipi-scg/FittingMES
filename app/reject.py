@@ -417,7 +417,7 @@ def _validate_entry(cursor, raw):
             _invalid("INVALID_SOURCE", "Select an active Press.")
     elif source_id is not None and scope_code == "PRESS":
         cursor.execute("""
-            SELECT press.id AS EquipmentID
+            SELECT DISTINCT press.id AS EquipmentID
             FROM dbo.vw_PressMcPressList AS press_view
             JOIN dbo.EquipmentMaster AS press
               ON press.EquipmentCode=press_view.PressCode
@@ -429,13 +429,14 @@ def _validate_entry(cursor, raw):
               ON assignment.MachineCode=press_view.PressCode
              AND assignment.ProductionID=?
              AND assignment.ReleasedAt IS NULL
+             AND (assignment.ShiftMasterID=? OR assignment.ShiftMasterID IS NULL)
             JOIN dbo.ProductionLot AS assigned_lot
               ON assigned_lot.ProductionID=assignment.ProductionID
              AND assigned_lot.ProdDate=?
             WHERE press.id=? AND mapped_line.id=?
               AND press.IsActive=1 AND press_view.IsActive=1
               AND mapped_line.IsActive=1
-        """, production_id, production_date, source_id, line_id)
+        """, production_id, shift_id, production_date, source_id, line_id)
         if _fetch_one(cursor) is None:
             _invalid(
                 "INVALID_SOURCE",
