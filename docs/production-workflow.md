@@ -50,6 +50,15 @@ History records CREATE, PLAN_CHANGE, VOID and PRODUCTION_SAVE atomically with th
 The compact UI, splitter/collapse persistence, custom Plan dropdown, reusable lot status bar, and input/calculated sections remain.
 No PIS API, material usage, downtime, depallet or reject-detail functions are implemented.
 
+## Universal Press and Mould availability
+ADD FITTING and EDIT FITTING use the same production-time availability rule for every equipment-master Press and physical Mould. Each assignment boundary uses its explicitly saved PressProduction timestamp when present, otherwise the corresponding ProductionData Lot boundary. Lot clock values are resolved against the effective Production Day rule; clocks before that day's start belong to the following calendar date. A missing effective start is unresolved and blocks allocation, while a missing effective end is treated as ongoing.
+
+Availability uses half-open full-datetime intervals `[start, end)`: two active assignments conflict only when their intervals overlap. Thus a previous assignment ending exactly when another begins does not block reuse. Press eligibility still requires an active PRESS master row and Product capability; Mould eligibility still requires an ACTIVE physical Mould compatible with the Lot Product. Released assignments and inactive Lots do not occupy equipment. Server validation repeats eligibility and overlap checks inside the existing SQL Server transaction and uses transaction-owned application locks keyed by resource identity, including across Production Dates. EDIT excludes only its own PressProductionID.
+
+Historical PressProduction intervals are interpreted using their explicit assignment boundaries and then the Lot ProductionData fallbacks. If a historical assignment cannot be resolved, it is treated as a conflict rather than as free equipment. No migration or historical data rewrite is part of this rule.
+
+The original F12 issue came from the prior dropdown and save checks treating any active assignment on the same Production Date and Shift (including legacy assignments with unknown Shift) as occupied. Those checks never compared Start/End times, so an 08:00-16:00 assignment incorrectly blocked a back-to-back 16:00-01:00 assignment.
+
 ## Validation
 - .venv\\Scripts\\python.exe -m unittest discover -s tests
 - node tests/test_family_ui.cjs

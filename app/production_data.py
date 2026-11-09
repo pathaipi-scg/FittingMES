@@ -3,6 +3,7 @@ import re
 from datetime import time
 from decimal import Decimal
 from app.lots import lock_lots, rows, history
+from app.resource_availability import validate_lot_resource_availability
 
 
 def read_shift_rules(cursor, production_date):
@@ -80,6 +81,17 @@ def save_production_data(conn, production_id, raw, production_date=None):
             raise ValueError('This Lot is no longer active.')
         shift_rules = read_shift_rules(cursor, production_date) if production_date is not None else []
         resolved_shift = resolve_shift(production_date, data['ProductionStartTime'], data['Shift'], shift_rules)
+        cursor.execute('''SELECT ProductionStartTime, ProductionEndTime
+            FROM dbo.ProductionData WITH (UPDLOCK,HOLDLOCK)
+            WHERE ProductionID=?''', production_id)
+        existing_times = cursor.fetchone()
+        if (production_date is not None
+                and (not existing_times
+                     or tuple(existing_times) != (
+                         data['ProductionStartTime'], data['ProductionEndTime']))):
+            validate_lot_resource_availability(
+                cursor, production_id, production_date,
+                data['ProductionStartTime'], data['ProductionEndTime'])
         if production_date is not None:
             cursor.execute("""
                 SELECT COALESCE(SUM(CONVERT(bigint,Qty)),0)

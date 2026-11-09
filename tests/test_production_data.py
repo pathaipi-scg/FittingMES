@@ -116,7 +116,11 @@ class ProductionDataTests(unittest.TestCase):
 
     def connection(self, exists=False):
         conn=MagicMock()
-        conn.cursor.return_value.fetchone.side_effect=[(0,),('B006690901','Plan 1'),(7,) if exists else None]
+        conn.cursor.return_value.fetchone.side_effect=[
+            (0,), ('B006690901','Plan 1'),
+            (time(8,10),time(14,25)) if exists else None,
+            (7,) if exists else None,
+        ]
         return conn
 
     def test_insert_update_operator_shift_and_no_calculated_storage(self):
@@ -196,7 +200,10 @@ class ProductionDataTests(unittest.TestCase):
     def test_repeated_save_updates_same_row(self):
         conn=MagicMock()
         cursor=conn.cursor.return_value
-        cursor.fetchone.side_effect=[(0,),('L','P'),None,(0,),('L','P'),(7,)]
+        cursor.fetchone.side_effect=[
+            (0,), ('L','P'), None, None,
+            (0,), ('L','P'), (time(8,10),time(14,25)), (7,),
+        ]
         save_production_data(conn,7,RAW)
         save_production_data(conn,7,dict(RAW,CounterQty='4000'))
         sql=[c.args[0] for c in cursor.execute.call_args_list]

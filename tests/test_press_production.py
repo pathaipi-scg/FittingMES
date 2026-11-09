@@ -52,8 +52,26 @@ class PressProductionCursor:
             lock.acquire()
             self.conn.transaction_locks.append(lock)
             self.result = [(0,)]
+        elif 'FROM dbo.PressProduction AS assigned WITH' in sql:
+            resource_id, excluded_id = args
+            is_mould = 'assigned.MouldID=?' in sql
+            self.result = []
+            for row in self.conn.press_rows.values():
+                if row.get('ReleasedAt') is not None or row['PressProductionID'] == (excluded_id or 0):
+                    continue
+                if (row.get('MouldID') if is_mould else row.get('MachineCode')) != resource_id:
+                    continue
+                self.result.append((
+                    row['PressProductionID'], row.get('LotNo', f"Lot {row['ProductionID']}"),
+                    row.get('ProductionDate', self.conn.production_date),
+                    row.get('ProductionStartTime'), row.get('ProductionEndTime'),
+                    row.get('LotStartTime', self.conn.lot_start_time),
+                    row.get('LotEndTime', self.conn.lot_end_time),
+                    self.conn.day_start_time))
         elif 'ProductionDayRuleHistory' in sql:
             self.result = [(self.conn.day_start_time,)]
+        elif 'FROM dbo.ProductionData WHERE ProductionID=?' in sql:
+            self.result = [(self.conn.lot_start_time, self.conn.lot_end_time)]
         elif 'FROM dbo.ShiftMaster' in sql:
             if 'SELECT ShiftCode' in sql:
                 shift = next((code for code, shift_id in self.conn.shifts.items()
@@ -101,7 +119,9 @@ class PressProductionCursor:
         elif 'SELECT pp.PressProductionID, pp.MouldID, pp.ReleasedAt, lot.ProdDate' in sql:
             row = self.conn.press_rows.get(args[0])
             values = (row['PressProductionID'], row['MouldID'], row.get('ReleasedAt'),
-                      row['ProductionDate'], row.get('ShiftMasterID'), row.get('MachineCode'))
+                      row['ProductionDate'], row.get('ProductionStartTime'),
+                      row.get('ProductionEndTime'), row.get('ShiftMasterID'),
+                      row.get('MachineCode'))
             self.result = [values] if row and row['ProductionID'] == args[1] else []
         elif 'SELECT lot.ProdDate, pp.ShiftMasterID, pp.MachineCode, pp.MouldID' in sql:
             row = self.conn.press_rows.get(args[0])
@@ -292,6 +312,8 @@ class PressProductionConnection:
         self.fail = None
         self.day_start_time = time(8)
         self.production_date = date(2026, 9, 26)
+        self.lot_start_time = time(22)
+        self.lot_end_time = time(0, 15)
         self.cur = PressProductionCursor(self)
 
     def cursor(self): return self.cur
@@ -547,11 +569,11 @@ class PressProductionTests(unittest.TestCase):
         self.assertEqual(result[0]['PressCode'], 'F2')
         self.assertIn('dbo.vw_PressMcCapabilityMatrix', cursor.sql)
         self.assertIn('capability.CanProduce=1', cursor.sql)
-        self.assertIn('equipment.IsActive=1', cursor.sql)
+        self.assertIn('equipment.IsActive AS EquipmentIsActive', cursor.sql)
         self.assertIn("equipment.EquipmentType='PRESS'", cursor.sql)
         self.assertEqual(cursor.args, (3, '02'))
 
-    def test_press_availability_is_filtered_by_production_date_shift_and_edit_exclusion(self):
+    def test_press_availability_query_keeps_eligibility_separate_from_interval(self):
         class ShiftPressCursor:
             def __init__(self):
                 self.calls = []
@@ -566,7 +588,7 @@ class PressProductionTests(unittest.TestCase):
                 else:
                     self.result = [dict(PressCode='F2', PressName='Press 2',
                                         CurrentLine='LINE1', CurrentLineName='Line 1',
-                                        StandardSpeed=5, AssignedOnProductionDate=True)]
+                                        StandardSpeed=5)]
                     self.description = [(name,) for name in self.result[0]]
                 return self
             def fetchone(self):
@@ -577,13 +599,12 @@ class PressProductionTests(unittest.TestCase):
 
         cursor = ShiftPressCursor()
         result = read_eligible_presses(cursor, 3, '02', DAY, '2', 30)
-        self.assertTrue(result[0]['AssignedOnProductionDate'])
+        self.assertFalse(result[0]['Available'])
+        self.assertIn('Invalid or unresolved production interval', result[0]['AvailabilityReason'])
         query, args = cursor.calls[-1]
-        self.assertIn('assigned_lot.ProdDate=?', query)
-        self.assertIn('assigned_press.ShiftMasterID=?', query)
-        self.assertIn('assigned_press.ShiftMasterID IS NULL', query)
-        self.assertIn('assigned_press.PressProductionID<>COALESCE(?,0)', query)
-        self.assertEqual(args, (DAY, 101, 30, 3, '02'))
+        self.assertNotIn('assigned_lot.ProdDate', query)
+        self.assertNotIn('assigned_press.ShiftMasterID', query)
+        self.assertEqual(args, (3, '02'))
 
     def test_active_shift_choices_use_shift_master_business_codes(self):
         cursor = ReadCursor([dict(ShiftCode='1', ShiftName='Shift 1'),
@@ -600,22 +621,24 @@ class PressProductionTests(unittest.TestCase):
 
     def test_eligible_mould_query_uses_authoritative_view_active_status_and_product(self):
         cursor = ReadCursor([dict(MouldID=4, MouldNo='M000001', MouldName='Ridge',
-                                  ProductFamilyID=3,ProductFamily='Special Ridge', ProductCode='02')])
+                                  ProductFamilyID=3,ProductFamily='Special Ridge', ProductCode='02',
+                                  Status='ACTIVE')])
         result = read_eligible_moulds(cursor, 3, '02')
         self.assertEqual(result[0]['MouldID'], 4)
         self.assertIn('dbo.vw_MouldList', cursor.sql)
-        self.assertIn("Status='ACTIVE'", cursor.sql)
-        self.assertEqual(cursor.args, (None, None, 3, '02'))
+        self.assertIn('moulds.Status', cursor.sql)
+        self.assertEqual(cursor.args, (3, '02'))
         self.assertEqual(read_eligible_moulds(cursor, None, '02'), [])
 
-    def test_mould_assignment_is_scoped_to_production_date(self):
+    def test_mould_eligibility_query_does_not_apply_date_only_occupancy(self):
         cursor = ReadCursor([dict(MouldID=4, MouldNo='M000001', MouldName='Ridge',
                                   ProductFamily='Special Ridge', ProductCode='02',
-                                  AssignedOnProductionDate=True)])
+                                  Status='ACTIVE', AssignedOnProductionDate=True)])
         result = read_eligible_moulds(cursor, 3, '02', DAY)
-        self.assertTrue(result[0]['AssignedOnProductionDate'])
+        self.assertFalse(result[0]['Available'])
+        self.assertIn('Invalid or unresolved production interval', result[0]['AvailabilityReason'])
 
-    def test_selected_shift_mould_list_includes_unknown_legacy_occupancy(self):
+    def test_selected_shift_mould_list_keeps_shift_context_separate_from_availability(self):
         class ShiftMouldCursor:
             def __init__(self):
                 self.calls = []
@@ -628,10 +651,10 @@ class PressProductionTests(unittest.TestCase):
                 elif 'FROM dbo.ShiftMaster' in sql:
                     self.result = [(202,)]
                 else:
-                    self.result = [(4, 'M000001', 'Ridge', 3, 'Special Ridge', '02', True)]
+                    self.result = [(4, 'M000001', 'Ridge', 3, 'Special Ridge', '02', 'ACTIVE')]
                     self.description = [(name,) for name in (
                         'MouldID', 'MouldNo', 'MouldName', 'ProductFamilyID',
-                        'ProductFamily', 'ProductCode', 'AssignedOnProductionDate')]
+                        'ProductFamily', 'ProductCode', 'Status')]
                 return self
             def fetchone(self):
                 return self.result.pop(0) if self.result else None
@@ -641,12 +664,10 @@ class PressProductionTests(unittest.TestCase):
 
         cursor = ShiftMouldCursor()
         moulds = read_eligible_moulds(cursor, 3, '02', DAY, '2', 30)
-        self.assertTrue(moulds[0]['AssignedOnProductionDate'])
+        self.assertFalse(moulds[0]['Available'])
         allocation_sql, allocation_args = cursor.calls[-1]
-        self.assertIn('assigned_press.ShiftMasterID=?', allocation_sql)
-        self.assertIn('assigned_press.ShiftMasterID IS NULL', allocation_sql)
-        self.assertIn('assigned_press.PressProductionID<>COALESCE(?,0)', allocation_sql)
-        self.assertEqual(allocation_args, (DAY, 30, 202, 3, '02'))
+        self.assertNotIn('assigned_press.ShiftMasterID', allocation_sql)
+        self.assertEqual(allocation_args, (3, '02'))
 
     def test_mould_026_on_another_lot_is_unavailable_for_same_date_and_shift(self):
         class ShiftMouldCursor:
@@ -662,10 +683,10 @@ class PressProductionTests(unittest.TestCase):
                     self.result = [(101,)]
                 else:
                     self.result = [(29, 'M000026', 'Angle_Ridge_01', 3,
-                                    'Special Ridge', '02', True)]
+                                    'Special Ridge', '02', 'ACTIVE')]
                     self.description = [(name,) for name in (
                         'MouldID', 'MouldNo', 'MouldName', 'ProductFamilyID',
-                        'ProductFamily', 'ProductCode', 'AssignedOnProductionDate')]
+                        'ProductFamily', 'ProductCode', 'Status')]
                 return self
             def fetchone(self):
                 return self.result.pop(0) if self.result else None
@@ -676,13 +697,13 @@ class PressProductionTests(unittest.TestCase):
         production_date = date(2026, 9, 3)
         cursor = ShiftMouldCursor()
         moulds = read_eligible_moulds(cursor, 3, '02', production_date, '1')
-        self.assertTrue(moulds[0]['AssignedOnProductionDate'])
+        self.assertFalse(moulds[0]['Available'])
+        self.assertIn('Invalid or unresolved production interval', moulds[0]['AvailabilityReason'])
         query, args = cursor.calls[-1]
-        self.assertIn('assigned_lot.ProdDate=?', query)
-        self.assertIn('assigned_lot.IsActive=1', query)
-        self.assertIn('assigned_press.MouldID=moulds.MouldID', query)
-        self.assertIn('assigned_press.ShiftMasterID=?', query)
-        self.assertEqual(args, (production_date, None, 101, 3, '02'))
+        self.assertIn('dbo.vw_MouldList', query)
+        self.assertIn('moulds.Status', query)
+        self.assertNotIn('assigned_lot.ProdDate', query)
+        self.assertEqual(args, (3, '02'))
 
     def test_same_date_same_shift_mould_is_blocked_across_lots(self):
         conn = PressProductionConnection()
@@ -722,10 +743,13 @@ class PressProductionTests(unittest.TestCase):
 
     def test_same_mould_can_be_added_to_a_different_shift(self):
         conn = PressProductionConnection()
-        save_press_production(conn, 7, valid_input())
+        save_press_production(conn, 7, valid_input(
+            ProductionStartTime='08:00', ProductionEndTime='16:00'))
         conn.production_id = 8
         conn.press_code = 'F3'
-        second_id = save_press_production(conn, 8, valid_input(ShiftCode='2', MachineCode='F3'))
+        second_id = save_press_production(conn, 8, valid_input(
+            ShiftCode='2', MachineCode='F3',
+            ProductionStartTime='16:00', ProductionEndTime='01:00'))
         self.assertEqual(conn.press_rows[30]['ShiftMasterID'], 101)
         self.assertEqual(conn.press_rows[second_id]['ShiftMasterID'], 202)
         self.assertEqual(conn.press_rows[30]['MouldID'], conn.press_rows[second_id]['MouldID'])
@@ -738,7 +762,7 @@ class PressProductionTests(unittest.TestCase):
             MachineCode='F7', ShiftMasterID=101, MouldID=9, CounterQty=0,
             ProductionDate=conn.production_date, ReleasedAt=None)
         before = dict(conn.press_rows)
-        with self.assertRaisesRegex(ValueError, 'Production Date and Shift'):
+        with self.assertRaisesRegex(ValueError, 'already assigned for the selected'):
             save_press_production(conn, 8, valid_input(MachineCode='F7'))
         self.assertEqual(conn.press_rows, before)
         self.assertEqual((conn.commits, conn.rollbacks), (0, 1))
@@ -747,7 +771,9 @@ class PressProductionTests(unittest.TestCase):
         conn = PressProductionConnection()
         conn.press_rows[20] = dict(PressProductionID=20, ProductionID=8,
             MachineCode='F7', ShiftMasterID=101, MouldID=4, CounterQty=0,
-            ProductionDate=conn.production_date, ReleasedAt=None)
+            ProductionDate=conn.production_date,
+            ProductionStartTime=datetime(2026, 9, 26, 8),
+            ProductionEndTime=datetime(2026, 9, 26, 16), ReleasedAt=None)
         conn.press_code = 'F7'
         new_id = save_press_production(
             conn, 7, valid_input(MachineCode='F7', ShiftCode='2'))
@@ -786,7 +812,7 @@ class PressProductionTests(unittest.TestCase):
             MachineCode='F7', ShiftMasterID=101, MouldID=4, CounterQty=0,
             ProductionDate=conn.production_date, ReleasedAt=None)
         before = dict(conn.press_rows[30])
-        with self.assertRaisesRegex(ValueError, 'Production Date and Shift'):
+        with self.assertRaisesRegex(ValueError, 'already assigned for the selected'):
             save_press_production(
                 conn, 7, valid_input(MachineCode='F7', MouldID='9'), 30)
         self.assertEqual(conn.press_rows[30], before)
@@ -801,7 +827,7 @@ class PressProductionTests(unittest.TestCase):
         conn.press_rows[31] = dict(PressProductionID=31, ProductionID=8,
             MachineCode='F7', ShiftMasterID=101, MouldID=9, CounterQty=0,
             ProductionDate=conn.production_date, ReleasedAt=None)
-        with self.assertRaisesRegex(ValueError, 'Production Date and Shift'):
+        with self.assertRaisesRegex(ValueError, 'already assigned for the selected'):
             undo_release_press_production(conn, 7, 30)
         self.assertEqual(conn.press_rows[30]['ReleasedAt'], released_at)
         self.assertEqual((conn.commits, conn.rollbacks), (0, 1))
@@ -846,7 +872,7 @@ class PressProductionTests(unittest.TestCase):
             MachineCode='F7', ShiftMasterID=None, MouldID=9, CounterQty=0,
             ProductionDate=conn.production_date, ReleasedAt=None)
         conn.press_code = 'F7'
-        with self.assertRaisesRegex(ValueError, 'legacy Press assignment has unknown Shift'):
+        with self.assertRaisesRegex(ValueError, 'already assigned for the selected'):
             save_press_production(conn, 7, valid_input(MachineCode='F7', ShiftCode='2'))
         self.assertEqual(set(conn.press_rows), {20})
         self.assertEqual((conn.commits, conn.rollbacks), (0, 1))
@@ -860,7 +886,7 @@ class PressProductionTests(unittest.TestCase):
         conn.press_rows[31] = dict(PressProductionID=31, ProductionID=8,
             MachineCode='F7', ShiftMasterID=202, MouldID=9, CounterQty=0,
             ProductionDate=conn.production_date, ReleasedAt=None)
-        with self.assertRaisesRegex(ValueError, 'unknown Shift while another active assignment'):
+        with self.assertRaisesRegex(ValueError, 'already assigned for the selected'):
             undo_release_press_production(conn, 7, 30)
         self.assertEqual(conn.press_rows[30]['ReleasedAt'], released_at)
         self.assertEqual((conn.commits, conn.rollbacks), (0, 1))
@@ -869,7 +895,7 @@ class PressProductionTests(unittest.TestCase):
         conn = PressProductionConnection()
         conn.press_rows[20] = dict(PressProductionID=20, ProductionID=8, MachineCode='F1',
             MouldID=4, CounterQty=0, ProductionDate=conn.production_date, ReleasedAt=None)
-        with self.assertRaisesRegex(ValueError, 'legacy Mould assignment has unknown Shift'):
+        with self.assertRaisesRegex(ValueError, 'already assigned for the selected'):
             save_press_production(conn, 7, valid_input(ShiftCode='2'))
         self.assertEqual(conn.press_rows.keys(), {20})
         self.assertEqual((conn.commits, conn.rollbacks), (0, 1))
@@ -1407,13 +1433,14 @@ class PressProductionTests(unittest.TestCase):
         conn = PressProductionConnection()
         conn.press_rows[20] = dict(PressProductionID=20, ProductionID=7, MachineCode='F2',
             ShiftMasterID=101, MouldID=4, CounterQty=0, ReleasedAt=None)
-        with self.assertRaisesRegex(ValueError, 'Production Date and Shift'):
+        with self.assertRaisesRegex(ValueError, 'already assigned for the selected'):
             save_press_production(conn, 7, valid_input())
         self.assertEqual(conn.commits, 0)
         self.assertEqual(conn.rollbacks, 1)
 
     def test_wrong_product_and_nonactive_moulds_rejected(self):
-        for mould_id, message in ((5, 'ACTIVE'), (6, 'ACTIVE'), (7, 'ACTIVE'), (8, 'match')):
+        for mould_id, message in ((5, 'reconditioning'), (6, 'retired'),
+                                  (7, 'ACTIVE'), (8, 'match')):
             conn = PressProductionConnection()
             with self.subTest(mould_id=mould_id), self.assertRaisesRegex(ValueError, message):
                 save_press_production(conn, 7, valid_input(MouldID=str(mould_id)))
@@ -1976,8 +2003,8 @@ class PressProductionTests(unittest.TestCase):
         page = response.body.decode()
         self.assertIn('action="/lots/7/press-production/30"', page)
         self.assertIn('value="2" selected>Shift 2', page)
-        self.assertIn('value="F2" data-available-shifts="1,2" selected', page)
-        self.assertIn('value="4" data-available-shifts="1,2" selected', page)
+        self.assertIn('value="F2" data-available-shifts="1,2" data-availability-reason="" selected', page)
+        self.assertIn('value="4" data-available-shifts="1,2" data-availability-reason="" selected', page)
         self.assertIn('EDIT FITTING', page)
         self.assertIn('CANCEL EDIT', page)
         self.assertIn('Mould is already assigned.', page)
@@ -2135,8 +2162,8 @@ class PressProductionRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Mould is already assigned in Shift 2.', page)
         self.assertIn('action="/lots/7/press-production/30"', page)
         self.assertIn('value="2" selected>Shift 2', page)
-        self.assertIn('value="F2" data-available-shifts="1,2" selected', page)
-        self.assertIn('value="4" data-available-shifts="1,2" selected', page)
+        self.assertIn('value="F2" data-available-shifts="1,2" data-availability-reason="" selected', page)
+        self.assertIn('value="4" data-available-shifts="1,2" data-availability-reason="" selected', page)
         self.assertNotIn('CounterQty', submitted_data)
         self.assertNotIn('DispatchQty', submitted_data)
         self.assertNotIn('CuringQty', submitted_data)

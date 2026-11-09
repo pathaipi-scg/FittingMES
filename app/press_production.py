@@ -3,15 +3,17 @@ from decimal import Decimal, InvalidOperation
 
 from app.lots import lock_lots, rows
 from app.production_clock import read_day_start_time, resolve_run_times, clock_display
+from app.resource_availability import (find_assignment_conflict,
+                                       read_lot_boundaries,
+                                       resolve_effective_interval)
 
 
 def read_eligible_presses(cursor, product_family_id, product_code, production_date=None,
-                          shift_code=None, exclude_press_production_id=None):
+                          shift_code=None, exclude_press_production_id=None,
+                          requested_interval=None):
     if not product_family_id or not product_code:
         return []
-    availability_fields = ''
-    availability_params = ()
-    if production_date is not None and shift_code is not None:
+    if shift_code is not None:
         if not _shift_schema_available(cursor):
             raise ValueError('Shift-aware Press Production requires database migration 027.')
         cursor.execute('''SELECT id FROM dbo.ShiftMaster
@@ -19,31 +21,31 @@ def read_eligible_presses(cursor, product_family_id, product_code, production_da
         shift = cursor.fetchone()
         if not shift:
             raise ValueError('Choose an active Shift.')
-        availability_fields = ''',
-            CAST(CASE WHEN EXISTS (
-                SELECT 1 FROM dbo.PressProduction AS assigned_press
-                JOIN dbo.ProductionLot AS assigned_lot
-                  ON assigned_lot.ProductionID=assigned_press.ProductionID
-                WHERE assigned_lot.ProdDate=?
-                  AND assigned_press.MachineCode=capability.PressCode
-                  AND assigned_press.ReleasedAt IS NULL
-                  AND (assigned_press.ShiftMasterID=? OR assigned_press.ShiftMasterID IS NULL)
-                  AND assigned_press.PressProductionID<>COALESCE(?,0)
-            ) THEN 1 ELSE 0 END AS bit) AS AssignedOnProductionDate'''
-        availability_params = (production_date, shift[0], exclude_press_production_id)
     cursor.execute('''SELECT capability.PressCode, capability.PressName,
-            capability.CurrentLine, capability.CurrentLineName, capability.StandardSpeed
-            {availability_fields}
+            capability.CurrentLine, capability.CurrentLineName, capability.StandardSpeed,
+            equipment.IsActive AS EquipmentIsActive
         FROM dbo.vw_PressMcCapabilityMatrix AS capability
         JOIN dbo.EquipmentMaster AS equipment
           ON equipment.EquipmentCode=capability.PressCode
         WHERE capability.ProductFamilyID=? AND capability.ProductCode=?
-          AND capability.CanProduce=1 AND equipment.IsActive=1
+          AND capability.CanProduce=1
           AND equipment.EquipmentType='PRESS'
-        ORDER BY equipment.DisplayOrder, capability.PressCode'''.format(
-            availability_fields=availability_fields),
-        *availability_params, product_family_id, product_code)
-    return rows(cursor)
+        ORDER BY equipment.DisplayOrder, capability.PressCode''',
+        product_family_id, product_code)
+    presses = rows(cursor)
+    for press in presses:
+        reason = None
+        if not press.get('EquipmentIsActive', True):
+            reason = 'Inactive Press.'
+        elif requested_interval is None:
+            reason = 'Invalid or unresolved production interval.'
+        else:
+            reason = find_assignment_conflict(
+                cursor, 'press', press['PressCode'], requested_interval,
+                exclude_press_production_id)
+        press['AvailabilityReason'] = reason
+        press['Available'] = reason is None
+    return presses
 
 
 def read_active_shifts(cursor):
@@ -62,7 +64,8 @@ def _shift_schema_available(cursor):
 
 
 def read_eligible_moulds(cursor, product_family_id, product_code, production_date=None,
-                         shift_code=None, exclude_press_production_id=None):
+                         shift_code=None, exclude_press_production_id=None,
+                         requested_interval=None):
     if not product_family_id or not product_code:
         return []
     if shift_code is not None:
@@ -73,31 +76,32 @@ def read_eligible_moulds(cursor, product_family_id, product_code, production_dat
         shift = cursor.fetchone()
         if not shift:
             raise ValueError('Choose an active Shift.')
-        shift_scope = 'AND (assigned_press.ShiftMasterID=? OR assigned_press.ShiftMasterID IS NULL)'
-        shift_params = (shift[0],)
-    else:
-        shift_scope = ''
-        shift_params = ()
     cursor.execute('''SELECT moulds.MouldID, moulds.MouldNo, moulds.MouldName,
-            moulds.ProductFamilyID,moulds.ProductFamily,moulds.ProductCode,
-            CAST(CASE WHEN EXISTS (
-                SELECT 1
-                FROM dbo.PressProduction AS assigned_press
-                JOIN dbo.ProductionLot AS assigned_lot
-                    ON assigned_lot.ProductionID=assigned_press.ProductionID
-                WHERE assigned_lot.ProdDate=? AND assigned_lot.IsActive=1
-                    AND assigned_press.MouldID=moulds.MouldID
-                    AND assigned_press.ReleasedAt IS NULL
-                    AND assigned_press.PressProductionID<>COALESCE(?,0)
-                    {shift_scope}
-            ) THEN 1 ELSE 0 END AS bit) AS AssignedOnProductionDate
+            moulds.ProductFamilyID,moulds.ProductFamily,moulds.ProductCode,moulds.Status
         FROM dbo.vw_MouldList
         AS moulds
-        WHERE moulds.ProductFamilyID=? AND moulds.ProductCode=? AND moulds.Status='ACTIVE'
-        ORDER BY moulds.MouldNo'''.format(shift_scope=shift_scope),
-        production_date, exclude_press_production_id, *shift_params,
-        product_family_id, product_code)
-    return rows(cursor)
+        WHERE moulds.ProductFamilyID=? AND moulds.ProductCode=?
+        ORDER BY moulds.MouldNo''', product_family_id, product_code)
+    moulds = rows(cursor)
+    for mould in moulds:
+        status = str(mould.get('Status') or '').strip().upper()
+        if status != 'ACTIVE':
+            status_reason = {
+                'REPAIR': 'Mould under repair.',
+                'UNDER_REPAIR': 'Mould under repair.',
+                'RECONDITION': 'Mould under reconditioning.',
+                'RETIRED': 'Mould retired.',
+            }
+            reason = status_reason.get(status, f'Mould is not production-ready (status: {status or "unknown"}).')
+        elif requested_interval is None:
+            reason = 'Invalid or unresolved production interval.'
+        else:
+            reason = find_assignment_conflict(
+                cursor, 'mould', mould['MouldID'], requested_interval,
+                exclude_press_production_id)
+        mould['AvailabilityReason'] = reason
+        mould['Available'] = reason is None
+    return moulds
 
 
 def read_press_production(cursor, production_id):
@@ -456,7 +460,14 @@ def _lock_and_validate_mould(cursor, product_family_id, product_code, mould_id):
     if not mould:
         raise ValueError('Mould not found.')
     if mould[1] != 'ACTIVE':
-        raise ValueError('Only ACTIVE Moulds can be assigned to Press production.')
+        status_reason = {
+            'REPAIR': 'Mould is under repair.',
+            'UNDER_REPAIR': 'Mould is under repair.',
+            'RECONDITION': 'Mould is under reconditioning.',
+            'RETIRED': 'Mould is retired.',
+        }
+        raise ValueError(status_reason.get(
+            mould[1], 'Only ACTIVE Moulds can be assigned to Press production.'))
     if (mould[2], mould[3]) != (product_family_id, product_code):
         raise ValueError('Mould Product must match the Production Lot Product.')
     return mould[4]
@@ -475,25 +486,15 @@ def _lock_existing_usage_mould(cursor, product_family_id, product_code, mould_id
 def _lock_allocation_keys(cursor, production_date, press_identities=(),
                           mould_identities=()):
     resources = set()
-    for shift_master_id, machine_code in press_identities:
+    for _, machine_code in press_identities:
         if machine_code is None:
             continue
         machine_code = str(machine_code).strip().upper()
-        resources.add(
-            f'FittingMES.PressMachine.{production_date:%Y%m%d}.all.{machine_code}')
-        if shift_master_id is not None:
-            resources.add(
-                f'FittingMES.PressMachine.{production_date:%Y%m%d}.'
-                f'{shift_master_id}.{machine_code}')
-    for shift_master_id, mould_id in mould_identities:
+        resources.add(f'FittingMES.PressMachine.{machine_code}')
+    for _, mould_id in mould_identities:
         if mould_id is None:
             continue
-        resources.add(
-            f'FittingMES.PressMould.{production_date:%Y%m%d}.all.{mould_id}')
-        if shift_master_id is not None:
-            resources.add(
-                f'FittingMES.PressMould.{production_date:%Y%m%d}.'
-                f'{shift_master_id}.{mould_id}')
+        resources.add(f'FittingMES.PressMould.{mould_id}')
     for resource in sorted(resources):
         cursor.execute('''DECLARE @result int;
             EXEC @result = sys.sp_getapplock @Resource=?, @LockMode='Exclusive',
@@ -504,56 +505,20 @@ def _lock_allocation_keys(cursor, production_date, press_identities=(),
             raise ValueError('Press or Mould availability is being updated. Please retry.')
 
 
-def _ensure_mould_available(cursor, production_date, shift_master_id, mould_id,
+def _ensure_mould_available(cursor, requested_interval, mould_id,
                             exclude_press_production_id=None):
-    cursor.execute('''SELECT TOP (1) assigned_press.PressProductionID,
-                             assigned_press.ShiftMasterID
-        FROM dbo.PressProduction AS assigned_press WITH (UPDLOCK,HOLDLOCK)
-        JOIN dbo.ProductionLot AS assigned_lot WITH (UPDLOCK,HOLDLOCK)
-          ON assigned_lot.ProductionID=assigned_press.ProductionID
-        WHERE assigned_lot.ProdDate=? AND assigned_lot.IsActive=1
-          AND assigned_press.MouldID=? AND assigned_press.ReleasedAt IS NULL
-          AND (assigned_press.ShiftMasterID=? OR assigned_press.ShiftMasterID IS NULL)
-          AND assigned_press.PressProductionID<>COALESCE(?,0)
-        ORDER BY CASE WHEN assigned_press.ShiftMasterID IS NULL THEN 0 ELSE 1 END,
-                 assigned_press.PressProductionID''',
-        production_date, mould_id, shift_master_id, exclude_press_production_id)
-    conflict = cursor.fetchone()
-    if conflict:
-        if conflict[1] is None:
-            raise ValueError('An active legacy Mould assignment has unknown Shift; resolve or release it before allocation.')
-        raise ValueError('This Mould is already assigned for the selected Production Date and Shift.')
+    reason = find_assignment_conflict(cursor, 'mould', mould_id,
+                                      requested_interval, exclude_press_production_id)
+    if reason:
+        raise ValueError(reason)
 
 
-def _ensure_press_available(cursor, production_date, machine_code, shift_master_id,
+def _ensure_press_available(cursor, requested_interval, machine_code,
                             exclude_press_production_id=None):
-    shift_scope = (
-        'AND (assigned_press.ShiftMasterID=? OR assigned_press.ShiftMasterID IS NULL)'
-        if shift_master_id is not None else ''
-    )
-    shift_args = (shift_master_id,) if shift_master_id is not None else ()
-    cursor.execute(f'''SELECT TOP (1) assigned_press.PressProductionID,
-                             assigned_press.ShiftMasterID
-        FROM dbo.PressProduction AS assigned_press WITH (UPDLOCK,HOLDLOCK)
-        JOIN dbo.ProductionLot AS assigned_lot WITH (UPDLOCK,HOLDLOCK)
-          ON assigned_lot.ProductionID=assigned_press.ProductionID
-        WHERE assigned_lot.ProdDate=?
-          AND assigned_press.MachineCode=? AND assigned_press.ReleasedAt IS NULL
-          AND assigned_press.PressProductionID<>COALESCE(?,0) {shift_scope}
-        ORDER BY CASE WHEN assigned_press.ShiftMasterID IS NULL THEN 0 ELSE 1 END,
-                 assigned_press.PressProductionID''',
-        production_date, machine_code, exclude_press_production_id, *shift_args)
-    conflict = cursor.fetchone()
-    if conflict:
-        if shift_master_id is None:
-            raise ValueError(
-                'Cannot restore a Press assignment with unknown Shift while another '
-                'active assignment for this Press exists on the Production Date.')
-        if conflict[1] is None:
-            raise ValueError('An active legacy Press assignment has unknown Shift; resolve or release it before allocation.')
-        raise ValueError(
-            'This Press already has an active assignment for the selected '
-            'Production Date and Shift.')
+    reason = find_assignment_conflict(cursor, 'press', machine_code,
+                                      requested_interval, exclude_press_production_id)
+    if reason:
+        raise ValueError(reason)
 
 
 def _ensure_equipment_time_identity_safe(cursor, production_id, identities):
@@ -662,13 +627,18 @@ def save_press_production(conn, production_id, data, press_production_id=None):
 
         mould_only_edit = False
         if press_production_id is None:
+            lot_start, lot_end = read_lot_boundaries(cursor, production_id)
+            requested_interval = resolve_effective_interval(
+                production_date, day_start_time,
+                values['ProductionStartTime'], values['ProductionEndTime'],
+                lot_start, lot_end)
             _lock_allocation_keys(
                 cursor, production_date,
                 press_identities=[(shift_master_id, values['MachineCode'])],
                 mould_identities=[(shift_master_id, values['MouldID'])])
             _ensure_press_available(
-                cursor, production_date, values['MachineCode'], shift_master_id)
-            _ensure_mould_available(cursor, production_date, shift_master_id, values['MouldID'])
+                cursor, requested_interval, values['MachineCode'])
+            _ensure_mould_available(cursor, requested_interval, values['MouldID'])
             current_recondition_no = _lock_and_validate_mould(
                 cursor, product_family_id, product_code, values['MouldID'])
             cursor.execute('''INSERT INTO dbo.PressProduction
@@ -760,12 +730,17 @@ def save_press_production(conn, production_id, data, press_production_id=None):
                         (existing[6], existing[2]),
                         (shift_master_id, values['MouldID']),
                     ])
+                lot_start, lot_end = read_lot_boundaries(cursor, production_id)
+                requested_interval = resolve_effective_interval(
+                    production_date, day_start_time,
+                    values['ProductionStartTime'], values['ProductionEndTime'],
+                    lot_start, lot_end)
                 _ensure_press_available(
-                    cursor, production_date, values['MachineCode'], shift_master_id,
+                    cursor, requested_interval, values['MachineCode'],
                     exclude_press_production_id=press_production_id)
                 if values['MouldID'] is not None:
                     _ensure_mould_available(
-                        cursor, production_date, shift_master_id, values['MouldID'],
+                        cursor, requested_interval, values['MouldID'],
                         exclude_press_production_id=press_production_id)
                 if has_usage and values['MouldID'] == existing[2]:
                     _lock_existing_usage_mould(cursor, product_family_id, product_code, values['MouldID'])
@@ -875,7 +850,8 @@ def undo_release_press_production(conn, production_id, press_production_id):
         lock_lots(cursor)
         has_shift_schema = _shift_schema_available(cursor)
         shift_fields = ', pp.ShiftMasterID, pp.MachineCode' if has_shift_schema else ''
-        cursor.execute(f'''SELECT pp.PressProductionID, pp.MouldID, pp.ReleasedAt, lot.ProdDate
+        cursor.execute(f'''SELECT pp.PressProductionID, pp.MouldID, pp.ReleasedAt, lot.ProdDate,
+                              pp.ProductionStartTime, pp.ProductionEndTime
                               {shift_fields}
             FROM dbo.PressProduction AS pp WITH (UPDLOCK,HOLDLOCK)
             JOIN dbo.ProductionLot AS lot WITH (UPDLOCK,HOLDLOCK)
@@ -889,14 +865,27 @@ def undo_release_press_production(conn, production_id, press_production_id):
             conn.commit()
             return 'ALREADY_ACTIVE'
         if has_shift_schema:
-            shift_master_id, machine_code = existing[4], existing[5]
+            shift_master_id, machine_code = existing[6], existing[7]
+            day_start_time = read_day_start_time(cursor, existing[3])
+            lot_start, lot_end = read_lot_boundaries(cursor, production_id)
+            requested_interval = resolve_effective_interval(
+                existing[3], day_start_time, existing[4], existing[5],
+                lot_start, lot_end)
             _lock_allocation_keys(
                 cursor, existing[3],
                 press_identities=[(shift_master_id, machine_code)],
                 mould_identities=[(shift_master_id, existing[1])])
             _ensure_press_available(
-                cursor, existing[3], machine_code, shift_master_id,
+                cursor, requested_interval, machine_code,
                 exclude_press_production_id=press_production_id)
+            if existing[1] is not None:
+                try:
+                    _ensure_mould_available(
+                        cursor, requested_interval, existing[1],
+                        exclude_press_production_id=press_production_id)
+                except ValueError:
+                    conn.commit()
+                    return 'MOULD_ALREADY_REASSIGNED'
             if existing[1] is not None:
                 shift_clause = (
                     'AND (later_press.ShiftMasterID=? OR later_press.ShiftMasterID IS NULL)'
@@ -914,33 +903,8 @@ def undo_release_press_production(conn, production_id, press_production_id):
                 if cursor.fetchone():
                     conn.commit()
                     return 'MOULD_ALREADY_REASSIGNED'
-                active_shift_clause = (
-                    'AND (active_press.ShiftMasterID=? OR active_press.ShiftMasterID IS NULL)'
-                    if shift_master_id is not None else ''
-                )
-                cursor.execute(f'''SELECT TOP (1) active_press.PressProductionID
-                    FROM dbo.PressProduction AS active_press WITH (UPDLOCK,HOLDLOCK)
-                    JOIN dbo.ProductionLot AS active_lot WITH (UPDLOCK,HOLDLOCK)
-                      ON active_lot.ProductionID=active_press.ProductionID
-                    WHERE active_lot.ProdDate=? AND active_lot.IsActive=1
-                      AND active_press.MouldID=? AND active_press.ReleasedAt IS NULL
-                      AND active_press.PressProductionID<>? {active_shift_clause}''',
-                    existing[3], existing[1], press_production_id, *shift_args)
-                if cursor.fetchone():
-                    conn.commit()
-                    return 'MOULD_ALREADY_REASSIGNED'
-            press_shift_clause = (
-                'AND (ShiftMasterID=? OR ShiftMasterID IS NULL)'
-                if shift_master_id is not None else ''
-            )
-            press_shift_args = (shift_master_id,) if shift_master_id is not None else ()
-            cursor.execute(f'''SELECT TOP (1) PressProductionID
-                FROM dbo.PressProduction WITH (UPDLOCK,HOLDLOCK)
-                WHERE ProductionID=? AND MachineCode=? AND ReleasedAt IS NULL
-                  AND PressProductionID<>? {press_shift_clause}''',
-                production_id, machine_code, press_production_id, *press_shift_args)
-            if cursor.fetchone():
-                raise ValueError('This Press already has an active assignment for the selected Shift.')
+            if existing[1] is None:
+                raise ValueError('Released assignment has no Mould; cannot restore it.')
         else:
             cursor.execute('''SELECT later_press.PressProductionID
                 FROM dbo.PressProduction AS later_press WITH (UPDLOCK,HOLDLOCK)
@@ -984,23 +948,54 @@ def build_press_production_context(cursor, lot, press_form=None):
         excluded_id = int(press_form.get('PressProductionID') or 0) or None
     except (TypeError, ValueError):
         excluded_id = None
+    requested_interval = None
+    interval_error = None
+    try:
+        day_start_time = read_day_start_time(cursor, lot['ProdDate'])
+        lot_start, lot_end = read_lot_boundaries(cursor, lot['ProductionID'])
+        assignment_start = press_form.get('ProductionStartTime')
+        assignment_end = press_form.get('ProductionEndTime')
+        assignment_start = assignment_start or None
+        assignment_end = assignment_end or None
+        if excluded_id is not None:
+            cursor.execute('''SELECT ProductionStartTime, ProductionEndTime
+                FROM dbo.PressProduction
+                WHERE PressProductionID=? AND ProductionID=?''',
+                excluded_id, lot['ProductionID'])
+            existing_times = cursor.fetchone()
+            if not existing_times:
+                raise ValueError('Press Production row not found for this Lot.')
+            if 'ProductionStartTime' not in press_form:
+                assignment_start = existing_times[0]
+            if 'ProductionEndTime' not in press_form:
+                assignment_end = existing_times[1]
+        requested_interval = resolve_effective_interval(
+            lot['ProdDate'], day_start_time, assignment_start, assignment_end,
+            lot_start, lot_end)
+    except (TypeError, ValueError) as exc:
+        interval_error = str(exc)
+    if interval_error:
+        return dict(press_production=rows_for_lot, day_start_time=day_start_time,
+                    eligible_shifts=eligible_shifts, eligible_presses=[],
+                    eligible_moulds=[], press_product_error=interval_error)
+
     presses_by_code = {}
     moulds_by_id = {}
     for shift in eligible_shifts:
         shift_code = str(shift['ShiftCode'])
         presses = read_eligible_presses(cursor, product_family_id, product_code,
-            lot['ProdDate'], shift_code, excluded_id)
+            lot['ProdDate'], shift_code, excluded_id, requested_interval)
         for press in presses:
             option = presses_by_code.setdefault(press['PressCode'],
                 dict(press, AvailableShiftCodes=[]))
-            if not press.get('AssignedOnProductionDate'):
+            if press['Available']:
                 option['AvailableShiftCodes'].append(shift_code)
         moulds = read_eligible_moulds(cursor, product_family_id, product_code,
-            lot['ProdDate'], shift_code, excluded_id)
+            lot['ProdDate'], shift_code, excluded_id, requested_interval)
         for mould in moulds:
             option = moulds_by_id.setdefault(mould['MouldID'],
                 dict(mould, AvailableShiftCodes=[]))
-            if not mould.get('AssignedOnProductionDate'):
+            if mould['Available']:
                 option['AvailableShiftCodes'].append(shift_code)
 
     for option_key, form_key, label_key, options in (
@@ -1015,7 +1010,9 @@ def build_press_production_context(cursor, lot, press_form=None):
                 continue
             options.setdefault(selected_key, {
                 option_key: selected_key, label_key: str(selected),
-                'AvailableShiftCodes': [], 'SubmittedUnavailable': True})
+                'AvailableShiftCodes': [], 'AvailabilityReason':
+                    'Not eligible for the selected Product or inactive.',
+                'Available': False, 'SubmittedUnavailable': True})
 
     return dict(press_production=rows_for_lot,
                 day_start_time=day_start_time,
