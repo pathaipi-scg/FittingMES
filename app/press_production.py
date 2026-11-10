@@ -42,7 +42,7 @@ def read_eligible_presses(cursor, product_family_id, product_code, production_da
         else:
             reason = find_assignment_conflict(
                 cursor, 'press', press['PressCode'], requested_interval,
-                exclude_press_production_id)
+                exclude_press_production_id, production_date)
         press['AvailabilityReason'] = reason
         press['Available'] = reason is None
     return presses
@@ -98,7 +98,7 @@ def read_eligible_moulds(cursor, product_family_id, product_code, production_dat
         else:
             reason = find_assignment_conflict(
                 cursor, 'mould', mould['MouldID'], requested_interval,
-                exclude_press_production_id)
+                exclude_press_production_id, production_date)
         mould['AvailabilityReason'] = reason
         mould['Available'] = reason is None
     return moulds
@@ -506,17 +506,19 @@ def _lock_allocation_keys(cursor, production_date, press_identities=(),
 
 
 def _ensure_mould_available(cursor, requested_interval, mould_id,
-                            exclude_press_production_id=None):
+                            production_date, exclude_press_production_id=None):
     reason = find_assignment_conflict(cursor, 'mould', mould_id,
-                                      requested_interval, exclude_press_production_id)
+                                      requested_interval, exclude_press_production_id,
+                                      production_date)
     if reason:
         raise ValueError(reason)
 
 
 def _ensure_press_available(cursor, requested_interval, machine_code,
-                            exclude_press_production_id=None):
+                            production_date, exclude_press_production_id=None):
     reason = find_assignment_conflict(cursor, 'press', machine_code,
-                                      requested_interval, exclude_press_production_id)
+                                      requested_interval, exclude_press_production_id,
+                                      production_date)
     if reason:
         raise ValueError(reason)
 
@@ -637,8 +639,9 @@ def save_press_production(conn, production_id, data, press_production_id=None):
                 press_identities=[(shift_master_id, values['MachineCode'])],
                 mould_identities=[(shift_master_id, values['MouldID'])])
             _ensure_press_available(
-                cursor, requested_interval, values['MachineCode'])
-            _ensure_mould_available(cursor, requested_interval, values['MouldID'])
+                cursor, requested_interval, values['MachineCode'], production_date)
+            _ensure_mould_available(
+                cursor, requested_interval, values['MouldID'], production_date)
             current_recondition_no = _lock_and_validate_mould(
                 cursor, product_family_id, product_code, values['MouldID'])
             cursor.execute('''INSERT INTO dbo.PressProduction
@@ -737,10 +740,12 @@ def save_press_production(conn, production_id, data, press_production_id=None):
                     lot_start, lot_end)
                 _ensure_press_available(
                     cursor, requested_interval, values['MachineCode'],
+                    production_date,
                     exclude_press_production_id=press_production_id)
                 if values['MouldID'] is not None:
                     _ensure_mould_available(
                         cursor, requested_interval, values['MouldID'],
+                        production_date,
                         exclude_press_production_id=press_production_id)
                 if has_usage and values['MouldID'] == existing[2]:
                     _lock_existing_usage_mould(cursor, product_family_id, product_code, values['MouldID'])
@@ -877,11 +882,13 @@ def undo_release_press_production(conn, production_id, press_production_id):
                 mould_identities=[(shift_master_id, existing[1])])
             _ensure_press_available(
                 cursor, requested_interval, machine_code,
+                existing[3],
                 exclude_press_production_id=press_production_id)
             if existing[1] is not None:
                 try:
                     _ensure_mould_available(
                         cursor, requested_interval, existing[1],
+                        existing[3],
                         exclude_press_production_id=press_production_id)
                 except ValueError:
                     conn.commit()

@@ -53,11 +53,18 @@ class PressProductionCursor:
             self.conn.transaction_locks.append(lock)
             self.result = [(0,)]
         elif 'FROM dbo.PressProduction AS assigned WITH' in sql:
-            resource_id, excluded_id = args
             is_mould = 'assigned.MouldID=?' in sql
+            if 'lot.ProdDate=?' in sql:
+                resource_id, production_date, excluded_id = args
+            else:
+                resource_id, excluded_id = args
+                production_date = None
             self.result = []
             for row in self.conn.press_rows.values():
                 if row.get('ReleasedAt') is not None or row['PressProductionID'] == (excluded_id or 0):
+                    continue
+                if (production_date is not None
+                        and row.get('ProductionDate', self.conn.production_date) != production_date):
                     continue
                 if (row.get('MouldID') if is_mould else row.get('MachineCode')) != resource_id:
                     continue

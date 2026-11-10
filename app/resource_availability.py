@@ -1,4 +1,4 @@
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from app.production_clock import read_day_start_time, production_clock_datetime
 
 
@@ -19,14 +19,14 @@ def _resolve_boundary(value, production_date, day_start_time):
 def resolve_effective_interval(production_date, day_start_time,
                                assignment_start, assignment_end,
                                lot_start, lot_end):
-    start = _resolve_boundary(
-        assignment_start if assignment_start is not None else lot_start,
-        production_date, day_start_time)
-    end = _resolve_boundary(
-        assignment_end if assignment_end is not None else lot_end,
-        production_date, day_start_time)
+    start_value = assignment_start if assignment_start is not None else lot_start
+    end_value = assignment_end if assignment_end is not None else lot_end
+    start = _resolve_boundary(start_value, production_date, day_start_time)
+    end = _resolve_boundary(end_value, production_date, day_start_time)
     if start is None:
         raise ValueError('Production interval has no resolvable start time.')
+    if end is not None and not isinstance(end_value, datetime) and end < start:
+        end += timedelta(days=1)
     if end is not None and end <= start:
         raise ValueError('Production interval end must be later than its start.')
     return start, end
@@ -38,11 +38,22 @@ def _format_interval(start, end):
 
 
 def find_assignment_conflict(cursor, resource_type, resource_id, requested_interval,
-                             exclude_press_production_id=None):
+                             exclude_press_production_id=None,
+                             requested_production_date=None):
+    if isinstance(requested_production_date, datetime):
+        requested_production_date = requested_production_date.date()
+    if not isinstance(requested_production_date, date):
+        raise ValueError('Production Lot has an invalid Production Date.')
     if resource_type == 'press':
         predicate = 'assigned.MachineCode=?'
+        date_filter = 'AND lot.ProdDate=?'
+        parameters = [resource_id, requested_production_date,
+                      exclude_press_production_id]
     elif resource_type == 'mould':
         predicate = 'assigned.MouldID=?'
+        date_filter = 'AND lot.ProdDate=?'
+        parameters = [resource_id, requested_production_date,
+                      exclude_press_production_id]
     else:
         raise ValueError('Unknown production resource type.')
 
@@ -63,9 +74,10 @@ def find_assignment_conflict(cursor, resource_type, resource_id, requested_inter
         ) AS day_rule
         WHERE lot.IsActive=1 AND assigned.ReleasedAt IS NULL
           AND {predicate}
+          {date_filter}
           AND assigned.PressProductionID<>COALESCE(?,0)
         ORDER BY assigned.PressProductionID''',
-        resource_id, exclude_press_production_id)
+        *parameters)
     requested_start, requested_end = requested_interval
     for (assignment_id, lot_no, production_date, assignment_start, assignment_end,
          lot_start, lot_end, day_start_time) in cursor.fetchall():
@@ -119,6 +131,7 @@ def validate_lot_resource_availability(cursor, production_id, production_date,
             if resource_id is None:
                 continue
             reason = find_assignment_conflict(
-                cursor, resource_type, resource_id, interval, assignment_id)
+                cursor, resource_type, resource_id, interval, assignment_id,
+                production_date)
             if reason:
                 raise ValueError(reason)

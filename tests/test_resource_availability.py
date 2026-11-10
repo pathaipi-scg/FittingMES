@@ -16,10 +16,15 @@ class AssignmentCursor:
         self.result = []
 
     def execute(self, query, *args):
-        resource_id, excluded_id = args
+        if 'lot.ProdDate=?' in query:
+            resource_id, production_date, excluded_id = args
+        else:
+            resource_id, excluded_id = args
+            production_date = None
         self.result = [
             row[:8] for row in self.assignments
             if row[8] == resource_id and row[0] != (excluded_id or 0)
+            and (production_date is None or row[2] == production_date)
         ]
 
     def fetchall(self):
@@ -38,11 +43,12 @@ class LotUpdateCursor:
         elif 'SELECT TOP (1) DayStartTime' in query:
             self.result = [(DAY_START,)]
         else:
-            resource_id, excluded_id = args
+            resource_id, production_date, excluded_id = args
             self.result = [
                 row[:8] for row in self.conflicts
                 if row[0] != (excluded_id or 0)
                 and row[8] == resource_id
+                and row[2] == production_date
             ]
 
     def fetchone(self):
@@ -101,12 +107,92 @@ class ResourceAvailabilityTests(unittest.TestCase):
                                        time(16), time(1)),
             (datetime(2026, 11, 7, 16), datetime(2026, 11, 8, 1)))
 
+    def test_end_time_after_day_start_rolls_forward_for_overnight_run(self):
+        self.assertEqual(
+            resolve_effective_interval(DAY, DAY_START, None, None,
+                                       time(22), time(6, 30)),
+            (datetime(2026, 11, 7, 22), datetime(2026, 11, 8, 6, 30)))
+
+    def test_previous_day_unreleased_assignment_does_not_conflict(self):
+        cursor = AssignmentCursor([assignment(
+            1, 'I02690901', date(2026, 11, 6), None, None,
+            time(8), time(16), resource_id=9)])
+        self.assertIsNone(find_assignment_conflict(
+            cursor, 'mould', 9,
+            (datetime(2026, 11, 7, 8), datetime(2026, 11, 7, 16)),
+            requested_production_date=DAY))
+
+    def test_previous_day_missing_or_invalid_times_do_not_conflict(self):
+        for start, end, lot_start, lot_end in (
+                (None, None, None, None),
+                (datetime(2026, 9, 27, 13), None, time(20), time(22))):
+            with self.subTest(start=start, end=end):
+                cursor = AssignmentCursor([assignment(
+                    1, 'I02690901', date(2026, 9, 14), start, end,
+                    lot_start, lot_end, resource_id=9)])
+                self.assertIsNone(find_assignment_conflict(
+                    cursor, 'mould', 9,
+                    (datetime(2026, 11, 7, 16), datetime(2026, 11, 8, 1)),
+                    requested_production_date=DAY))
+
+    def test_previous_day_unreleased_press_with_unresolved_times_does_not_conflict(self):
+        for start, end, lot_start, lot_end in (
+                (None, None, None, None),
+                (datetime(2026, 9, 27, 13), None, time(20), time(22))):
+            with self.subTest(start=start, end=end):
+                cursor = AssignmentCursor([assignment(
+                    1, 'I02690901', date(2026, 9, 14), start, end,
+                    lot_start, lot_end, resource_id='F7')])
+                self.assertIsNone(find_assignment_conflict(
+                    cursor, 'press', 'F7',
+                    (datetime(2026, 11, 9, 8), datetime(2026, 11, 9, 19)),
+                    requested_production_date=date(2026, 11, 9)))
+
+    def test_same_day_unresolved_press_assignment_still_blocks(self):
+        production_day = date(2026, 11, 9)
+        cursor = AssignmentCursor([assignment(
+            1, 'TESTMR2001', production_day, None, None, None, None,
+            resource_id='F7')])
+        reason = find_assignment_conflict(
+            cursor, 'press', 'F7',
+            (datetime(2026, 11, 9, 16), datetime(2026, 11, 9, 18)),
+            requested_production_date=production_day)
+        self.assertIn('invalid or unresolved production interval', reason)
+
+    def test_same_day_missing_or_invalid_times_still_block(self):
+        cursor = AssignmentCursor([assignment(
+            1, 'TESTMR2001', DAY, None, None, None, None, resource_id=9)])
+        reason = find_assignment_conflict(
+            cursor, 'mould', 9,
+            (datetime(2026, 11, 7, 16), datetime(2026, 11, 8, 1)),
+            requested_production_date=DAY)
+        self.assertIn('invalid or unresolved production interval', reason)
+
+    def test_mould_can_be_reused_after_previous_assignment_ends(self):
+        cursor = AssignmentCursor([assignment(
+            1, 'I02690901', DAY, None, None, time(8), time(12),
+            resource_id=9)])
+        self.assertIsNone(find_assignment_conflict(
+            cursor, 'mould', 9,
+            (datetime(2026, 11, 7, 12), datetime(2026, 11, 7, 16)),
+            requested_production_date=DAY))
+
+    def test_invalid_historical_times_remain_blocked(self):
+        cursor = AssignmentCursor([assignment(
+            1, 'I02690901', DAY, None, None, None, None, resource_id=9)])
+        reason = find_assignment_conflict(
+            cursor, 'mould', 9,
+            (datetime(2026, 11, 7, 12), datetime(2026, 11, 7, 16)),
+            requested_production_date=DAY)
+        self.assertIn('invalid or unresolved production interval', reason)
+
     def test_adjacent_assignment_does_not_conflict(self):
         cursor = AssignmentCursor([assignment(
             1, 'I02691112', DAY, None, None, time(8), time(16))])
         reason = find_assignment_conflict(
             cursor, 'press', 'F1',
-            (datetime(2026, 11, 7, 16), datetime(2026, 11, 8, 1)))
+            (datetime(2026, 11, 7, 16), datetime(2026, 11, 8, 1)),
+            requested_production_date=DAY)
         self.assertIsNone(reason)
 
     def test_overlapping_press_conflicts_across_shifts_and_lots(self):
@@ -114,7 +200,8 @@ class ResourceAvailabilityTests(unittest.TestCase):
             1, 'I02691112', DAY, None, None, time(8), time(16))])
         reason = find_assignment_conflict(
             cursor, 'press', 'F1',
-            (datetime(2026, 11, 7, 15), datetime(2026, 11, 7, 18)))
+            (datetime(2026, 11, 7, 15), datetime(2026, 11, 7, 18)),
+            requested_production_date=DAY)
         self.assertIn('Lot I02691112', reason)
 
     def test_mould_conflicts_across_different_press_machines(self):
@@ -122,15 +209,37 @@ class ResourceAvailabilityTests(unittest.TestCase):
             1, 'I02691112', DAY, None, None, time(8), time(12), resource_id=9)])
         reason = find_assignment_conflict(
             cursor, 'mould', 9,
-            (datetime(2026, 11, 7, 11), datetime(2026, 11, 7, 15)))
+            (datetime(2026, 11, 7, 11), datetime(2026, 11, 7, 15)),
+            requested_production_date=DAY)
         self.assertIn('Lot I02691112', reason)
 
-    def test_ongoing_assignment_conflicts_with_later_request(self):
+    def test_overnight_lot_interval_stays_with_its_production_day(self):
+        cursor = AssignmentCursor([assignment(
+            1, 'I02691112', DAY, None, None, time(16), time(1),
+            resource_id=9)])
+        reason = find_assignment_conflict(
+            cursor, 'mould', 9,
+            (datetime(2026, 11, 7, 23), datetime(2026, 11, 8, 1)),
+            requested_production_date=DAY)
+        self.assertIn('Lot I02691112', reason)
+
+    def test_overnight_press_assignment_stays_with_its_production_day(self):
+        cursor = AssignmentCursor([assignment(
+            1, 'I02691112', DAY, None, None, time(19), time(4),
+            resource_id='F7')])
+        reason = find_assignment_conflict(
+            cursor, 'press', 'F7',
+            (datetime(2026, 11, 8, 1), datetime(2026, 11, 8, 3)),
+            requested_production_date=DAY)
+        self.assertIn('Lot I02691112', reason)
+
+    def test_ongoing_assignment_conflicts_within_production_day(self):
         cursor = AssignmentCursor([assignment(
             1, 'I02691112', DAY, None, None, time(8), None)])
         reason = find_assignment_conflict(
             cursor, 'press', 'F1',
-            (datetime(2026, 11, 8, 8), datetime(2026, 11, 8, 12)))
+            (datetime(2026, 11, 7, 16), datetime(2026, 11, 7, 18)),
+            requested_production_date=DAY)
         self.assertIn('ongoing', reason)
 
     def test_edit_excludes_its_own_assignment(self):
@@ -138,7 +247,7 @@ class ResourceAvailabilityTests(unittest.TestCase):
             1, 'I02691112', DAY, None, None, time(8), time(12))])
         reason = find_assignment_conflict(
             cursor, 'press', 'F1',
-            (datetime(2026, 11, 7, 8), datetime(2026, 11, 7, 12)), 1)
+            (datetime(2026, 11, 7, 8), datetime(2026, 11, 7, 12)), 1, DAY)
         self.assertIsNone(reason)
 
     def test_changing_lot_times_rejects_overlap_with_inherited_assignment(self):
