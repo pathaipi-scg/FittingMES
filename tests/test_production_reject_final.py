@@ -247,9 +247,9 @@ class ProductionRejectCalTests(unittest.TestCase):
             result["press_calculations"],
             [
                 dict(press_production_id=101, machine_code="F10",
-                     raw_reject_qty=6),
+                     raw_reject_qty=6, attribution_ambiguous=False),
                 dict(press_production_id=102, machine_code="F11",
-                     raw_reject_qty=0),
+                     raw_reject_qty=0, attribution_ambiguous=False),
             ],
         )
         self.assertEqual(result["raw_total"], 6)
@@ -274,6 +274,33 @@ class ProductionRejectCalTests(unittest.TestCase):
 
         self.assertEqual(result["press_calculations"][0]["raw_reject_qty"], 7)
         self.assertEqual(result["raw_total"], 7)
+
+    def test_cal_does_not_duplicate_machine_reject_across_repeated_press_episodes(self):
+        connection = FinalConnection()
+        connection.press_sources = [
+            dict(PressProductionID=101, MachineCode="F10", SourceEquipmentID=71),
+            dict(PressProductionID=102, MachineCode="F10", SourceEquipmentID=71),
+        ]
+        connection.raw = [
+            dict(ProductionID=13, ProductionDate=DAY, ShiftID=11,
+                 SourceEquipmentID=71, SourceScopeCode="PRESS",
+                 RejectReasonID=301, Qty=6),
+        ]
+
+        result = read_production_reject_cal(
+            connection.cursor_instance, 13, expected_date=DAY
+        )
+
+        self.assertEqual(result["raw_total"], 6)
+        self.assertEqual(
+            result["press_calculations"],
+            [
+                dict(press_production_id=101, machine_code="F10",
+                     raw_reject_qty=None, attribution_ambiguous=True),
+                dict(press_production_id=102, machine_code="F10",
+                     raw_reject_qty=None, attribution_ambiguous=True),
+            ],
+        )
 
     def test_cal_returns_zero_reject_when_press_has_no_saved_entries(self):
         connection = FinalConnection()
@@ -348,9 +375,9 @@ class ProductionRejectCalTests(unittest.TestCase):
             result["press_calculations"],
             [
                 dict(press_production_id=101, machine_code="F10",
-                     raw_reject_qty=3),
+                     raw_reject_qty=3, attribution_ambiguous=False),
                 dict(press_production_id=102, machine_code="F11",
-                     raw_reject_qty=2),
+                     raw_reject_qty=2, attribution_ambiguous=False),
             ],
         )
         raw_query = next(
@@ -659,9 +686,9 @@ class ProductionRejectRouteTests(unittest.TestCase):
             payload["press_calculations"],
             [
                 dict(press_production_id=101, machine_code="F10",
-                     raw_reject_qty="3"),
+                     raw_reject_qty="3", attribution_ambiguous=False),
                 dict(press_production_id=102, machine_code="F11",
-                     raw_reject_qty="2"),
+                     raw_reject_qty="2", attribution_ambiguous=False),
             ],
         )
         self.assertEqual(payload["total_wet_reject"], 20)
@@ -670,6 +697,32 @@ class ProductionRejectRouteTests(unittest.TestCase):
             query.lstrip().startswith(("INSERT ", "UPDATE ", "DELETE "))
             for query, _ in connection.calls
         ))
+
+    def test_cal_route_marks_repeated_press_episode_raw_totals_unattributable(self):
+        connection = FinalConnection()
+        connection.press_sources = [
+            dict(PressProductionID=101, MachineCode="F10", SourceEquipmentID=71),
+            dict(PressProductionID=102, MachineCode="F10", SourceEquipmentID=71),
+        ]
+        connection.raw = [
+            dict(ProductionID=13, ProductionDate=DAY, ShiftID=11,
+                 SourceEquipmentID=71, LineEquipmentID=61,
+                 RejectReasonID=301, Qty=6),
+        ]
+        with patch("app.main.get_connection", return_value=connection):
+            response = production_reject_cal_route(13, DAY)
+
+        payload = json.loads(response.body)
+        self.assertEqual(payload["raw_total"], 6)
+        self.assertEqual(
+            payload["press_calculations"],
+            [
+                dict(press_production_id=101, machine_code="F10",
+                     raw_reject_qty=None, attribution_ambiguous=True),
+                dict(press_production_id=102, machine_code="F10",
+                     raw_reject_qty=None, attribution_ambiguous=True),
+            ],
+        )
 
     def test_cal_route_returns_only_clear_error_for_stale_raw_reason(self):
         connection = FinalConnection()

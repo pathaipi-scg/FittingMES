@@ -55,6 +55,7 @@ assert.doesNotMatch(html, /Saved RAW Reject by Press|production-reject-press-bre
 assert.match(html, /data-press-production-id="{{ pp\.PressProductionID }}"/);
 assert.match(html, /applyPressCalculations\(result\.press_calculations\)/);
 assert.match(html, /Press Counter\/Curing fields are unavailable; Curing was not changed/);
+assert.match(html, /machine-level RAW REJECT cannot be allocated across multiple production episodes/);
 assert.match(html, /\.press-production-table col:nth-child\(1\)\{width:6%\}/);
 assert.match(html, /\.press-production-table col:nth-child\(2\)\{width:3%\}/);
 assert.match(html, /\.press-production-table col:nth-child\(8\),\.press-production-table col:nth-child\(9\)\{width:5\.6%\}/);
@@ -157,6 +158,24 @@ assert.equal(curingTestRows[0].fields['input[name="curing_qty"]'].value, 'origin
 assert.equal(curingTestRows[1].fields['input[name="curing_qty"]'].value, 'also original');
 assert.match(pressWarnings[0], /F10: Counter is missing or invalid/);
 assert.match(pressWarnings[1], /F11: Saved RAW Reject exceeds Press Counter/);
+const ambiguousEpisodeRows = [
+  pressRow(201, '2100', 'original-1'),
+  pressRow(202, '2090', 'original-2'),
+];
+const applyAmbiguousPressCalculations = vm.runInNewContext(
+  `(() => { ${pressCuringFunction[0]} ${applyPressFunction[0]} return applyPressCalculations; })()`,
+  {document: {querySelectorAll() { return ambiguousEpisodeRows; }}},
+);
+const ambiguousWarnings = applyAmbiguousPressCalculations([
+  {press_production_id: 201, machine_code: 'F10', raw_reject_qty: null,
+    attribution_ambiguous: true},
+  {press_production_id: 202, machine_code: 'F10', raw_reject_qty: null,
+    attribution_ambiguous: true},
+]);
+assert.equal(ambiguousEpisodeRows[0].fields['input[name="curing_qty"]'].value, 'original-1');
+assert.equal(ambiguousEpisodeRows[1].fields['input[name="curing_qty"]'].value, 'original-2');
+assert.equal(ambiguousWarnings.length, 2);
+assert.match(ambiguousWarnings[0], /F10: machine-level RAW REJECT cannot be allocated/);
 
 const scriptMatch = html.match(
   /<script>\s*\(\(\) => \{\s*const form = document\.getElementById\('add-fitting-form'\);[\s\S]*?\}\)\(\);\s*<\/script>/,

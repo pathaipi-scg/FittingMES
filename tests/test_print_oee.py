@@ -97,6 +97,12 @@ class PrintOeeCalculationTests(unittest.TestCase):
         self.assertEqual(result['ActualProductionMinutes'], Decimal('120'))
         self.assertIsNone(result['OEE'])
 
+    def test_ambiguous_press_shift_downtime_is_not_allocated_to_an_episode(self):
+        result = self.calculate(TimeIdentityAmbiguous=True)
+        self.assertFalse(result['Eligible'])
+        self.assertIn('Ambiguous Press/Shift downtime', result['Status'])
+        self.assertIsNone(result['OEE'])
+
     def test_shift_rows_keep_independent_press_intervals_and_summary_values(self):
         first = self.calculate(
             PressProductionID=201, Shift='1', AssignmentShiftCode='1',
@@ -370,6 +376,9 @@ class PrintOeeQueryTests(unittest.TestCase):
         self.assertNotIn('LotEndTime', sql)
         self.assertIn("event.SourceType='MANUAL'", sql)
         self.assertIn("event.TimeType IN ('SETUP','CHANGEOVER','IDLE','CLEAN','BREAKDOWN')", sql)
+        self.assertIn('TimeIdentityAmbiguous', sql)
+        self.assertIn('other.PressProductionID<>pp.PressProductionID', sql)
+        self.assertIn('NOT EXISTS', sql)
         self.assertNotIn('LoggerEvent', sql)
         self.assertEqual(args, (DAY,))
         self.assertTrue(all(statement.lstrip().upper().startswith('SELECT')
@@ -528,6 +537,8 @@ class PrintOeeQueryTests(unittest.TestCase):
     def test_exact_press_shift_isolation_and_unattributed_event(self):
         assignments = [
             row(MachineCode='F7', Shift='1', AssignmentShiftUnknown=False),
+            row(PressProductionID=102, MachineCode='F7', Shift='1',
+                AssignmentShiftUnknown=False),
             row(MachineCode='F7', Shift='2', AssignmentShiftUnknown=False),
             row(MachineCode='F8', Shift='1', AssignmentShiftUnknown=False),
         ]
@@ -544,6 +555,8 @@ class PrintOeeQueryTests(unittest.TestCase):
         self.assertEqual(groups[('F8', '1')]['CategoryMinutes']['ก.1'], Decimal(0))
         self.assertEqual(result['unattributed_count'], 1)
         self.assertEqual(result['unattributed_minutes'], Decimal(8))
+        self.assertEqual(len([group for group in result['groups']
+                              if (group['MachineCode'], group['Shift']) == ('F7', '1')]), 1)
 
     def test_excel_category_table_aligns_machine_order_and_assignment_state(self):
         assignments = [

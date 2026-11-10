@@ -1000,6 +1000,9 @@ async def save_press_production_route_action(request, production_id, press_produ
             press_message=str(exc),
             press_message_type='error', press_form=data)
     except Exception:
+        logging.exception(
+            "Unexpected error saving Press Production for lot %s (assignment %s)",
+            production_id, press_production_id)
         return await run_in_threadpool(
             production_page, request, production_id=production_id,
             press_message='Unable to save Press Production. Please retry.',
@@ -1101,7 +1104,11 @@ def production_reject_cal_route(production_id: int,
                 {
                     "press_production_id": item["press_production_id"],
                     "machine_code": item["machine_code"],
-                    "raw_reject_qty": str(item["raw_reject_qty"]),
+                    "raw_reject_qty": (
+                        str(item["raw_reject_qty"])
+                        if item["raw_reject_qty"] is not None else None
+                    ),
+                    "attribution_ambiguous": item["attribution_ambiguous"],
                 }
                 for item in result["press_calculations"]
             ],

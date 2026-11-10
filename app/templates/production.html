@@ -548,6 +548,12 @@ main>header,main>.panel,main>.error{flex-shrink:0}
     )].map(row => [row.dataset.pressProductionId, row]));
     const warnings = [];
     for (const item of calculations) {
+      if (item.attribution_ambiguous) {
+        warnings.push(
+          `${item.machine_code}: machine-level RAW REJECT cannot be allocated across multiple production episodes; Curing was not changed.`,
+        );
+        continue;
+      }
       const row = rowsById.get(String(item.press_production_id));
       const counter = row?.querySelector('input[name="counter_qty"]');
       const curing = row?.querySelector('input[name="curing_qty"]');

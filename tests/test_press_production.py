@@ -370,6 +370,28 @@ def valid_input(**overrides):
     return data
 
 
+def sequential_assignment_connection():
+    conn = PressProductionConnection()
+    conn.production_id = 85
+    conn.family = 4
+    conn.code = '03'
+    conn.press_code = 'F9'
+    conn.production_date = date(2026, 11, 7)
+    conn.day_start_time = time(8)
+    conn.lot_start_time = time(16)
+    conn.lot_end_time = time(1)
+    conn.moulds[12] = dict(
+        Status='ACTIVE', ProductFamilyID=4, ProductFamily='Special Ridge',
+        ProductCode='03', CurrentReconditionNo=1)
+    conn.press_rows[117] = dict(
+        PressProductionID=117, ProductionID=85, MachineCode='F9',
+        ShiftMasterID=101, MouldID=12, DispatchQty=150, CounterQty=185,
+        CuringQty=161, ProductionDate=conn.production_date,
+        ProductionStartTime=datetime(2026, 11, 7, 8),
+        ProductionEndTime=datetime(2026, 11, 7, 16), ReleasedAt=None)
+    return conn
+
+
 class ReadCursor:
     def __init__(self, result):
         self.result = result
@@ -796,6 +818,83 @@ class PressProductionTests(unittest.TestCase):
         new_id = save_press_production(conn, 7, valid_input(MachineCode='F7'))
         self.assertEqual(conn.press_rows[new_id]['ProductionDate'], conn.production_date)
         self.assertEqual(len(conn.press_rows), 2)
+
+    def test_same_lot_press_shift_allows_adjacent_overnight_assignment(self):
+        conn = sequential_assignment_connection()
+        new_id = save_press_production(conn, 85, valid_input(
+            MachineCode='F9', MouldID='12',
+            ProductionDate='2026-11-07', ProductionStartTime='16:00',
+            ProductionEndTime='01:00'))
+
+        self.assertNotEqual(new_id, 117)
+        self.assertEqual(len(conn.press_rows), 2)
+        self.assertEqual(conn.press_rows[117]['ProductionEndTime'],
+                         datetime(2026, 11, 7, 16))
+        self.assertEqual(conn.press_rows[new_id]['ProductionStartTime'],
+                         datetime(2026, 11, 7, 16))
+        self.assertEqual(conn.press_rows[new_id]['ProductionEndTime'],
+                         datetime(2026, 11, 8, 1))
+        self.assertEqual(conn.press_rows[new_id]['ShiftMasterID'], 101)
+        self.assertEqual(conn.press_rows[new_id]['MouldID'], 12)
+        self.assertEqual((conn.commits, conn.rollbacks), (1, 0))
+
+    def test_same_lot_press_shift_rejects_overlapping_assignment(self):
+        conn = sequential_assignment_connection()
+        with self.assertRaisesRegex(ValueError, 'already assigned for the selected interval'):
+            save_press_production(conn, 85, valid_input(
+                MachineCode='F9', MouldID='12',
+                ProductionDate='2026-11-07', ProductionStartTime='15:00',
+                ProductionEndTime='01:00'))
+
+        self.assertEqual(set(conn.press_rows), {117})
+        self.assertEqual((conn.commits, conn.rollbacks), (0, 1))
+
+    def test_repeated_identical_press_assignment_is_rejected_as_overlap(self):
+        conn = sequential_assignment_connection()
+        with self.assertRaisesRegex(ValueError, 'already assigned for the selected interval'):
+            save_press_production(conn, 85, valid_input(
+                MachineCode='F9', MouldID='12',
+                ProductionDate='2026-11-07', ProductionStartTime='08:00',
+                ProductionEndTime='16:00'))
+
+        self.assertEqual(set(conn.press_rows), {117})
+        self.assertEqual((conn.commits, conn.rollbacks), (0, 1))
+
+    def test_concurrent_same_press_shift_sequential_assignments_both_succeed(self):
+        first = sequential_assignment_connection()
+        second = sequential_assignment_connection()
+        for attribute in ('press_rows', 'usage_rows', 'time_events', 'logger_events'):
+            setattr(second, attribute, getattr(first, attribute))
+        barrier = threading.Barrier(2)
+        outcomes = []
+        requests = (
+            ('16:00', '20:00'),
+            ('20:00', '01:00'),
+        )
+
+        def allocate(connection, start, end):
+            barrier.wait()
+            try:
+                save_press_production(connection, 85, valid_input(
+                    MachineCode='F9', MouldID='12',
+                    ProductionDate='2026-11-07',
+                    ProductionStartTime=start, ProductionEndTime=end))
+                outcomes.append('saved')
+            except ValueError:
+                outcomes.append('conflict')
+
+        threads = [
+            threading.Thread(target=allocate, args=(first, *requests[0])),
+            threading.Thread(target=allocate, args=(second, *requests[1])),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+
+        self.assertFalse(any(thread.is_alive() for thread in threads))
+        self.assertCountEqual(outcomes, ['saved', 'saved'])
+        self.assertEqual(len(first.press_rows), 3)
 
     def test_released_press_can_be_reassigned_to_another_lot_in_same_shift(self):
         conn = PressProductionConnection()
@@ -2018,6 +2117,35 @@ class PressProductionTests(unittest.TestCase):
 
 
 class PressProductionRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unexpected_save_error_is_logged_and_hidden_from_browser(self):
+        from fastapi.responses import HTMLResponse
+        from app import main
+
+        payload = {'production_date': DAY.isoformat(), 'shift_code': '1',
+                   'machine_code': 'F2', 'mould_id': '4'}
+        req = request()
+
+        async def read_form():
+            return payload
+
+        async def dispatch(func, *args, **kwargs):
+            if func is main.save_press_production_change:
+                raise RuntimeError('internal database exception detail')
+            return HTMLResponse(kwargs['press_message'])
+
+        req.form = read_form
+        with patch('app.main.run_in_threadpool', side_effect=dispatch), \
+             self.assertLogs(level='ERROR') as captured:
+            response = await save_press_production_route_action(req, 7)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.body.decode(),
+                         'Unable to save Press Production. Please retry.')
+        self.assertNotIn('internal database exception detail', response.body.decode())
+        self.assertTrue(any('Traceback (most recent call last)' in message
+                            and 'internal database exception detail' in message
+                            for message in captured.output))
+
     async def test_operator_save_persists_logger_guide_values_without_changing_logger(self):
         from app.main import save_press_production_route_action
 

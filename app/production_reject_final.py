@@ -131,11 +131,27 @@ def _read_press_reject_totals(cursor, production_id, production_date):
         int(item["SourceEquipmentID"]): int(item["RawRejectQty"] or 0)
         for item in rows(cursor)
     }
+    episodes_by_machine = {}
+    for press in presses:
+        machine_code = str(press["MachineCode"]).strip().upper()
+        episodes_by_machine.setdefault(machine_code, []).append(press)
+
     return [
         {
             "press_production_id": int(press["PressProductionID"]),
             "machine_code": str(press["MachineCode"]),
-            "raw_reject_qty": raw_by_source.get(int(press["SourceEquipmentID"]), 0),
+            "raw_reject_qty": (
+                raw_by_source.get(int(press["SourceEquipmentID"]), 0)
+                if len(episodes_by_machine[
+                    str(press["MachineCode"]).strip().upper()
+                ]) == 1
+                else None
+            ),
+            "attribution_ambiguous": (
+                len(episodes_by_machine[
+                    str(press["MachineCode"]).strip().upper()
+                ]) > 1
+            ),
         }
         for press in presses
     ]
