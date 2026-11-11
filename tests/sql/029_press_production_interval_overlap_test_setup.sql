@@ -41,8 +41,8 @@ BEGIN TRY
 
     INSERT INTO dbo.ProductionLot (ProductionID, LotNo, ProdDate, IsActive)
     VALUES
-        (990001, N'TEST028_HIST_INVALID', '20260903', 1),
-        (990002, N'TEST028_HIST_OVERLAP', '20260904', 1);
+        (990001, N'TEST029_HIST_INVALID', '20260903', 1),
+        (990002, N'TEST029_HIST_OVERLAP', '20260904', 1);
 
     INSERT INTO dbo.PressProduction
         (ProductionID, MachineCode, MouldID, ShiftMasterID, ReleasedAt,

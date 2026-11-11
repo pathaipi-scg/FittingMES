@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 
 from app.lots import lock_lots, rows
@@ -6,6 +6,9 @@ from app.production_clock import read_day_start_time, resolve_run_times, clock_d
 from app.resource_availability import (find_assignment_conflict,
                                        read_lot_boundaries,
                                        resolve_effective_interval)
+from app.shift_schedule import (period_contains_interval, period_interval,
+                                resolve_period_interval)
+from app.shift_settings import read_effective_cutoff
 
 
 def read_eligible_presses(cursor, product_family_id, product_code, production_date=None,
@@ -16,8 +19,7 @@ def read_eligible_presses(cursor, product_family_id, product_code, production_da
     if shift_code is not None:
         if not _shift_schema_available(cursor):
             raise ValueError('Shift-aware Press Production requires database migration 027.')
-        cursor.execute('''SELECT id FROM dbo.ShiftMaster
-            WHERE ShiftCode=? AND IsActive=1''', str(shift_code).strip())
+        _query_active_shift(cursor, str(shift_code).strip(), production_date)
         shift = cursor.fetchone()
         if not shift:
             raise ValueError('Choose an active Shift.')
@@ -48,11 +50,69 @@ def read_eligible_presses(cursor, product_family_id, product_code, production_da
     return presses
 
 
-def read_active_shifts(cursor):
+def read_active_shifts(cursor, production_date=None):
+    if production_date is not None and _period_schema_available(cursor):
+        cursor.execute('''SELECT master.id AS ShiftMasterID,version.ShiftCode,
+                version.ShiftName,version.id AS ShiftMasterVersionID
+            FROM dbo.ShiftMaster AS master
+            CROSS APPLY (
+                SELECT TOP (1) v.id,v.ShiftCode,v.ShiftName,v.IsActive
+                FROM dbo.ShiftMasterVersion AS v
+                WHERE v.ShiftMasterID=master.id AND v.EffectiveFromDate<=?
+                ORDER BY v.EffectiveFromDate DESC,v.VersionNumber DESC
+            ) AS version
+            WHERE version.IsActive=1
+            ORDER BY version.ShiftCode''', production_date)
+        return rows(cursor)
     cursor.execute('''SELECT ShiftCode, ShiftName
         FROM dbo.ShiftMaster
         WHERE IsActive=1
         ORDER BY ShiftCode''')
+    return rows(cursor)
+
+
+def _period_schema_available(cursor):
+    cursor.execute("""SELECT CASE WHEN COL_LENGTH(
+        N'dbo.PressProduction', N'ShiftPeriodID') IS NOT NULL
+        AND OBJECT_ID(N'dbo.ShiftPeriodMaster', N'U') IS NOT NULL
+        AND OBJECT_ID(N'dbo.ShiftPeriodVersion', N'U') IS NOT NULL
+        AND OBJECT_ID(N'dbo.ShiftMasterVersion', N'U') IS NOT NULL
+        THEN 1 ELSE 0 END""")
+    row = cursor.fetchone()
+    return bool(row and row[0])
+
+
+def _require_period_schema(cursor):
+    if not _period_schema_available(cursor):
+        raise ValueError('Shift Period assignments require database migration 029.')
+
+
+def read_active_periods(cursor, production_date):
+    if not _period_schema_available(cursor):
+        return []
+    cursor.execute('''SELECT period.id AS ShiftPeriodID,period.ShiftMasterID,
+            shift_version.id AS ShiftMasterVersionID,shift_version.ShiftCode,
+            period_version.id AS ShiftPeriodVersionID,period_version.PeriodLabel,
+            period_version.DisplayOrder,period_version.StartTime,period_version.EndTime
+        FROM dbo.ShiftPeriodMaster AS period
+        CROSS APPLY (
+            SELECT TOP (1) version.id,version.PeriodLabel,version.DisplayOrder,
+                version.StartTime,version.EndTime,version.IsActive
+            FROM dbo.ShiftPeriodVersion AS version
+            WHERE version.ShiftPeriodID=period.id
+              AND version.EffectiveFromDate<=?
+            ORDER BY version.EffectiveFromDate DESC,version.VersionNumber DESC
+        ) AS period_version
+        CROSS APPLY (
+            SELECT TOP (1) version.id,version.ShiftCode,version.IsActive
+            FROM dbo.ShiftMasterVersion AS version
+            WHERE version.ShiftMasterID=period.ShiftMasterID
+              AND version.EffectiveFromDate<=?
+            ORDER BY version.EffectiveFromDate DESC,version.VersionNumber DESC
+        ) AS shift_version
+        WHERE period_version.IsActive=1 AND shift_version.IsActive=1
+        ORDER BY shift_version.ShiftCode,period_version.DisplayOrder,period.id''',
+        production_date, production_date)
     return rows(cursor)
 
 
@@ -71,8 +131,7 @@ def read_eligible_moulds(cursor, product_family_id, product_code, production_dat
     if shift_code is not None:
         if not _shift_schema_available(cursor):
             raise ValueError('Shift-aware Press Production requires database migration 027.')
-        cursor.execute('''SELECT id FROM dbo.ShiftMaster
-            WHERE ShiftCode=? AND IsActive=1''', str(shift_code).strip())
+        _query_active_shift(cursor, str(shift_code).strip(), production_date)
         shift = cursor.fetchone()
         if not shift:
             raise ValueError('Choose an active Shift.')
@@ -106,18 +165,31 @@ def read_eligible_moulds(cursor, product_family_id, product_code, production_dat
 
 def read_press_production(cursor, production_id):
     has_shift_schema = _shift_schema_available(cursor)
+    has_period_schema = _period_schema_available(cursor)
     shift_fields = (
-        'pp.ShiftMasterID, shift.ShiftCode,'
+        ('pp.ShiftMasterID, COALESCE(pp.ShiftCodeSnapshot,shift.ShiftCode) AS ShiftCode,'
+         if has_period_schema else 'pp.ShiftMasterID, shift.ShiftCode,')
         if has_shift_schema else
         'CAST(NULL AS bigint) AS ShiftMasterID, CAST(NULL AS varchar(10)) AS ShiftCode,'
+    )
+    period_fields = (
+        'pp.ShiftPeriodID,pp.PeriodLabelSnapshot,pp.PeriodStartTimeSnapshot,pp.PeriodEndTimeSnapshot,'
+        if has_period_schema else
+        'CAST(NULL AS bigint) AS ShiftPeriodID,CAST(NULL AS nvarchar(100)) AS PeriodLabelSnapshot,'
+        'CAST(NULL AS time(0)) AS PeriodStartTimeSnapshot,CAST(NULL AS time(0)) AS PeriodEndTimeSnapshot,'
     )
     shift_join = (
         'LEFT JOIN dbo.ShiftMaster AS shift ON shift.id=pp.ShiftMasterID'
         if has_shift_schema else ''
     )
     shift_group = (
-        'pp.ShiftMasterID, shift.ShiftCode,'
+        ('pp.ShiftMasterID,pp.ShiftCodeSnapshot,shift.ShiftCode,'
+         if has_period_schema else 'pp.ShiftMasterID,shift.ShiftCode,')
         if has_shift_schema else ''
+    )
+    period_group = (
+        'pp.ShiftPeriodID,pp.PeriodLabelSnapshot,pp.PeriodStartTimeSnapshot,pp.PeriodEndTimeSnapshot,'
+        if has_period_schema else ''
     )
     later_shift_filter = (
         'AND (pp.ShiftMasterID IS NULL '
@@ -152,7 +224,8 @@ def read_press_production(cursor, production_id):
         if has_shift_schema else
         'CAST(1 AS bit) AS EquipmentTimeIdentityAmbiguous,'
     )
-    cursor.execute(f'''SELECT pp.PressProductionID, pp.ProductionID, {shift_fields} pp.MachineCode,
+    cursor.execute(f'''SELECT pp.PressProductionID, pp.ProductionID, {shift_fields}
+            {period_fields} pp.MachineCode,
             {time_identity_ambiguity}
             equipment.EquipmentName AS MachineName, pp.DispatchQty, pp.CounterQty,
             pp.CuringQty, pp.MouldID, mould.MouldNo, mould.MouldName,
@@ -206,6 +279,7 @@ def read_press_production(cursor, production_id):
         WHERE pp.ProductionID=?
                 GROUP BY pp.PressProductionID, pp.ProductionID, pp.MachineCode, equipment.EquipmentName,
                         {shift_group}
+                        {period_group}
                         pp.DispatchQty, pp.CounterQty, pp.CuringQty, pp.MouldID, mould.MouldNo, mould.MouldName,
                         pp.ProductionStartTime, pp.ProductionEndTime, pp.Remark, pp.CreatedAt, pp.UpdatedAt,
                         pp.ReleasedAt, pp.ReleasedBy,
@@ -365,10 +439,14 @@ def _save_manual_minutes(cursor, production_id, machine_code, shift_code,
 
 
 def validate_press_input(data, require_mould=True, production_date=None, day_start_time=None,
-                         allow_incomplete=False):
+                         allow_incomplete=False, require_period=False,
+                         period_config=None, cutoff_time=None):
     shift_code = str(data.get('ShiftCode') or '').strip()
     if not shift_code or len(shift_code) > 10:
         raise ValueError('Choose an active Shift.')
+    period_text = str(data.get('ShiftPeriodID') or '').strip()
+    if require_period and (not period_text or not period_text.isdigit()):
+        raise ValueError('Choose an active Shift Period.')
     machine_code = str(data.get('MachineCode') or '').strip()
     if not machine_code or len(machine_code) > 20:
         raise ValueError('Choose an eligible Press.')
@@ -393,10 +471,18 @@ def validate_press_input(data, require_mould=True, production_date=None, day_sta
         raise ValueError('Remark must be at most 2000 characters.')
     if production_date is None or day_start_time is None:
         raise ValueError('Production Date is required for Start and End times.')
-    start_time, end_time = resolve_run_times(
-        production_date, data.get('ProductionStartTime'), data.get('ProductionEndTime'), day_start_time,
-        allow_missing=allow_incomplete)
-    return dict(ShiftCode=shift_code, MachineCode=machine_code, MouldID=mould_id,
+    if period_config:
+        start_time, end_time = resolve_period_interval(
+            production_date, period_config['StartTime'], period_config['EndTime'],
+            data.get('ProductionStartTime'), data.get('ProductionEndTime'),
+            cutoff_time or day_start_time)
+    else:
+        start_time, end_time = resolve_run_times(
+            production_date, data.get('ProductionStartTime'), data.get('ProductionEndTime'),
+            cutoff_time or day_start_time, allow_missing=allow_incomplete)
+    return dict(ShiftCode=shift_code,
+                ShiftPeriodID=int(period_text) if period_text.isdigit() else None,
+                MachineCode=machine_code, MouldID=mould_id,
                 DispatchQty=_optional_quantity(data.get('DispatchQty'), 'Dispatch Qty'),
                 CounterQty=counter, CuringQty=curing,
                 ProductionStartTime=start_time, ProductionEndTime=end_time,
@@ -415,6 +501,24 @@ def _require_active_lot(cursor, production_id):
     return found[1], found[2], found[3]
 
 
+def _query_active_shift(cursor, shift_code, production_date=None):
+    if production_date is not None and _period_schema_available(cursor):
+        cursor.execute('''SELECT master.id
+            FROM dbo.ShiftMaster AS master
+            CROSS APPLY (
+                SELECT TOP (1) version.ShiftCode,version.IsActive
+                FROM dbo.ShiftMasterVersion AS version
+                WHERE version.ShiftMasterID=master.id
+                  AND version.EffectiveFromDate<=?
+                ORDER BY version.EffectiveFromDate DESC,version.VersionNumber DESC
+            ) AS current_version
+            WHERE current_version.ShiftCode=? AND current_version.IsActive=1''',
+            production_date, shift_code)
+    else:
+        cursor.execute('''SELECT id FROM dbo.ShiftMaster
+            WHERE ShiftCode=? AND IsActive=1''', shift_code)
+
+
 def _require_shift_schema(cursor):
     if not _shift_schema_available(cursor):
         raise ValueError('Shift-aware Press Production requires database migration 027.')
@@ -427,6 +531,34 @@ def _resolve_active_shift(cursor, shift_code):
     if not shift:
         raise ValueError('Choose an active Shift.')
     return shift[0]
+
+
+def _resolve_assignment_period(cursor, period_id, shift_code, production_date):
+    cursor.execute('''SELECT period.ShiftMasterID,shift_version.id,shift_version.ShiftCode,
+            period_version.id,period_version.PeriodLabel,period_version.StartTime,
+            period_version.EndTime
+        FROM dbo.ShiftPeriodMaster AS period
+        CROSS APPLY (
+            SELECT TOP (1) v.id,v.PeriodLabel,v.StartTime,v.EndTime,v.IsActive
+            FROM dbo.ShiftPeriodVersion AS v
+            WHERE v.ShiftPeriodID=period.id AND v.EffectiveFromDate<=?
+            ORDER BY v.EffectiveFromDate DESC,v.VersionNumber DESC
+        ) AS period_version
+        CROSS APPLY (
+            SELECT TOP (1) v.id,v.ShiftCode,v.IsActive
+            FROM dbo.ShiftMasterVersion AS v
+            WHERE v.ShiftMasterID=period.ShiftMasterID AND v.EffectiveFromDate<=?
+            ORDER BY v.EffectiveFromDate DESC,v.VersionNumber DESC
+        ) AS shift_version
+        WHERE period.id=? AND period_version.IsActive=1
+          AND shift_version.IsActive=1 AND shift_version.ShiftCode=?''',
+        production_date, production_date, period_id, shift_code)
+    found = cursor.fetchone()
+    if not found:
+        raise ValueError('Choose an active Shift Period belonging to the selected Shift.')
+    return dict(ShiftMasterID=found[0], ShiftMasterVersionID=found[1],
+                ShiftCode=found[2], ShiftPeriodVersionID=found[3],
+                PeriodLabel=found[4], StartTime=found[5], EndTime=found[6])
 
 
 def _read_shift_code(cursor, shift_master_id):
@@ -613,17 +745,40 @@ def save_press_production(conn, production_id, data, press_production_id=None):
             if posted_date != production_date:
                 raise ValueError('Production Date does not match the selected Lot.')
         day_start_time = read_day_start_time(cursor, production_date)
+        has_period_schema = _period_schema_available(cursor)
+        cutoff_config = (
+            read_effective_cutoff(cursor, production_date, day_start_time)
+            if has_period_schema else
+            dict(ProductionDateCutoffVersionID=None, CutoffTime=day_start_time)
+        )
         validation_data = data
         if downtime_only:
             validation_data = dict(data)
             for field in ('MouldID', 'DispatchQty', 'CounterQty', 'CuringQty',
-                          'ProductionStartTime', 'ProductionEndTime', 'Remark'):
+                          'ProductionStartTime', 'ProductionEndTime', 'Remark',
+                          'ShiftPeriodID'):
                 validation_data.pop(field, None)
+        period_config = None
+        if (has_period_schema and not downtime_only
+                and validation_data.get('ShiftPeriodID') not in (None, '')):
+            period_config = _resolve_assignment_period(
+                cursor, int(validation_data['ShiftPeriodID']),
+                validation_data.get('ShiftCode'), production_date)
         values = validate_press_input(validation_data, require_mould=(
                           press_production_id is None and not downtime_only),
                           production_date=production_date, day_start_time=day_start_time,
-                          allow_incomplete=True)
-        shift_master_id = _resolve_active_shift(cursor, values['ShiftCode'])
+                          allow_incomplete=True,
+                          require_period=(has_period_schema and press_production_id is None
+                                          and not downtime_only),
+                          period_config=period_config,
+                          cutoff_time=cutoff_config['CutoffTime'])
+        if period_config:
+            shift_master_id = period_config['ShiftMasterID']
+            values['ShiftCode'] = period_config['ShiftCode']
+        else:
+            shift_master_id = _resolve_active_shift(cursor, values['ShiftCode'])
+        values['PeriodConfig'] = period_config
+        values['CutoffConfig'] = cutoff_config
         if not downtime_only:
             _validate_press(cursor, product_family_id, product_code, values['MachineCode'])
 
@@ -644,21 +799,44 @@ def save_press_production(conn, production_id, data, press_production_id=None):
                 cursor, requested_interval, values['MouldID'], production_date)
             current_recondition_no = _lock_and_validate_mould(
                 cursor, product_family_id, product_code, values['MouldID'])
-            cursor.execute('''INSERT INTO dbo.PressProduction
-                (ProductionID,MachineCode,ShiftMasterID,DispatchQty,CounterQty,CuringQty,MouldID,
-                 ProductionStartTime,ProductionEndTime,Remark)
-                OUTPUT INSERTED.PressProductionID VALUES (?,?,?,?,?,?,?,?,?,?)''',
-                production_id, values['MachineCode'], shift_master_id,
-                values['DispatchQty'], values['CounterQty'],
-                values['CuringQty'], values['MouldID'], values['ProductionStartTime'],
-                values['ProductionEndTime'], values['Remark'])
+            if has_period_schema:
+                period = values['PeriodConfig']
+                cursor.execute('''INSERT INTO dbo.PressProduction
+                    (ProductionID,MachineCode,ShiftMasterID,DispatchQty,CounterQty,CuringQty,MouldID,
+                     ProductionStartTime,ProductionEndTime,Remark,ShiftPeriodID,
+                     ShiftMasterVersionID,ShiftPeriodVersionID,ShiftCodeSnapshot,
+                     PeriodLabelSnapshot,PeriodStartTimeSnapshot,PeriodEndTimeSnapshot,
+                     ProductionDateCutoffVersionID,ProductionDateCutoffSnapshot)
+                    OUTPUT INSERTED.PressProductionID
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                    production_id, values['MachineCode'], shift_master_id,
+                    values['DispatchQty'], values['CounterQty'], values['CuringQty'],
+                    values['MouldID'], values['ProductionStartTime'], values['ProductionEndTime'],
+                    values['Remark'], period['ShiftPeriodID'], period['ShiftMasterVersionID'],
+                    period['ShiftPeriodVersionID'], period['ShiftCode'], period['PeriodLabel'],
+                    period['StartTime'], period['EndTime'],
+                    cutoff_config['ProductionDateCutoffVersionID'],
+                    cutoff_config['CutoffTime'])
+            else:
+                cursor.execute('''INSERT INTO dbo.PressProduction
+                    (ProductionID,MachineCode,ShiftMasterID,DispatchQty,CounterQty,CuringQty,MouldID,
+                     ProductionStartTime,ProductionEndTime,Remark)
+                    OUTPUT INSERTED.PressProductionID VALUES (?,?,?,?,?,?,?,?,?,?)''',
+                    production_id, values['MachineCode'], shift_master_id,
+                    values['DispatchQty'], values['CounterQty'],
+                    values['CuringQty'], values['MouldID'], values['ProductionStartTime'],
+                    values['ProductionEndTime'], values['Remark'])
             press_production_id = cursor.fetchone()[0]
             usage_recondition_no = current_recondition_no
             has_usage = False
         else:
-            cursor.execute('''SELECT PressProductionID, MachineCode, MouldID, CounterQty,
+            cursor.execute(f'''SELECT PressProductionID, MachineCode, MouldID, CounterQty,
                                      ProductionStartTime, ProductionEndTime, ShiftMasterID, ReleasedAt,
                                      DispatchQty, CuringQty, Remark
+                                     {',ShiftPeriodID,ShiftMasterVersionID,ShiftPeriodVersionID,'
+                                      'ShiftCodeSnapshot,PeriodLabelSnapshot,PeriodStartTimeSnapshot,'
+                                      'PeriodEndTimeSnapshot,ProductionDateCutoffVersionID,'
+                                      'ProductionDateCutoffSnapshot' if has_period_schema else ''}
                 FROM dbo.PressProduction WITH (UPDLOCK,HOLDLOCK)
                 WHERE PressProductionID=? AND ProductionID=?''', press_production_id, production_id)
             existing = cursor.fetchone()
@@ -666,6 +844,14 @@ def save_press_production(conn, production_id, data, press_production_id=None):
                 raise ValueError('Press Production row not found for this Lot.')
             if existing[7] is not None:
                 raise ValueError('Released Press Production rows cannot be edited; undo release first.')
+            if has_period_schema and not downtime_only and period_config is None:
+                if existing[11] is not None:
+                    period_config = _resolve_assignment_period(
+                        cursor, existing[11], values['ShiftCode'], production_date)
+                    values['PeriodConfig'] = period_config
+                else:
+                    shift_master_id = existing[6]
+                    values['ShiftPeriodID'] = None
             if downtime_only:
                 values['MachineCode'] = existing[1]
                 values['MouldID'] = existing[2]
@@ -674,6 +860,14 @@ def save_press_production(conn, production_id, data, press_production_id=None):
             if 'ProductionStartTime' not in data:
                 values['ProductionStartTime'] = existing[4]
             if 'ProductionEndTime' not in data:
+                values['ProductionEndTime'] = existing[5]
+            if (not period_config and isinstance(existing[4], datetime)
+                    and str(data.get('ProductionStartTime') or '').strip()
+                    == existing[4].strftime('%H:%M')):
+                values['ProductionStartTime'] = existing[4]
+            if (not period_config and isinstance(existing[5], datetime)
+                    and str(data.get('ProductionEndTime') or '').strip()
+                    == existing[5].strftime('%H:%M')):
                 values['ProductionEndTime'] = existing[5]
             if 'MouldID' not in data:
                 values['MouldID'] = existing[2]
@@ -761,14 +955,32 @@ def save_press_production(conn, production_id, data, press_production_id=None):
                 else current_recondition_no
             )
             if not downtime_only:
-                cursor.execute('''UPDATE dbo.PressProduction SET MachineCode=?,ShiftMasterID=?,
-                    DispatchQty=?,CounterQty=?,CuringQty=?,MouldID=?,ProductionStartTime=?,
-                    ProductionEndTime=?,Remark=?,UpdatedAt=SYSDATETIME()
-                    WHERE PressProductionID=? AND ProductionID=?''',
-                    values['MachineCode'], shift_master_id, values['DispatchQty'],
-                    values['CounterQty'], values['CuringQty'],
-                    values['MouldID'], values['ProductionStartTime'], values['ProductionEndTime'],
-                    values['Remark'], press_production_id, production_id)
+                if has_period_schema and period_config:
+                    cursor.execute('''UPDATE dbo.PressProduction SET MachineCode=?,ShiftMasterID=?,
+                        DispatchQty=?,CounterQty=?,CuringQty=?,MouldID=?,ProductionStartTime=?,
+                        ProductionEndTime=?,Remark=?,ShiftPeriodID=?,ShiftMasterVersionID=?,
+                        ShiftPeriodVersionID=?,ShiftCodeSnapshot=?,PeriodLabelSnapshot=?,
+                        PeriodStartTimeSnapshot=?,PeriodEndTimeSnapshot=?,
+                        ProductionDateCutoffVersionID=?,ProductionDateCutoffSnapshot=?,
+                        UpdatedAt=SYSDATETIME()
+                        WHERE PressProductionID=? AND ProductionID=?''',
+                        values['MachineCode'], shift_master_id, values['DispatchQty'],
+                        values['CounterQty'], values['CuringQty'], values['MouldID'],
+                        values['ProductionStartTime'], values['ProductionEndTime'], values['Remark'],
+                        period_config['ShiftPeriodID'], period_config['ShiftMasterVersionID'],
+                        period_config['ShiftPeriodVersionID'], period_config['ShiftCode'],
+                        period_config['PeriodLabel'], period_config['StartTime'],
+                        period_config['EndTime'], cutoff_config['ProductionDateCutoffVersionID'],
+                        cutoff_config['CutoffTime'], press_production_id, production_id)
+                else:
+                    cursor.execute('''UPDATE dbo.PressProduction SET MachineCode=?,ShiftMasterID=?,
+                        DispatchQty=?,CounterQty=?,CuringQty=?,MouldID=?,ProductionStartTime=?,
+                        ProductionEndTime=?,Remark=?,UpdatedAt=SYSDATETIME()
+                        WHERE PressProductionID=? AND ProductionID=?''',
+                        values['MachineCode'], shift_master_id, values['DispatchQty'],
+                        values['CounterQty'], values['CuringQty'],
+                        values['MouldID'], values['ProductionStartTime'], values['ProductionEndTime'],
+                        values['Remark'], press_production_id, production_id)
 
         usage_reconciliation_requested = (
             is_new_press or 'CounterQty' in data
@@ -810,12 +1022,12 @@ def save_press_production(conn, production_id, data, press_production_id=None):
         raise
 
 
-def release_press_production(conn, production_id, press_production_id, released_by='FittingMES'):
+def release_press_production(conn, production_id, press_production_id, released_by=None):
     try:
         cursor = conn.cursor()
         lock_lots(cursor)
         has_shift_schema = _shift_schema_available(cursor)
-        cursor.execute('''SELECT PressProductionID, ReleasedAt
+        cursor.execute('''SELECT PressProductionID, ReleasedAt,ProductionStartTime,ProductionEndTime
             FROM dbo.PressProduction WITH (UPDLOCK,HOLDLOCK)
             WHERE PressProductionID=? AND ProductionID=?''', press_production_id, production_id)
         existing = cursor.fetchone()
@@ -824,6 +1036,15 @@ def release_press_production(conn, production_id, press_production_id, released_
         if existing[1] is not None:
             conn.commit()
             return 'ALREADY_RELEASED'
+        if not isinstance(existing[2], datetime) or not isinstance(existing[3], datetime):
+            raise ValueError(
+                'Cannot release a Press Production assignment without valid actual start and end times.')
+        release_at = datetime.now(timezone(timedelta(hours=7))).replace(tzinfo=None)
+        end_time = existing[3]
+        if release_at <= existing[2]:
+            raise ValueError('An assignment cannot be released before its actual start time.')
+        if end_time > release_at:
+            end_time = release_at
         if has_shift_schema:
             cursor.execute('''SELECT lot.ProdDate, pp.ShiftMasterID, pp.MachineCode, pp.MouldID
                 FROM dbo.PressProduction AS pp WITH (UPDLOCK,HOLDLOCK)
@@ -839,9 +1060,9 @@ def release_press_production(conn, production_id, press_production_id, released_
                 press_identities=[(allocation[1], allocation[2])],
                 mould_identities=[(allocation[1], allocation[3])])
         cursor.execute('''UPDATE dbo.PressProduction
-            SET ReleasedAt=SYSDATETIME(), ReleasedBy=?, UpdatedAt=SYSDATETIME()
+            SET ProductionEndTime=?,ReleasedAt=?,ReleasedBy=?,UpdatedAt=SYSDATETIME()
             WHERE PressProductionID=? AND ProductionID=? AND ReleasedAt IS NULL''',
-            released_by or 'FittingMES', press_production_id, production_id)
+            end_time, release_at, released_by, press_production_id, production_id)
         conn.commit()
         return 'RELEASED'
     except Exception:
@@ -940,14 +1161,17 @@ def build_press_production_context(cursor, lot, press_form=None):
     product_code = lot.get('ProductCode')
     rows_for_lot = read_press_production(cursor, lot['ProductionID'])
     day_start_time = read_day_start_time(cursor, lot['ProdDate'])
-    eligible_shifts = read_active_shifts(cursor)
+    eligible_shifts = read_active_shifts(cursor, lot['ProdDate'])
+    eligible_periods = read_active_periods(cursor, lot['ProdDate'])
     if product_family_id is None:
         return dict(press_production=rows_for_lot, day_start_time=day_start_time,
-                    eligible_shifts=eligible_shifts, eligible_presses=[], eligible_moulds=[],
+                    eligible_shifts=eligible_shifts, eligible_periods=eligible_periods,
+                    eligible_presses=[], eligible_moulds=[],
                     press_product_error='This legacy Lot has no confirmed Product Family; Press/Mould assignment is unavailable.')
     if not _shift_schema_available(cursor):
         return dict(press_production=rows_for_lot, day_start_time=day_start_time,
-                    eligible_shifts=eligible_shifts, eligible_presses=[], eligible_moulds=[],
+                    eligible_shifts=eligible_shifts, eligible_periods=eligible_periods,
+                    eligible_presses=[], eligible_moulds=[],
                     press_product_error='Shift-aware Press Production requires database migration 027 before use.')
 
     press_form = press_form or {}
@@ -960,10 +1184,8 @@ def build_press_production_context(cursor, lot, press_form=None):
     try:
         day_start_time = read_day_start_time(cursor, lot['ProdDate'])
         lot_start, lot_end = read_lot_boundaries(cursor, lot['ProductionID'])
-        assignment_start = press_form.get('ProductionStartTime')
-        assignment_end = press_form.get('ProductionEndTime')
-        assignment_start = assignment_start or None
-        assignment_end = assignment_end or None
+        assignment_start = press_form.get('ProductionStartTime') or None
+        assignment_end = press_form.get('ProductionEndTime') or None
         if excluded_id is not None:
             cursor.execute('''SELECT ProductionStartTime, ProductionEndTime
                 FROM dbo.PressProduction
@@ -976,34 +1198,86 @@ def build_press_production_context(cursor, lot, press_form=None):
                 assignment_start = existing_times[0]
             if 'ProductionEndTime' not in press_form:
                 assignment_end = existing_times[1]
-        requested_interval = resolve_effective_interval(
-            lot['ProdDate'], day_start_time, assignment_start, assignment_end,
-            lot_start, lot_end)
+        if not eligible_periods:
+            requested_interval = resolve_effective_interval(
+                lot['ProdDate'], day_start_time, assignment_start, assignment_end,
+                lot_start, lot_end)
     except (TypeError, ValueError) as exc:
         interval_error = str(exc)
     if interval_error:
         return dict(press_production=rows_for_lot, day_start_time=day_start_time,
-                    eligible_shifts=eligible_shifts, eligible_presses=[],
+                    eligible_shifts=eligible_shifts, eligible_periods=eligible_periods,
+                    eligible_presses=[],
                     eligible_moulds=[], press_product_error=interval_error)
 
     presses_by_code = {}
     moulds_by_id = {}
-    for shift in eligible_shifts:
-        shift_code = str(shift['ShiftCode'])
-        presses = read_eligible_presses(cursor, product_family_id, product_code,
-            lot['ProdDate'], shift_code, excluded_id, requested_interval)
-        for press in presses:
-            option = presses_by_code.setdefault(press['PressCode'],
-                dict(press, AvailableShiftCodes=[]))
-            if press['Available']:
-                option['AvailableShiftCodes'].append(shift_code)
-        moulds = read_eligible_moulds(cursor, product_family_id, product_code,
-            lot['ProdDate'], shift_code, excluded_id, requested_interval)
-        for mould in moulds:
-            option = moulds_by_id.setdefault(mould['MouldID'],
-                dict(mould, AvailableShiftCodes=[]))
-            if mould['Available']:
-                option['AvailableShiftCodes'].append(shift_code)
+    cutoff_config = (
+        read_effective_cutoff(cursor, lot['ProdDate'], day_start_time)
+        if _period_schema_available(cursor) else
+        dict(ProductionDateCutoffVersionID=None, CutoffTime=day_start_time)
+    )
+    if eligible_periods:
+        selected_period_id = str(press_form.get('ShiftPeriodID') or '')
+        for period in eligible_periods:
+            period_id = str(period['ShiftPeriodID'])
+            try:
+                interval = resolve_period_interval(
+                    lot['ProdDate'], period['StartTime'], period['EndTime'],
+                    press_form.get('ProductionStartTime') if selected_period_id == period_id else None,
+                    press_form.get('ProductionEndTime') if selected_period_id == period_id else None,
+                    cutoff_config['CutoffTime'])
+                period['PeriodLabelDisplay'] = (
+                    f"{period['ShiftCode']} ({period['StartTime']:%H:%M}-"
+                    f"{period['EndTime']:%H:%M}"
+                    f"{' +1 day' if period['EndTime'] <= period['StartTime'] else ''})"
+                )
+                period['IntervalError'] = None
+            except ValueError as exc:
+                interval = None
+                period['IntervalError'] = str(exc)
+            period['Available'] = interval is not None
+            period['AvailabilityReason'] = period['IntervalError']
+            if interval is None:
+                continue
+            shift_code = str(period['ShiftCode'])
+            period['ProductionStartTime'] = interval[0]
+            period['ProductionEndTime'] = interval[1]
+            presses = read_eligible_presses(cursor, product_family_id, product_code,
+                lot['ProdDate'], shift_code, excluded_id, interval)
+            for press in presses:
+                option = presses_by_code.setdefault(press['PressCode'],
+                    dict(press, AvailableShiftCodes=[], AvailablePeriodIDs=[]))
+                if press['Available'] and shift_code not in option['AvailableShiftCodes']:
+                    option['AvailableShiftCodes'].append(shift_code)
+                if press['Available']:
+                    option['AvailablePeriodIDs'].append(period_id)
+            moulds = read_eligible_moulds(cursor, product_family_id, product_code,
+                lot['ProdDate'], shift_code, excluded_id, interval)
+            for mould in moulds:
+                option = moulds_by_id.setdefault(mould['MouldID'],
+                    dict(mould, AvailableShiftCodes=[], AvailablePeriodIDs=[]))
+                if mould['Available'] and shift_code not in option['AvailableShiftCodes']:
+                    option['AvailableShiftCodes'].append(shift_code)
+                if mould['Available']:
+                    option['AvailablePeriodIDs'].append(period_id)
+    else:
+        for shift in eligible_shifts:
+            shift_code = str(shift['ShiftCode'])
+            presses = read_eligible_presses(cursor, product_family_id, product_code,
+                lot['ProdDate'], shift_code, excluded_id, requested_interval)
+            for press in presses:
+                option = presses_by_code.setdefault(press['PressCode'],
+                    dict(press, AvailableShiftCodes=[]))
+                if press['Available']:
+                    option['AvailableShiftCodes'].append(shift_code)
+            moulds = read_eligible_moulds(cursor, product_family_id, product_code,
+                lot['ProdDate'], shift_code, excluded_id, requested_interval)
+            for mould in moulds:
+                option = moulds_by_id.setdefault(mould['MouldID'],
+                    dict(mould, AvailableShiftCodes=[]))
+                if mould['Available']:
+                    option['AvailableShiftCodes'].append(shift_code)
 
     for option_key, form_key, label_key, options in (
         ('PressCode', 'MachineCode', 'PressName', presses_by_code),
@@ -1024,6 +1298,7 @@ def build_press_production_context(cursor, lot, press_form=None):
     return dict(press_production=rows_for_lot,
                 day_start_time=day_start_time,
                 eligible_shifts=eligible_shifts,
+                eligible_periods=eligible_periods,
                 eligible_presses=list(presses_by_code.values()),
                 eligible_moulds=list(moulds_by_id.values()),
                 press_product_error=None)

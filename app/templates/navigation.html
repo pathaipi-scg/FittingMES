@@ -37,7 +37,7 @@
 {% set tab_date = production_date %}
 {% set tab_date_query = '?production_date=' ~ tab_date if tab_date else '' %}
 {% set tab = active_tab|default('production') %}
-{% set settings_active = tab in ('press-mc', 'mould', 'logger-master') %}
+{% set settings_active = tab in ('press-mc', 'mould', 'logger-master', 'shift-settings') %}
 {% set reject_workflow = workflow|default('production') %}
 {% set production_active = tab in ('production', 'logger', 'logger-summary', 'usage') or (tab in ('reject', 'reject-cal') and reject_workflow != 'depallet') %}
 {% set depallet_active = tab == 'depallet' or (tab in ('reject', 'reject-cal') and reject_workflow == 'depallet') %}
@@ -83,7 +83,7 @@
 </div>
 <div class="settings-submenu-row" id="settings-tabs" {% if not settings_active %}hidden{% endif %}>
 <nav class="settings-tabs" aria-label="Setting navigation">
-{% for key, label, path in [('press-mc','PressMc','/press-mc'),('mould','Mould','/mould'),('logger-master','Log Master','/logger/master')] %}
+{% for key, label, path in [('press-mc','PressMc','/press-mc'),('mould','Mould','/mould'),('logger-master','Log Master','/logger/master'),('shift-settings','Shift','/settings/shift')] %}
 <a href="{{ path }}{{ tab_date_query }}" {% if tab == key %}aria-current="page"{% endif %}>{{ label }}</a>
 {% endfor %}
 </nav>

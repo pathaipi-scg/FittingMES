@@ -4,7 +4,7 @@ import logging
 from contextlib import closing
 from uuid import uuid4
 from pathlib import Path
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta, timezone
 from urllib.parse import quote, urlencode
 from fastapi.responses import RedirectResponse, JSONResponse, FileResponse, PlainTextResponse
 from starlette.background import BackgroundTask
@@ -41,6 +41,8 @@ from app.products import (read_families, lot_prefix, read_products, read_mapping
                           confirm_mapping, selected_product)
 from app.production_data import (read_production_data, save_production_data, calculate,
                                   read_shift_rules)
+from app.shift_settings import (read_shift_settings, save_shift, save_period,
+                                save_cutoff)
 from app.press_mc import (page_context as press_mc_context, add_press, update_press_name,
                           assign_line, remove_from_line, set_active, save_capabilities)
 from app.mould import (page_context as mould_context, register_mould, update_mould_info,
@@ -967,6 +969,7 @@ async def save_press_production_route_action(request, production_id, press_produ
     form = await request.form()
     data = dict(ShiftCode=form.get('shift_code'), MachineCode=form.get('machine_code'),
                 MouldID=form.get('mould_id'),
+                ShiftPeriodID=form.get('shift_period_id'),
                 PressProductionID=press_production_id,
                 ProductionDate=form.get('production_date'))
     optional_fields = {
@@ -1770,6 +1773,130 @@ def press_mc_page(request: Request, production_date: date | None = None,
         status = 503
     return templates.TemplateResponse(request=request, name='press_mc.html', context=context,
                                       status_code=status, headers={'Cache-Control':'no-store'})
+
+
+def _shift_settings_context(production_date, message=None, message_type=None):
+    today_bangkok = datetime.now(timezone(timedelta(hours=7))).date()
+    next_effective = today_bangkok + timedelta(days=1)
+    context = dict(page_title='Shift Settings', active_tab='shift-settings',
+                   production_date=production_date, next_effective_date=next_effective,
+                   shift_history=[], period_history=[], cutoff_history=[],
+                   shift_codes={}, current_shifts=[], current_periods=[],
+                   current_cutoff='07:00', message=message,
+                   message_type=message_type, error=None)
+    with closing(get_connection()) as conn:
+        context.update(read_shift_settings(conn.cursor()))
+        effective_dates = [row['EffectiveFromDate']
+                           for key in ('shift_history', 'period_history', 'cutoff_history')
+                           for row in context[key]]
+        if effective_dates:
+            next_effective = max([today_bangkok, *effective_dates]) + timedelta(days=1)
+            context['next_effective_date'] = next_effective
+    for row in context['shift_history']:
+        context['shift_codes'].setdefault(row['ShiftMasterID'], row['ShiftCode'])
+    current_shifts = {}
+    for row in context['shift_history']:
+        if row['EffectiveFromDate'] <= next_effective:
+            current_shifts.setdefault(row['ShiftMasterID'], row)
+    context['current_shifts'] = list(current_shifts.values())
+    current_periods = {}
+    for row in context['period_history']:
+        if row['EffectiveFromDate'] <= next_effective:
+            current_periods.setdefault(row['ShiftPeriodID'], row)
+    context['current_periods'] = list(current_periods.values())
+    if context['cutoff_history']:
+        applicable = [row for row in context['cutoff_history']
+                      if row['EffectiveFromDate'] <= next_effective]
+        if applicable:
+            context['current_cutoff'] = applicable[0]['CutoffTime'].strftime('%H:%M')
+        else:
+            context['current_cutoff'] = context['cutoff_history'][-1]['CutoffTime'].strftime('%H:%M')
+    return context
+
+
+@app.get('/settings/shift', response_class=HTMLResponse)
+def shift_settings_page(request: Request, production_date: date | None = None,
+                        message: str | None = None, message_type: str | None = None):
+    production_date = production_date or date.today()
+    status = 200
+    try:
+        context = _shift_settings_context(production_date, message, message_type)
+    except ValueError as exc:
+        context = dict(page_title='Shift Settings', active_tab='shift-settings',
+                       production_date=production_date, error=str(exc),
+                       shift_history=[], period_history=[], cutoff_history=[],
+                       shift_codes={}, current_shifts=[], current_periods=[],
+                       current_cutoff='07:00',
+                       next_effective_date=datetime.now(timezone(timedelta(hours=7))).date() + timedelta(days=1))
+        status = 400
+    except Exception:
+        context = dict(page_title='Shift Settings', active_tab='shift-settings',
+                       production_date=production_date,
+                       error='Unable to load Shift settings. Please retry.',
+                       shift_history=[], period_history=[], cutoff_history=[],
+                       shift_codes={}, current_shifts=[], current_periods=[],
+                       current_cutoff='07:00',
+                       next_effective_date=datetime.now(timezone(timedelta(hours=7))).date() + timedelta(days=1))
+        status = 503
+    return templates.TemplateResponse(request=request, name='shift_settings.html',
+                                      context=context, status_code=status,
+                                      headers={'Cache-Control': 'no-store'})
+
+
+def _shift_settings_redirect(production_date, message, message_type='success'):
+    params = {'production_date': production_date, 'message': message,
+              'message_type': message_type}
+    return RedirectResponse('/settings/shift?' + urlencode(params), status_code=303)
+
+
+@app.post('/settings/shift/master')
+async def shift_settings_master_route(request: Request):
+    form = await request.form()
+    production_date = form.get('production_date') or date.today()
+    try:
+        with closing(get_connection()) as conn:
+            save_shift(conn, form.get('shift_master_id') or None,
+                       form.get('shift_code'), str(form.get('is_active', '1')) == '1',
+                       form.get('effective_from'), form.get('reason') or '')
+        return _shift_settings_redirect(production_date, 'Shift version saved.')
+    except ValueError as exc:
+        return _shift_settings_redirect(production_date, str(exc), 'error')
+    except Exception:
+        return _shift_settings_redirect(production_date, 'Unable to save Shift settings.', 'error')
+
+
+@app.post('/settings/shift/period')
+async def shift_settings_period_route(request: Request):
+    form = await request.form()
+    production_date = form.get('production_date') or date.today()
+    try:
+        with closing(get_connection()) as conn:
+            save_period(conn, int(form.get('shift_master_id') or 0),
+                        form.get('shift_period_id') or None,
+                        form.get('period_label'), form.get('display_order'),
+                        form.get('start_time'), form.get('end_time'),
+                        str(form.get('is_active', '1')) == '1',
+                        form.get('effective_from'), form.get('reason') or '')
+        return _shift_settings_redirect(production_date, 'Shift Period version saved.')
+    except ValueError as exc:
+        return _shift_settings_redirect(production_date, str(exc), 'error')
+    except Exception:
+        return _shift_settings_redirect(production_date, 'Unable to save Shift Period settings.', 'error')
+
+
+@app.post('/settings/shift/cutoff')
+async def shift_settings_cutoff_route(request: Request):
+    form = await request.form()
+    production_date = form.get('production_date') or date.today()
+    try:
+        with closing(get_connection()) as conn:
+            save_cutoff(conn, form.get('cutoff_time'), form.get('effective_from'),
+                        form.get('reason') or '')
+        return _shift_settings_redirect(production_date, 'Production Date cutoff version saved.')
+    except ValueError as exc:
+        return _shift_settings_redirect(production_date, str(exc), 'error')
+    except Exception:
+        return _shift_settings_redirect(production_date, 'Unable to save Production Date cutoff.', 'error')
 
 
 def press_mc_redirect(press_code=None, message=None, message_type='success', production_date=None):

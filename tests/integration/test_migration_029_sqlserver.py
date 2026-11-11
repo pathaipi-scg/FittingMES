@@ -13,10 +13,10 @@ from app.database import env_bool, get_sql_driver
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SETUP_SQL = ROOT / "tests" / "sql" / "028_press_production_interval_overlap_test_setup.sql"
-MIGRATION_SQL = ROOT / "sql" / "028_press_production_interval_overlap.sql"
-ROLLBACK_SQL = ROOT / "sql" / "028_press_production_interval_overlap_rollback.sql"
-AUTHORIZED = os.getenv("FITTINGMES_028_TEST_AUTHORIZED") == "1"
+SETUP_SQL = ROOT / "tests" / "sql" / "029_press_production_interval_overlap_test_setup.sql"
+MIGRATION_SQL = ROOT / "sql" / "029_press_production_interval_overlap.sql"
+ROLLBACK_SQL = ROOT / "sql" / "029_press_production_interval_overlap_rollback.sql"
+AUTHORIZED = os.getenv("FITTINGMES_029_TEST_AUTHORIZED") == "1"
 
 
 def _batches(script):
@@ -59,14 +59,24 @@ def _connect_test_database(autocommit=False):
         connection_string, timeout=5, autocommit=autocommit
     )
     cursor = connection.cursor()
-    cursor.execute("SELECT DB_NAME()")
-    database_name = cursor.fetchone()[0]
-    if database_name != "SB23_TEST":
+    cursor.execute("""
+        SELECT DB_NAME(), @@SERVERNAME,
+               CAST(CONNECTIONPROPERTY('local_net_address') AS nvarchar(128))
+    """)
+    database_name, server_name, local_address = cursor.fetchone()
+    if (
+        database_name != "SB23_TEST"
+        or server_name != "DCDLGYF3\\SQLEXPRESS"
+        or local_address != "10.28.254.3"
+    ):
         connection.close()
-        raise RuntimeError("Refusing SQL Server integration tests outside SB23_TEST.")
+        raise RuntimeError(
+            "Refusing SQL Server integration tests unless connected to "
+            "SB23_TEST on DCDLGYF3\\SQLEXPRESS (10.28.254.3)."
+        )
     cursor.execute("""
         EXEC sys.sp_set_session_context
-            @key=N'FittingMES_028_TestRun',
+            @key=N'FittingMES_029_TestRun',
             @value=N'1',
             @read_only=1
     """)
@@ -79,9 +89,9 @@ def _production_id():
 
 @unittest.skipUnless(
     AUTHORIZED,
-    "Set FITTINGMES_028_TEST_AUTHORIZED=1 only after SB23_TEST is DBA-created and approved.",
+    "Set FITTINGMES_029_TEST_AUTHORIZED=1 only after SB23_TEST is DBA-created and approved.",
 )
-class Migration028SqlServerIntegrationTests(unittest.TestCase):
+class Migration029SqlServerIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         connection = _connect_test_database(autocommit=True)
@@ -109,7 +119,7 @@ class Migration028SqlServerIntegrationTests(unittest.TestCase):
             """)
             trigger_id, press_index_count, mould_index_count = cursor.fetchone()
             if not trigger_id or press_index_count != 1 or mould_index_count != 1:
-                raise RuntimeError("SB23_TEST is not in the expected Migration 028 state.")
+                raise RuntimeError("SB23_TEST is not in the expected Press interval Migration 029 state.")
         finally:
             connection.close()
 
@@ -188,7 +198,7 @@ class Migration028SqlServerIntegrationTests(unittest.TestCase):
             datetime(2026, 11, 7, 8), datetime(2026, 11, 7, 16),
         )
         self._assert_database_error(
-            52817,
+            52937,
             lambda: self._add_assignment(
                 production_id, "F_PRESS_OVERLAP", 92002,
                 datetime(2026, 11, 7, 15), datetime(2026, 11, 7, 18),
@@ -202,7 +212,7 @@ class Migration028SqlServerIntegrationTests(unittest.TestCase):
             datetime(2026, 11, 7, 8), datetime(2026, 11, 7, 16),
         )
         self._assert_database_error(
-            52817,
+            52937,
             lambda: self._add_assignment(
                 production_id, "F_MOULD_B", 93001,
                 datetime(2026, 11, 7, 15), datetime(2026, 11, 7, 18),
@@ -220,6 +230,21 @@ class Migration028SqlServerIntegrationTests(unittest.TestCase):
             datetime(2026, 11, 8, 1), datetime(2026, 11, 8, 4),
         )
 
+    def test_actual_overlap_is_rejected_across_production_dates(self):
+        first_production_id = self._add_lot(date(2026, 11, 6))
+        second_production_id = self._add_lot(date(2026, 11, 7))
+        self._add_assignment(
+            first_production_id, "F_CROSS_DATE", 94003,
+            datetime(2026, 11, 6, 23), datetime(2026, 11, 7, 9),
+        )
+        self._assert_database_error(
+            52937,
+            lambda: self._add_assignment(
+                second_production_id, "F_CROSS_DATE", 94004,
+                datetime(2026, 11, 7, 8), datetime(2026, 11, 7, 10),
+            ),
+        )
+
     def test_unrelated_updates_to_historical_unresolved_and_overlapping_rows_work(self):
         self.cursor.execute("""
             UPDATE dbo.PressProduction
@@ -231,7 +256,7 @@ class Migration028SqlServerIntegrationTests(unittest.TestCase):
 
     def test_relevant_update_cannot_leave_historical_active_interval_invalid(self):
         self._assert_database_error(
-            52816,
+            52936,
             lambda: self.cursor.execute("""
                 UPDATE dbo.PressProduction
                 SET ProductionStartTime='2026-09-03T08:00:00'
@@ -242,7 +267,7 @@ class Migration028SqlServerIntegrationTests(unittest.TestCase):
     def test_unresolved_historical_resource_still_blocks_new_same_day_allocation(self):
         production_id = self._add_lot(date(2026, 9, 3))
         self._assert_database_error(
-            52817,
+            52937,
             lambda: self._add_assignment(
                 production_id, "F_LEGACY_INVALID", 94002,
                 datetime(2026, 9, 3, 8), datetime(2026, 9, 3, 12),
@@ -283,7 +308,7 @@ class Migration028SqlServerIntegrationTests(unittest.TestCase):
                     message = str(exc)
                     if "1205" in message and attempt == 0:
                         continue
-                    if "52817" in message:
+                    if "52937" in message:
                         return "blocked"
                     if "1205" in message:
                         return "deadlock-unresolved"
@@ -376,7 +401,7 @@ class Migration028SqlServerIntegrationTests(unittest.TestCase):
                         message = str(exc)
                         if "1205" in message and attempt == 0:
                             continue
-                        if "52817" in message:
+                        if "52937" in message:
                             return "blocked"
                         if "1205" in message:
                             return "deadlock-unresolved"
@@ -408,7 +433,7 @@ class Migration028SqlServerIntegrationTests(unittest.TestCase):
             datetime(2026, 11, 7, 16), datetime(2026, 11, 8, 1),
         )
         self._assert_database_error(
-            52824,
+            52924,
             lambda: _run_script(self.connection, ROLLBACK_SQL),
         )
 

@@ -19,11 +19,15 @@ def read_print_prod_context(cursor, production_date):
     records = read_prod_records(cursor, production_date)
     shift_rules = read_shift_rules(cursor, production_date)
     for record in records:
-        try:
-            record["Shift"] = resolve_shift(production_date, record.get("ProductionStartTime"),
-                                             record.get("Shift"), shift_rules)
-        except (TypeError, ValueError):
-            pass
+        if record.get("ShiftMasterID") is not None and record.get("ShiftCodeSnapshot"):
+            record["Shift"] = str(record["ShiftCodeSnapshot"])
+        else:
+            try:
+                record["Shift"] = resolve_shift(
+                    production_date, record.get("ProductionStartTime"),
+                    record.get("Shift"), shift_rules)
+            except (TypeError, ValueError):
+                pass
     plan_week = read_plan_week(cursor, production_date)
     cursor.execute("""SELECT ProductFamilyID,ProductCode,ProductName
         FROM dbo.ProductCodeMaster WHERE IsActive=1""")
@@ -37,7 +41,18 @@ def read_print_prod_context(cursor, production_date):
                     for field in ("PlanQty", "CounterQty", "CuringQty")}
     shifts = []
     for shift in usage["shifts"]:
-        shift_records = [record for record in records if str(record.get("Shift")) == str(shift["shift"])]
+        shift_identity = shift.get("ShiftMasterID")
+        shift_records = [
+            record for record in records
+            if (
+                shift_identity is not None
+                and record.get("ShiftMasterID") == shift_identity
+                or (
+                    record.get("ShiftMasterID") is None
+                    and str(record.get("Shift")) == str(shift["shift"])
+                )
+            )
+        ]
         totals = {field: sum(record.get(field) or 0 for record in shift_records)
                   for field in ("PlanQty", "CounterQty", "CuringQty")}
         shifts.append(dict(shift=shift["shift"], records=shift_records, totals=totals,

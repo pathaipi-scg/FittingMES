@@ -358,3 +358,21 @@ class PrintProdTests(unittest.TestCase):
              patch('app.print_prod.rows', return_value=[]):
             context = read_print_prod_context(unittest.mock.MagicMock(), DAY)
         self.assertEqual([row['Shift'] for row in context['records']], ['2', '1'])
+
+    def test_context_preserves_saved_logical_shift_snapshot(self):
+        records = [dict(ProductionID=1, ProdDate=DAY, Shift='2',
+                        ShiftMasterID=301, ShiftCodeSnapshot='1',
+                        ProductionStartTime=time(21, 0), ProductFamily='F',
+                        ProductCode='01', PlanQty=1, CounterQty=10, CuringQty=9)]
+        usage = dict(shifts=[dict(shift='1', ShiftMasterID=301, materials=[]),
+                             dict(shift='2', ShiftMasterID=302, materials=[])], daily=[])
+        cursor = unittest.mock.MagicMock()
+        cursor.fetchone.return_value = ('2026W37',)
+        with patch('app.print_prod.read_prod_records', return_value=records), \
+             patch('app.print_prod.read_shift_rules', return_value=self.RULES), \
+             patch('app.print_prod.read_usage_context', return_value=usage), \
+             patch('app.print_prod.rows', return_value=[]):
+            context = read_print_prod_context(cursor, DAY)
+        self.assertEqual(context['records'][0]['Shift'], '1')
+        self.assertEqual(context['shifts'][0]['totals']['CounterQty'], 10)
+        self.assertEqual(context['shifts'][1]['totals']['CounterQty'], 0)

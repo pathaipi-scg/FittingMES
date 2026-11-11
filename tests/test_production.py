@@ -26,7 +26,8 @@ def request():
     return Request({'type':'http', 'method':'GET', 'path':'/', 'headers':[]})
 
 def insert_test_lot(conn, plan=PLAN, prefix='B066909', running_no=1, family_id=1):
-    with patch('app.lots.lot_prefix', return_value=prefix):
+    with patch('app.lots.lot_prefix', return_value=prefix), \
+         patch('app.lots._cutoff_schema_available', return_value=False):
         suffix = running_no if isinstance(running_no, str) else f'{running_no:02d}'
         return insert_lot(conn, plan, '06', prefix, suffix, product_family_id=family_id)
 

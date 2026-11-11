@@ -30,7 +30,7 @@ class FakeCursor:
                  active_shifts=None, lot_valid=True, lot_date=None,
                  lot_shift_code="2", depallet_shift_code="2",
                  press_assignment_rows=1, production_id=17701,
-                 line_id=620, press_id=711):
+                 line_id=620, press_id=711, has_shift_snapshot=False):
         self.scope = scope
         self.reason_family = reason_family
         self.reason_exists = reason_exists
@@ -46,6 +46,7 @@ class FakeCursor:
         self.production_id = production_id
         self.line_id = line_id
         self.press_id = press_id
+        self.has_shift_snapshot = has_shift_snapshot
         self.calls = []
         self.description = []
         self.result = []
@@ -57,7 +58,9 @@ class FakeCursor:
 
     def execute(self, query, *params):
         self.calls.append((query, params))
-        if "SELECT id AS ShiftID,ShiftCode" in query:
+        if "COL_LENGTH(" in query:
+            self._set(("HasSnapshot",), [(int(self.has_shift_snapshot),)])
+        elif "SELECT id AS ShiftID,ShiftCode" in query:
             shift_id = params[0]
             self._set(
                 ("ShiftID", "ShiftCode"),
@@ -194,6 +197,28 @@ def valid_form(**changes):
 
 
 class RejectEntryTests(unittest.TestCase):
+    def test_new_reject_rows_save_shift_code_snapshot_but_edits_preserve_it(self):
+        insert_cursor = FakeCursor(has_shift_snapshot=True)
+        save_reject_entry(FakeConnection(insert_cursor), valid_form())
+        insert_query, insert_params = next(
+            call for call in insert_cursor.calls
+            if call[0].lstrip().startswith("INSERT INTO dbo.ProductionRejectEntry")
+        )
+        self.assertIn("ShiftCodeSnapshot", insert_query)
+        self.assertEqual(insert_params[-1], "2")
+
+        update_cursor = FakeCursor(
+            has_shift_snapshot=True,
+            existing_ids={"ProductionRejectEntry": {16001}},
+        )
+        save_reject_entry(
+            FakeConnection(update_cursor), valid_form(entry_id="16001"))
+        update_query = next(
+            query for query, _ in update_cursor.calls
+            if query.lstrip().startswith("UPDATE dbo.ProductionRejectEntry")
+        )
+        self.assertNotIn("ShiftCodeSnapshot", update_query)
+
     def test_workflow_selects_only_its_own_transaction_table(self):
         for workflow, table in (
             ("production", "ProductionRejectEntry"),

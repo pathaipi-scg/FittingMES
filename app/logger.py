@@ -482,6 +482,33 @@ def _read_existing_logger_event(cursor, event_id):
     return row if row is not None and len(row) >= 2 else (None, None)
 
 
+def _read_logger_shift_snapshot(cursor, production_date, shift_id):
+    cursor.execute("""SELECT
+        CASE WHEN COL_LENGTH(N'dbo.LoggerEvent',N'ShiftMasterID') IS NULL
+             THEN 0 ELSE 1 END,
+        CASE WHEN COL_LENGTH(N'dbo.LoggerEvent',N'ShiftCodeSnapshot') IS NULL
+             THEN 0 ELSE 1 END""")
+    schema = cursor.fetchone() or (0, 0)
+    if not schema[0] or not schema[1]:
+        return None, None
+    cursor.execute("""
+        SELECT TOP (1) ShiftMasterID,ShiftCode
+        FROM dbo.ShiftMasterVersion
+        WHERE (ShiftMasterID=? OR ShiftCode=?)
+          AND EffectiveFromDate<=?
+          AND (EffectiveToDate IS NULL OR EffectiveToDate>=?)
+        ORDER BY CASE WHEN ShiftMasterID=? THEN 0 ELSE 1 END,
+                 EffectiveFromDate DESC,VersionNumber DESC
+    """, shift_id, str(shift_id), production_date, production_date, shift_id)
+    found = cursor.fetchone()
+    if not found:
+        _validation_error(
+            "LOGGER_SHIFT_NOT_CONFIGURED",
+            "The resolved LOGGER Shift has no effective Shift configuration.",
+        )
+    return found[0], found[1]
+
+
 def save_logger_event(conn, data, masters=None):
     """Validate and insert one final operator-confirmed LOGGER event."""
     try:
@@ -492,6 +519,13 @@ def save_logger_event(conn, data, masters=None):
         day_start_time = _read_logger_day_start_time(cursor, data.production_date)
         values = _validate_logger_masters(data, masters, day_start_time)
         shift_id = _resolve_logger_shift(cursor, values, data, day_start_time)
+        shift_master_id, shift_code_snapshot = _read_logger_shift_snapshot(
+            cursor, values["production_date"], shift_id)
+        snapshot_columns = (
+            ", ShiftMasterID, ShiftCodeSnapshot"
+            if shift_master_id is not None else ""
+        )
+        snapshot_values = ", ?, ?" if shift_master_id is not None else ""
         snapshots = _build_logger_snapshots(values)
         _reject_overlapping_logger_event(cursor, values, snapshots)
         cursor.execute("""
@@ -502,10 +536,11 @@ def save_logger_event(conn, data, masters=None):
                  MachineNameSnapshot, RelatedMachineSnapshot,
                  SubMachineSnapshot, StopTypeSnapshot, SubStopTypeSnapshot,
                  CauseSnapshot, Note, SourceType, ClassificationSource,
-                 ShiftID, CreatedBy)
+                 ShiftID{snapshot_columns}, CreatedBy)
             OUTPUT INSERTED.LoggerEventID
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, values["production_date"], values["stop_datetime"], values["start_datetime"],
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?{snapshot_values})
+        """.format(snapshot_columns=snapshot_columns, snapshot_values=snapshot_values),
+            values["production_date"], values["stop_datetime"], values["start_datetime"],
             values["duration_min"], values["mc_id"], values["mc_instance_no"],
             values["related_mc_id"], values["related_mc_instance_no"],
             values["sub_mc_id"], values["sub_mc_instance_no"], values["stop_id"],
@@ -514,7 +549,10 @@ def save_logger_event(conn, data, masters=None):
             snapshots["RelatedMachineSnapshot"], snapshots["SubMachineSnapshot"],
             snapshots["StopTypeSnapshot"], snapshots["SubStopTypeSnapshot"],
             snapshots["CauseSnapshot"], values["note"], "MANUAL",
-            values["classification_source"], shift_id, values["created_by"])
+            values["classification_source"], shift_id,
+            *([shift_master_id, shift_code_snapshot]
+              if shift_master_id is not None else []),
+            values["created_by"])
         row = cursor.fetchone()
         if not row:
             raise RuntimeError("LoggerEventID was not returned by the INSERT.")

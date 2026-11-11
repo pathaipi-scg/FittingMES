@@ -4,12 +4,12 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MIGRATION = ROOT / 'sql' / '028_press_production_interval_overlap.sql'
-PREFLIGHT = ROOT / 'sql' / '028_press_production_interval_overlap_preflight.sql'
-ROLLBACK = ROOT / 'sql' / '028_press_production_interval_overlap_rollback.sql'
-TEST_SETUP = ROOT / 'tests' / 'sql' / '028_press_production_interval_overlap_test_setup.sql'
-TEST_CLEANUP = ROOT / 'tests' / 'sql' / '028_press_production_interval_overlap_test_cleanup.sql'
-SQLSERVER_TEST = ROOT / 'tests' / 'integration' / 'test_migration_028_sqlserver.py'
+MIGRATION = ROOT / 'sql' / '029_press_production_interval_overlap.sql'
+PREFLIGHT = ROOT / 'sql' / '029_press_production_interval_overlap_preflight.sql'
+ROLLBACK = ROOT / 'sql' / '029_press_production_interval_overlap_rollback.sql'
+TEST_SETUP = ROOT / 'tests' / 'sql' / '029_press_production_interval_overlap_test_setup.sql'
+TEST_CLEANUP = ROOT / 'tests' / 'sql' / '029_press_production_interval_overlap_test_cleanup.sql'
+SQLSERVER_TEST = ROOT / 'tests' / 'integration' / 'test_migration_029_sqlserver.py'
 
 
 class PressProductionIntervalMigrationTests(unittest.TestCase):
@@ -19,7 +19,15 @@ class PressProductionIntervalMigrationTests(unittest.TestCase):
         cls.preflight = PREFLIGHT.read_text(encoding='utf-8')
         cls.rollback = ROLLBACK.read_text(encoding='utf-8')
 
+    def test_press_interval_migration_uses_unapplied_029_identity(self):
+        self.assertTrue((ROOT / 'sql' / '028_depallet_dry_line_equipment.sql').exists())
+        self.assertFalse((ROOT / 'sql' / '028_press_production_interval_overlap.sql').exists())
+        self.assertEqual(MIGRATION.name, '029_press_production_interval_overlap.sql')
+        self.assertIn("Migration 029 may only be applied", self.migration)
+        self.assertIn("SESSION_CONTEXT(N'FittingMES_029_TestRun')", self.migration)
+
     def test_preflight_is_read_only_and_reports_existing_invalid_or_overlapping_rows(self):
+        self.assertIn("SESSION_CONTEXT(N'FittingMES_029_TestRun')", self.preflight)
         self.assertIn('first_assignment.ProductionStartTime IS NULL', self.preflight)
         self.assertIn('second_assignment.ProductionStartTime IS NULL', self.preflight)
         self.assertIn('first_assignment.ProductionStartTime < second_assignment.ProductionEndTime',
@@ -28,6 +36,7 @@ class PressProductionIntervalMigrationTests(unittest.TestCase):
             self.preflight,
             r'\b(?:INSERT|UPDATE|DELETE|ALTER|DROP|CREATE|MERGE)\b',
         )
+        self.assertNotIn('second_lot.ProdDate = first_lot.ProdDate', self.preflight)
 
     def test_migration_replaces_identity_unique_index_with_interval_indexes(self):
         self.assertIn('DROP INDEX UX_PressProduction_Production_Machine_ShiftActive',
@@ -48,7 +57,7 @@ class PressProductionIntervalMigrationTests(unittest.TestCase):
             r'\bUPDATE\s+dbo\.PressProduction\b|\bDELETE\s+FROM\s+dbo\.PressProduction\b',
         )
 
-    def test_trigger_serializes_and_blocks_same_day_press_or_mould_overlap(self):
+    def test_trigger_serializes_and_blocks_cross_date_press_or_mould_overlap(self):
         self.assertIn('TR_PressProduction_PreventActiveIntervalOverlap', self.migration)
         self.assertIn('AFTER INSERT, UPDATE', self.migration)
         self.assertIn('DECLARE @changed TABLE', self.migration)
@@ -58,7 +67,8 @@ class PressProductionIntervalMigrationTests(unittest.TestCase):
         self.assertIn('OR i.ProductionEndTime IS NULL', self.migration)
         self.assertIn('sys.sp_getapplock', self.migration)
         self.assertIn('ORDER BY ResourceName', self.migration)
-        self.assertIn('existing_lot.ProdDate = new_lot.ProdDate', self.migration)
+        self.assertNotIn('existing_lot.ProdDate = new_lot.ProdDate', self.migration)
+        self.assertIn('actual datetime interval.', self.migration)
         self.assertIn('new_assignment.MachineCode = existing_assignment.MachineCode',
                       self.migration)
         self.assertIn('new_assignment.MouldID = existing_assignment.MouldID',
@@ -88,13 +98,13 @@ class PressProductionIntervalMigrationTests(unittest.TestCase):
     def test_test_database_bypass_requires_explicit_session_marker(self):
         for script in (self.migration, self.rollback):
             self.assertIn("DB_NAME() = N'SB23_TEST'", script)
-            self.assertIn("SESSION_CONTEXT(N'FittingMES_028_TestRun')", script)
+            self.assertIn("SESSION_CONTEXT(N'FittingMES_029_TestRun')", script)
         setup = TEST_SETUP.read_text(encoding='utf-8')
         cleanup = TEST_CLEANUP.read_text(encoding='utf-8')
         integration = SQLSERVER_TEST.read_text(encoding='utf-8')
         self.assertIn("DB_NAME() <> N'SB23_TEST'", setup)
         self.assertIn("DB_NAME() <> N'SB23_TEST'", cleanup)
-        self.assertIn('FITTINGMES_028_TEST_AUTHORIZED', integration)
+        self.assertIn('FITTINGMES_029_TEST_AUTHORIZED', integration)
         self.assertIn('"DATABASE={SB23_TEST};"', integration)
         self.assertNotRegex(integration, r'\bCREATE\s+DATABASE\b')
 

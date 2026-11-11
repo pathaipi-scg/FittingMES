@@ -71,6 +71,12 @@ def history(cursor, production_id, old_lot, new_lot, old_plan, new_plan, change)
         VALUES (?,?,?,?,?,?)""", production_id, old_lot, new_lot, old_plan, new_plan, change)
 
 
+def _cutoff_schema_available(cursor):
+    cursor.execute("SELECT OBJECT_ID(N'dbo.ProductionDateCutoffVersion', N'U')")
+    row = cursor.fetchone()
+    return bool(row and row[0])
+
+
 def insert_lot(conn, selected, product_code, prefix, running_no, product_family_id=None):
     try:
         if not isinstance(running_no, str) or not RUNNING_SUFFIX_PATTERN.fullmatch(running_no):
@@ -79,9 +85,26 @@ def insert_lot(conn, selected, product_code, prefix, running_no, product_family_
             raise ValueError('Running No must be between 01 and 99.')
         running_no = int(running_no)
         cursor = conn.cursor()
-        if prefix != lot_prefix(cursor, product_family_id, product_code, day(selected['StartTime'])):
-            raise ValueError('Lot prefix does not match the selected family/product and Plan Date.')
+        selected_start = selected['StartTime']
+        proposed_date = day(selected_start)
         lock_lots(cursor)
+        cutoff_versioned = _cutoff_schema_available(cursor)
+        cutoff_id = cutoff_snapshot = shift_master_id = shift_code_snapshot = None
+        if cutoff_versioned:
+            from app.production_clock import read_day_start_time
+            from app.shift_settings import (resolve_new_production_date,
+                                            resolve_shift_snapshot)
+            fallback_cutoff = read_day_start_time(cursor, proposed_date)
+            config = resolve_new_production_date(cursor, selected_start, fallback_cutoff)
+            proposed_date = config['ProductionDate']
+            cutoff_id = config['ProductionDateCutoffVersionID']
+            cutoff_snapshot = config['ProductionDateCutoffSnapshot']
+            shift_master_id, shift_code_snapshot = resolve_shift_snapshot(
+                cursor, selected['Shift'], proposed_date)
+            if shift_master_id is None:
+                raise ValueError('The selected plan Shift is not configured for this Production Date.')
+        if prefix != lot_prefix(cursor, product_family_id, product_code, day(selected_start)):
+            raise ValueError('Lot prefix does not match the selected family/product and Plan Date.')
         family_name = require_product(cursor, product_family_id, product_code)
         if read_mapping(cursor, selected['MaterialCode'][:8]) != (product_family_id, product_code):
             raise ValueError('Material mapping changed. Refresh before creating a lot.')
@@ -96,15 +119,28 @@ def insert_lot(conn, selected, product_code, prefix, running_no, product_family_
             raise ValueError('This Lot No. or running number is already assigned to an active Lot.')
         cursor.execute('''SELECT ISNULL(MAX(LotSequence),0)+1
             FROM dbo.ProductionLot WITH (UPDLOCK,HOLDLOCK) WHERE ProdDate=? AND IsActive=1''',
-            day(selected['StartTime']))
+            proposed_date)
         lot_sequence = int(cursor.fetchone()[0])
-        cursor.execute("""INSERT INTO dbo.ProductionLot
-            (ProdDate,Shift,PlanName,MaterialCode,MaterialName,ProductCode,LotPrefix,RunningNo,LotNo,
-             PlanQty,ProductFamily,ProductFamilyID,LotSequence)
-            OUTPUT INSERTED.ProductionID VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            day(selected['StartTime']), selected['Shift'], selected['PlanName'],
-            selected['MaterialCode'], selected['MaterialName'], product_code,
-            prefix, running_no, lot_no, selected['PlanCount'], family_name, product_family_id, lot_sequence)
+        if cutoff_versioned:
+            cursor.execute("""INSERT INTO dbo.ProductionLot
+                (ProdDate,Shift,PlanName,MaterialCode,MaterialName,ProductCode,LotPrefix,RunningNo,LotNo,
+                 PlanQty,ProductFamily,ProductFamilyID,LotSequence,ShiftMasterID,ShiftCodeSnapshot,
+                 ProductionDateCutoffVersionID,ProductionDateCutoffSnapshot)
+                OUTPUT INSERTED.ProductionID VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                proposed_date, selected['Shift'], selected['PlanName'],
+                selected['MaterialCode'], selected['MaterialName'], product_code,
+                prefix, running_no, lot_no, selected['PlanCount'], family_name,
+                product_family_id, lot_sequence, shift_master_id, shift_code_snapshot,
+                cutoff_id, cutoff_snapshot)
+        else:
+            cursor.execute("""INSERT INTO dbo.ProductionLot
+                (ProdDate,Shift,PlanName,MaterialCode,MaterialName,ProductCode,LotPrefix,RunningNo,LotNo,
+                 PlanQty,ProductFamily,ProductFamilyID,LotSequence)
+                OUTPUT INSERTED.ProductionID VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                proposed_date, selected['Shift'], selected['PlanName'],
+                selected['MaterialCode'], selected['MaterialName'], product_code,
+                prefix, running_no, lot_no, selected['PlanCount'], family_name,
+                product_family_id, lot_sequence)
         production_id = cursor.fetchone()[0]
         history(cursor, production_id, None, lot_no, None, selected['PlanName'], 'CREATE')
         conn.commit()

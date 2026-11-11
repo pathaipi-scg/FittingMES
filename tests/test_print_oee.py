@@ -214,14 +214,14 @@ class PrintOeeCalculationTests(unittest.TestCase):
         episodes = [
             calculate_oee_row(row(
                 PressProductionID=1, MachineCode='F7', Shift='1',
-                ShiftMasterID=101, MouldName='Mould Alpha',
+                ShiftMasterID=101, ShiftPeriodID=11, MouldName='Mould Alpha',
                 StandardSpeed=Decimal('0.50'),
                 ProductionStartTime=datetime(2026, 9, 26, 8),
                 ProductionEndTime=datetime(2026, 9, 26, 9),
                 CounterQty=100, CuringQty=90)),
             calculate_oee_row(row(
                 PressProductionID=2, MachineCode='F7', Shift='1',
-                ShiftMasterID=101, MouldName='Mould Beta',
+                ShiftMasterID=101, ShiftPeriodID=12, MouldName='Mould Beta',
                 StandardSpeed=Decimal('0.75'),
                 ProductionStartTime=datetime(2026, 9, 26, 10),
                 ProductionEndTime=datetime(2026, 9, 26, 12),
@@ -286,8 +286,10 @@ class PrintOeeCalculationTests(unittest.TestCase):
 
 class PrintOeeQueryTests(unittest.TestCase):
     class Cursor:
-        def __init__(self, shift_schema=True, assignments=None, events=None):
+        def __init__(self, shift_schema=True, assignments=None, events=None,
+                     snapshot_schema=False):
             self.shift_schema = shift_schema
+            self.snapshot_schema = snapshot_schema
             self.assignments = assignments or []
             self.events = events or []
             self.statements = []
@@ -297,8 +299,8 @@ class PrintOeeQueryTests(unittest.TestCase):
         def execute(self, sql, *args):
             self.statements.append((sql, args))
             if 'COL_LENGTH(' in sql:
-                self.description = [('HasShiftSchema',)]
-                self.result = [(int(self.shift_schema),)]
+                self.description = [('HasShiftSchema',), ('HasShiftCodeSnapshot',)]
+                self.result = [(int(self.shift_schema), int(self.snapshot_schema))]
             elif 'FROM dbo.Fitting_MainMachine' in sql:
                 self.description = [('McId',), ('Machine',), ('No',)]
                 self.result = [(7, 'F', 16)]
@@ -383,6 +385,14 @@ class PrintOeeQueryTests(unittest.TestCase):
         self.assertEqual(args, (DAY,))
         self.assertTrue(all(statement.lstrip().upper().startswith('SELECT')
                             for statement, _ in cursor.statements))
+
+    def test_oee_uses_immutable_shift_code_snapshot_when_available(self):
+        cursor = self.Cursor(snapshot_schema=True)
+        _query_rows(cursor, DAY)
+        sql, _ = cursor.statements[-1]
+        self.assertIn('COALESCE(pp.ShiftCodeSnapshot,shift.ShiftCode)', sql)
+        self.assertIn('AS AssignmentShiftCode', sql)
+        self.assertIn('pp.ShiftMasterID, COALESCE(pp.ShiftCodeSnapshot,shift.ShiftCode)', sql)
 
     def test_logger_query_uses_saved_code_precedence_and_stop_relationship(self):
         class MappingCursor:
@@ -539,7 +549,8 @@ class PrintOeeQueryTests(unittest.TestCase):
             row(MachineCode='F7', Shift='1', AssignmentShiftUnknown=False),
             row(PressProductionID=102, MachineCode='F7', Shift='1',
                 AssignmentShiftUnknown=False),
-            row(MachineCode='F7', Shift='2', AssignmentShiftUnknown=False),
+            row(MachineCode='F7', Shift='2', ShiftMasterID=302,
+                AssignmentShiftUnknown=False),
             row(MachineCode='F8', Shift='1', AssignmentShiftUnknown=False),
         ]
         events = [
@@ -694,8 +705,7 @@ class PrintOeeQueryTests(unittest.TestCase):
         for excluded in ('Setup', 'ChgOver', 'Idle', 'Cleaning', 'Breakdown',
                          'SMDT', 'AR', 'PR', 'QR', 'OEE'):
             self.assertNotIn(excluded, top)
-        self.assertIn('SHIFT 1', top)
-        self.assertIn('SHIFT 2', top)
+        self.assertIn('SHIFT {{ shift.Code or shift }}', top)
         self.assertIn('Total production minutes', top)
         self.assertIn('>Speed<', top)
         self.assertIn('>Min<', top)

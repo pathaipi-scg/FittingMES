@@ -182,24 +182,46 @@ def read_logger_time_summary(cursor, production_date):
         row["MachineLabel"] = f'{row["Machine"]}{row["McInstanceNo"]}'
 
     shift_rules = read_shift_rules(cursor, production_date)
+    cursor.execute("""SELECT
+        CASE WHEN COL_LENGTH(N'dbo.LoggerEvent',N'ShiftMasterID') IS NULL
+             THEN 0 ELSE 1 END,
+        CASE WHEN COL_LENGTH(N'dbo.LoggerEvent',N'ShiftCodeSnapshot') IS NULL
+             THEN 0 ELSE 1 END""")
+    schema = cursor.fetchone() or (0, 0)
+    has_shift_identity = bool(schema[0])
+    has_shift_snapshot = bool(schema[1])
+    identity_fields = (
+        ', event.ShiftMasterID AS ShiftMasterID, '
+        'event.ShiftCodeSnapshot AS ShiftCodeSnapshot, event.ProductionDate'
+        if has_shift_identity and has_shift_snapshot else ''
+    )
     cursor.execute("""
         SELECT event.LoggerEventID, event.McId, event.McInstanceNo,
                event.StopDateTime, event.StartDateTime, event.DurationMin,
                event.StopId, event.StopTypeSnapshot, event.RelatedMachineSnapshot,
                event.SubMachineSnapshot, event.CauseSnapshot, event.ShiftID
+               {identity_fields}
         FROM dbo.LoggerEvent AS event
         WHERE event.ProductionDate=? AND event.StopId IN (?,?,?,?,?,?)
         ORDER BY event.McId, event.McInstanceNo, event.StopDateTime, event.LoggerEventID
-    """, production_date, *category_ids)
-    events = _rows(cursor, ("LoggerEventID", "McId", "McInstanceNo", "StopDateTime",
-                            "StartDateTime", "DurationMin", "StopId", "StopTypeSnapshot",
-                            "RelatedMachineSnapshot", "SubMachineSnapshot", "CauseSnapshot",
-                            "ShiftID"))
+    """.format(identity_fields=identity_fields), production_date, *category_ids)
+    event_keys = ("LoggerEventID", "McId", "McInstanceNo", "StopDateTime",
+                  "StartDateTime", "DurationMin", "StopId", "StopTypeSnapshot",
+                  "RelatedMachineSnapshot", "SubMachineSnapshot", "CauseSnapshot",
+                  "ShiftID")
+    if identity_fields:
+        event_keys += ("ShiftMasterID", "ShiftCodeSnapshot", "ProductionDate")
+    events = _rows(cursor, event_keys)
+    if not identity_fields:
+        for event in events:
+            event.update(ShiftMasterID=None, ShiftCodeSnapshot=None,
+                         ProductionDate=production_date)
     stop_type_by_id = {stop_id: name for name, stop_id in stop_ids.items()}
     summary_by_machine = {
         (row["McId"], row["McInstanceNo"]): row for row in summary
     }
     valid_shift_ids = {int(rule["ShiftID"]) for rule in shift_rules}
+    shift_descriptors = {}
     for event in events:
         machine_key = (event["McId"], event["McInstanceNo"])
         row = summary_by_machine[machine_key]
@@ -215,8 +237,40 @@ def read_logger_time_summary(cursor, production_date):
             resolved_shift = resolve_shift(
                 production_date, event["StopDateTime"].time(), None, shift_rules)
             shift_id = int(resolved_shift) if resolved_shift is not None else None
-        if shift_id in SHIFT_SUMMARY_FIELDS:
-            row[SHIFT_SUMMARY_FIELDS[shift_id][stop_type]] += duration
+        master_id = event.get("ShiftMasterID")
+        snapshot_code = str(event.get("ShiftCodeSnapshot") or "").strip()
+        if master_id is not None:
+            shift_key = f"MASTER:{master_id}"
+            shift_code = snapshot_code or f"Legacy Shift {shift_id}"
+        elif shift_id in valid_shift_ids:
+            shift_key = f"LEGACY:{shift_id}"
+            shift_code = str(shift_id)
+        else:
+            continue
+        descriptor = shift_descriptors.setdefault(shift_key, dict(
+            Key=shift_key, Code=shift_code, ShiftMasterID=master_id))
+        group = row.setdefault("ShiftGroups", {}).setdefault(
+            shift_key, dict(ShiftKey=shift_key, ShiftCode=shift_code,
+                            ShiftMasterID=master_id,
+                            Values={name: 0 for name in SUMMARY_TYPES}))
+        group["Values"][stop_type] += duration
+        compatibility_shift = (
+            int(shift_code) if shift_code.isascii() and shift_code.isdigit()
+            else shift_id if master_id is None else None
+        )
+        if compatibility_shift in SHIFT_SUMMARY_FIELDS:
+            row[SHIFT_SUMMARY_FIELDS[compatibility_shift][stop_type]] += duration
+
+    ordered_shifts = sorted(shift_descriptors.values(), key=lambda item: (
+        item["Code"], item["ShiftMasterID"] is None,
+        item["ShiftMasterID"] or 0))
+    for row in summary:
+        row["ShiftGroups"] = [
+            dict(descriptor, Values=row.get("ShiftGroups", {}).get(
+                descriptor["Key"], {}).get(
+                    "Values", {name: 0 for name in SUMMARY_TYPES}))
+            for descriptor in ordered_shifts
+        ]
 
     cursor.execute("""
         SELECT COUNT(*)
@@ -234,6 +288,7 @@ def read_logger_time_summary(cursor, production_date):
     return {
         "summary": summary,
         "events": events,
+        "shifts": ordered_shifts,
         "overlap_count": overlap_count,
         "overlap_warning": overlap_count > 0,
         "stop_ids": stop_ids,

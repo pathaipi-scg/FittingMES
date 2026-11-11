@@ -85,36 +85,30 @@
 <div class="oee-meta"><div>สัปดาห์ที่: <strong>{{ plan_week or '-' }}</strong></div><div>วันที่ผลิต: <strong>{{ production_date }}</strong></div></div>
 <div class="oee-section">PRESS / SHIFT PRODUCTION SUMMARY</div>
 <div class="oee-wide-wrap oee-summary-wrap"><table class="oee-table oee-press-summary">
-<colgroup><col style="width:6%"><col style="width:12%"><col style="width:5%">
-<col style="width:6%"><col style="width:6%"><col style="width:6%"><col style="width:6%"><col style="width:6%"><col style="width:6%">
-<col style="width:6%"><col style="width:6%"><col style="width:6%"><col style="width:6%"><col style="width:6%"><col style="width:6%"><col style="width:5%"></colgroup>
-<thead><tr><th rowspan="2">Press</th><th rowspan="2">Mould</th><th rowspan="2">Speed</th><th class="shift-group" colspan="6">SHIFT 1</th><th class="shift-group" colspan="6">SHIFT 2</th><th rowspan="2">Total production minutes</th></tr>
-<tr><th>Start</th><th>End</th><th>Min</th><th>Counter</th><th>Curing</th><th>Wet Rej.</th><th>Start</th><th>End</th><th>Min</th><th>Counter</th><th>Curing</th><th>Wet Rej.</th></tr></thead>
+<thead><tr><th rowspan="2">Press</th><th rowspan="2">Mould</th><th rowspan="2">Speed</th>{% for shift in shifts %}<th class="shift-group" colspan="6">SHIFT {{ shift.Code or shift }}</th>{% endfor %}<th rowspan="2">Total production minutes</th></tr>
+<tr>{% for shift in shifts %}<th>Start</th><th>End</th><th>Min</th><th>Counter</th><th>Curing</th><th>Wet Rej.</th>{% endfor %}</tr></thead>
 <tbody>{% for press in production_summary_rows %}
 <tr><td>{{ press.Press }}</td><td>{{ press.Mould or '' }}</td><td>{{ press.StandardSpeed or '' }}</td>
-{% for shift in (press.Shift1, press.Shift2) %}{% if shift.HasEpisodes %}
+{% for descriptor in shifts %}{% set shift=press.Shifts.get(descriptor.Key) if descriptor is mapping else (press.Shift1 if descriptor|string == '1' else press.Shift2) %}{% if shift.HasEpisodes %}
 <td class="episode-time">{{ shift.Start }}</td><td class="episode-time">{{ shift.End }}</td><td class="num">{{ value(shift.ProductionMinutes) }}</td><td class="num">{{ value(shift.Counter, 0) }}</td><td class="num">{{ value(shift.Curing, 0) }}</td><td class="num">{{ value(shift.WetReject, 0) }}</td>
 {% else %}<td></td><td></td><td></td><td></td><td></td><td></td>{% endif %}{% endfor %}
 <td class="num">{{ value(press.TotalProductionMinutes) }}</td></tr>
-{% else %}<tr><td colspan="16">No Press production assignments for this Production Date.</td></tr>{% endfor %}
+{% else %}<tr><td colspan="{{ 4 + shifts|length * 6 }}">No Press production assignments for this Production Date.</td></tr>{% endfor %}
 {% if production_summary_rows %}{% set totals=production_summary_totals %}
 <tr class="total-row"><th colspan="3">TOTAL</th>
-{% for shift in (totals.Shift1, totals.Shift2) %}{% if shift.HasEpisodes %}
+{% for shift in totals.ShiftGroups %}{% if shift.HasEpisodes %}
 <td></td><td></td><td class="num">{{ value(shift.ProductionMinutes) }}</td><td class="num">{{ value(shift.Counter, 0) }}</td><td class="num">{{ value(shift.Curing, 0) }}</td><td class="num">{{ value(shift.WetReject, 0) }}</td>
 {% else %}<td></td><td></td><td></td><td></td><td></td><td></td>{% endif %}{% endfor %}
 <td class="num">{{ value(totals.TotalProductionMinutes) }}</td></tr>{% endif %}
 </tbody></table></div>
 <div class="oee-section">LOGGER DOWNTIME BY EXCEL CATEGORY (MINUTES)</div>
 <div class="oee-wide-wrap oee-category-wrap"><table class="oee-table oee-category-table">
-<colgroup><col style="width:22%">{% for machine in logger_category_table.Machines %}<col>{% endfor %}<col>{% for machine in logger_category_table.Machines %}<col>{% endfor %}<col><col></colgroup>
-<thead><tr><th rowspan="2">Excel Category</th><th class="shift-group" colspan="{{ logger_category_table.Machines|length + 1 }}">SHIFT 1</th><th class="shift-group" colspan="{{ logger_category_table.Machines|length + 1 }}">SHIFT 2</th><th rowspan="2">All Shifts Total</th></tr>
-<tr>{% for machine in logger_category_table.Machines %}<th>{{ machine.MachineCode }}</th>{% endfor %}<th>Total</th>{% for machine in logger_category_table.Machines %}<th>{{ machine.MachineCode }}</th>{% endfor %}<th>Total</th></tr></thead>
+<colgroup><col style="width:22%">{% for shift in logger_category_table.ShiftGroups %}{% for machine in logger_category_table.Machines %}<col>{% endfor %}<col>{% endfor %}<col></colgroup>
+<thead><tr><th rowspan="2">Excel Category</th>{% for shift in logger_category_table.ShiftGroups %}<th class="shift-group" colspan="{{ logger_category_table.Machines|length + 1 }}">SHIFT {{ shift.Code }}</th>{% endfor %}<th rowspan="2">All Shifts Total</th></tr>
+<tr>{% for shift in logger_category_table.ShiftGroups %}{% for machine in logger_category_table.Machines %}<th>{{ machine.MachineCode }}</th>{% endfor %}<th>Total</th>{% endfor %}</tr></thead>
 <tbody>{% for section in logger_category_table.Sections %}{% for item in section.Rows %}
 <tr{% if item.Kind == 'subtotal' %} class="category-total"{% endif %}><th class="category-name">{% if item.Kind == 'category' %}<span class="oee-code">{{ item.Code }}</span> {{ item.Label }}{% else %}{{ item.Label }}{% endif %}</th>
-{% for cell in item.Shift1 %}{% if cell.assigned %}<td class="num">{{ value(cell.value) }}</td>{% else %}<td></td>{% endif %}{% endfor %}
-{% if item.Shift1Total.assigned %}<td class="num">{{ value(item.Shift1Total.value) }}</td>{% else %}<td></td>{% endif %}
-{% for cell in item.Shift2 %}{% if cell.assigned %}<td class="num">{{ value(cell.value) }}</td>{% else %}<td></td>{% endif %}{% endfor %}
-{% if item.Shift2Total.assigned %}<td class="num">{{ value(item.Shift2Total.value) }}</td>{% else %}<td></td>{% endif %}
+{% for shift in item.ShiftValues %}{% for cell in shift.Cells %}{% if cell.assigned %}<td class="num">{{ value(cell.value) }}</td>{% else %}<td></td>{% endif %}{% endfor %}{% if shift.Total.assigned %}<td class="num">{{ value(shift.Total.value) }}</td>{% else %}<td></td>{% endif %}{% endfor %}
 {% if item.AllShiftsTotal.assigned %}<td class="num">{{ value(item.AllShiftsTotal.value) }}</td>{% else %}<td></td>{% endif %}</tr>
 {% endfor %}{% endfor %}</tbody></table></div>
 <p class="oee-note">Blank category cells indicate no assignment or incomplete mapping, duration, or event attribution. SubStop mapping takes precedence over StopType fallback. LOGGER minutes are report-only and excluded from OEE.</p>
@@ -135,8 +129,8 @@
 <tbody>{% for row in rows %}
 <tr><td>{{ row.Shift }}</td><td>{{ row.MachineCode }}</td><td>{{ row.LotNo or '-' }}</td><td class="product">{{ row.ProductName or row.ProductCode or '-' }}</td><td>{{ row.MouldNo or '-' }}</td><td class="num">{{ value(row.Counter, 0) }}</td><td class="num">{{ value(row.Curing, 0) }}</td><td>{{ row.Start or '' }}</td><td>{{ row.End or '' }}</td><td class="num">{{ value(row.ActualProductionMinutes) }}</td><td class="num">{{ value(row.SetupMinutes) }}</td><td class="num">{{ value(row.ChangeoverMinutes) }}</td><td class="num">{{ value(row.IdleMinutes) }}</td><td class="num">{{ value(row.CleaningMinutes) }}</td><td class="num">{{ value(row.BreakdownMinutes) }}</td><td class="num">{{ percent(row.Availability) }}</td><td class="num">{{ percent(row.Performance) }}</td><td class="num">{{ percent(row.Quality) }}</td><td class="num">{{ percent(row.OEE) }}</td></tr>
 {% else %}<tr><td colspan="19">No Press production records.</td></tr>{% endfor %}</tbody></table></div>
-{% for shift in shifts %}{% set summary=summaries[shift|string] %}
-<div class="oee-summary"><h2>SHIFT {{ shift }} OEE SUMMARY</h2><div>Actual Production Minutes<br><b>{{ value(summary.get('ActualProductionMinutes')) }}</b></div><div>Run Time<br><b>{{ value(summary.get('RunTime')) }}</b></div><div>Total Counter<br><b>{{ value(summary.get('TotalCount'), 0) }}</b></div><div>Total Curing<br><b>{{ value(summary.get('GoodCount'), 0) }}</b></div><div>Availability<br><b>{{ percent(summary.get('Availability')) }}</b></div><div>Performance<br><b>{{ percent(summary.get('Performance')) }}</b></div><div>Quality<br><b>{{ percent(summary.get('Quality')) }}</b></div><div>OEE<br><b>{{ percent(summary.get('OEE')) }}</b></div></div>
+{% for shift in shifts %}{% set shift_key=shift.Key if shift is mapping else shift|string %}{% set summary=summaries.get(shift_key) or summaries.get(shift.Code) or {} %}
+<div class="oee-summary"><h2>SHIFT {{ shift.Code or shift }} OEE SUMMARY</h2><div>Actual Production Minutes<br><b>{{ value(summary.get('ActualProductionMinutes')) }}</b></div><div>Run Time<br><b>{{ value(summary.get('RunTime')) }}</b></div><div>Total Counter<br><b>{{ value(summary.get('TotalCount'), 0) }}</b></div><div>Total Curing<br><b>{{ value(summary.get('GoodCount'), 0) }}</b></div><div>Availability<br><b>{{ percent(summary.get('Availability')) }}</b></div><div>Performance<br><b>{{ percent(summary.get('Performance')) }}</b></div><div>Quality<br><b>{{ percent(summary.get('Quality')) }}</b></div><div>OEE<br><b>{{ percent(summary.get('OEE')) }}</b></div></div>
 {% endfor %}
 {% set summary=summaries['ALL DAY'] %}
 <div class="oee-summary"><h2>ALL-SHIFT OEE SUMMARY</h2><div>Actual Production Minutes<br><b>{{ value(summary.get('ActualProductionMinutes')) }}</b></div><div>Run Time<br><b>{{ value(summary.get('RunTime')) }}</b></div><div>Total Counter<br><b>{{ value(summary.get('TotalCount'), 0) }}</b></div><div>Total Curing<br><b>{{ value(summary.get('GoodCount'), 0) }}</b></div><div>Availability<br><b>{{ percent(summary.get('Availability')) }}</b></div><div>Performance<br><b>{{ percent(summary.get('Performance')) }}</b></div><div>Quality<br><b>{{ percent(summary.get('Quality')) }}</b></div><div>OEE<br><b>{{ percent(summary.get('OEE')) }}</b></div></div>

@@ -44,7 +44,9 @@ class PressProductionCursor:
         self.conn.sql.append((sql, args))
         if self.conn.fail and self.conn.fail in sql:
             raise RuntimeError('simulated SQL error')
-        if 'COL_LENGTH(' in sql:
+        if 'ShiftPeriodMaster' in sql:
+            self.result = [(int(self.conn.period_schema_available),)]
+        elif 'COL_LENGTH(' in sql:
             self.result = [(int(self.conn.shift_schema_available),)]
         elif 'sys.sp_getapplock' in sql:
             resource = args[0] if args else 'FittingMES.ProductionLot'
@@ -120,9 +122,11 @@ class PressProductionCursor:
                 and (row.get('ShiftMasterID') == shift_id
                      or row.get('ShiftMasterID') is None)), None)
             self.result = [(found['PressProductionID'],)] if found else []
-        elif 'SELECT PressProductionID, ReleasedAt' in sql:
+        elif 'SELECT PressProductionID, ReleasedAt,ProductionStartTime,ProductionEndTime' in sql:
             row = self.conn.press_rows.get(args[0])
-            self.result = [(row['PressProductionID'], row.get('ReleasedAt'))] if row and row['ProductionID'] == args[1] else []
+            self.result = [(row['PressProductionID'], row.get('ReleasedAt'),
+                            row.get('ProductionStartTime'), row.get('ProductionEndTime'))] \
+                if row and row['ProductionID'] == args[1] else []
         elif 'SELECT pp.PressProductionID, pp.MouldID, pp.ReleasedAt, lot.ProdDate' in sql:
             row = self.conn.press_rows.get(args[0])
             values = (row['PressProductionID'], row['MouldID'], row.get('ReleasedAt'),
@@ -233,6 +237,11 @@ class PressProductionCursor:
                 row = self.conn.press_rows[args[0]]
                 row['ReleasedAt'] = None
                 row['ReleasedBy'] = None
+            elif 'SET ProductionEndTime=' in sql:
+                row = self.conn.press_rows[args[3]]
+                row['ProductionEndTime'] = args[0]
+                row['ReleasedAt'] = args[1]
+                row['ReleasedBy'] = args[2]
             elif 'ReleasedAt=' in sql:
                 row = self.conn.press_rows[args[1]]
                 row['ReleasedAt'] = datetime(2026, 9, 26, 14, 25)
@@ -294,6 +303,7 @@ class PressProductionConnection:
         self.code = '02'
         self.shifts = {'1': 101, '2': 202}
         self.shift_schema_available = True
+        self.period_schema_available = False
         self.logger_machines = {'F': 7, 'G': 8}
         self.logger_events = []
         self.press_code = 'F2'
@@ -521,7 +531,9 @@ class PressProductionTests(unittest.TestCase):
         conn = PressProductionConnection()
         conn.press_rows[30] = dict(PressProductionID=30, ProductionID=7, MachineCode='F2',
             MouldID=4, DispatchQty=100, CounterQty=500, CuringQty=480,
-            ProductionDate=conn.production_date, Remark='history')
+            ProductionDate=conn.production_date, Remark='history',
+            ProductionStartTime=datetime(2026, 9, 26, 8),
+            ProductionEndTime=datetime(2026, 9, 26, 16))
         conn.usage_rows[30] = dict(MouldUsageID=130, MouldID=4, PressProductionID=30,
             ReconditionNo=2, UsageCycles=500)
         conn.time_events[100] = dict(TimeEventID=100, ProductionID=7, EquipmentCode='F2',
@@ -610,7 +622,9 @@ class PressProductionTests(unittest.TestCase):
                 self.description = []
             def execute(self, sql, *args):
                 self.calls.append((sql, args))
-                if 'COL_LENGTH(' in sql:
+                if 'ShiftPeriodMaster' in sql:
+                    self.result = [(0,)]
+                elif 'COL_LENGTH(' in sql:
                     self.result = [(1,)]
                 elif 'FROM dbo.ShiftMaster' in sql:
                     self.result = [(101,)]
@@ -675,7 +689,9 @@ class PressProductionTests(unittest.TestCase):
                 self.description = []
             def execute(self, sql, *args):
                 self.calls.append((sql, args))
-                if 'COL_LENGTH(' in sql:
+                if 'ShiftPeriodMaster' in sql:
+                    self.result = [(0,)]
+                elif 'COL_LENGTH(' in sql:
                     self.result = [(1,)]
                 elif 'FROM dbo.ShiftMaster' in sql:
                     self.result = [(202,)]
@@ -706,7 +722,9 @@ class PressProductionTests(unittest.TestCase):
                 self.description = []
             def execute(self, sql, *args):
                 self.calls.append((sql, args))
-                if 'COL_LENGTH(' in sql:
+                if 'ShiftPeriodMaster' in sql:
+                    self.result = [(0,)]
+                elif 'COL_LENGTH(' in sql:
                     self.result = [(1,)]
                 elif 'FROM dbo.ShiftMaster' in sql:
                     self.result = [(101,)]
@@ -900,7 +918,9 @@ class PressProductionTests(unittest.TestCase):
         conn = PressProductionConnection()
         conn.press_rows[20] = dict(PressProductionID=20, ProductionID=8,
             MachineCode='F7', ShiftMasterID=101, MouldID=4, CounterQty=80,
-            ProductionDate=conn.production_date, ReleasedAt=None, ReleasedBy=None)
+            ProductionDate=conn.production_date, ReleasedAt=None, ReleasedBy=None,
+            ProductionStartTime=datetime(2026, 9, 26, 8),
+            ProductionEndTime=datetime(2026, 9, 26, 16))
         conn.press_code = 'F7'
         self.assertEqual(release_press_production(conn, 8, 20), 'RELEASED')
         new_id = save_press_production(conn, 7, valid_input(MachineCode='F7'))
@@ -1010,7 +1030,9 @@ class PressProductionTests(unittest.TestCase):
         conn = PressProductionConnection()
         conn.press_rows[20] = dict(PressProductionID=20, ProductionID=7,
             MachineCode='F2', ShiftMasterID=101, MouldID=4, CounterQty=80,
-            ProductionDate=conn.production_date, ReleasedAt=None, ReleasedBy=None)
+            ProductionDate=conn.production_date, ReleasedAt=None, ReleasedBy=None,
+            ProductionStartTime=datetime(2026, 9, 26, 8),
+            ProductionEndTime=datetime(2026, 9, 26, 16))
         conn.usage_rows[20] = dict(MouldUsageID=120, MouldID=4,
             PressProductionID=20, ReconditionNo=2, UsageCycles=80)
         before_usage = dict(conn.usage_rows[20])
@@ -1997,9 +2019,16 @@ class PressProductionTests(unittest.TestCase):
                                                legacy_shift_episode, shift_two_episode,
                                                save_actions_episode], eligible_shifts=[
             dict(ShiftCode='1', ShiftName='Shift 1'), dict(ShiftCode='2', ShiftName='Shift 2')],
-            eligible_presses=[dict(PressCode='F3', PressName='Press 3', AvailableShiftCodes=['1', '2'])],
+            eligible_periods=[
+                dict(ShiftPeriodID=11, ShiftCode='1', StartTime=time(8), EndTime=time(16),
+                     Available=True, AvailabilityReason=None, PeriodLabelDisplay='1 (08:00-16:00)'),
+                dict(ShiftPeriodID=12, ShiftCode='1', StartTime=time(16), EndTime=time(18),
+                     Available=True, AvailabilityReason=None, PeriodLabelDisplay='1 (16:00-18:00)')],
+            eligible_presses=[dict(PressCode='F3', PressName='Press 3',
+                                    AvailableShiftCodes=['1'], AvailablePeriodIDs=[11, 12])],
             eligible_moulds=[dict(MouldID=4, MouldNo='M000001', MouldName='Ridge',
-                                  AvailableShiftCodes=['1', '2'])], press_product_error=None)
+                                  AvailableShiftCodes=['1'], AvailablePeriodIDs=[11, 12])],
+            press_product_error=None)
         with patch('app.main.get_connection', return_value=PressProductionConnection()), \
              patch('app.main.read_lots', return_value=[dict(LOT)]), \
              patch('app.main.lot_has_dependencies', return_value=False), \
@@ -2057,7 +2086,9 @@ class PressProductionTests(unittest.TestCase):
         self.assertNotRegex(save_row_35, r'<button form="press-production-35"[^>]*disabled')
         self.assertNotIn('PPID', page)
         self.assertNotIn('F2 / Press 2</option>', page)
-        self.assertIn('value="1" selected>Shift 1', page)
+        self.assertIn('name="shift_period_id"', page)
+        self.assertIn('data-shift-code="1"', page)
+        self.assertNotIn('name="shift_code" required', page)
         self.assertIn('Downtime attribution is ambiguous. Saved values are retained; downtime editing is disabled.', page)
         self.assertNotIn('name="shift1_setup_minutes"', page)
         self.assertIn('>MOULD</button>', page)
@@ -2093,10 +2124,16 @@ class PressProductionTests(unittest.TestCase):
         press_context = dict(press_production=[press_row],
             eligible_shifts=[dict(ShiftCode='1', ShiftName='Shift 1'),
                              dict(ShiftCode='2', ShiftName='Shift 2')],
+            eligible_periods=[
+                dict(ShiftPeriodID=41, ShiftCode='1', StartTime=time(8), EndTime=time(16),
+                     Available=True, AvailabilityReason=None, PeriodLabelDisplay='1 (08:00-16:00)'),
+                dict(ShiftPeriodID=42, ShiftCode='2', StartTime=time(18), EndTime=time(4),
+                     Available=True, AvailabilityReason=None, PeriodLabelDisplay='2 (18:00-04:00 +1 day)')],
             eligible_presses=[dict(PressCode='F2', PressName='Press 2', AvailableShiftCodes=['1', '2'])],
             eligible_moulds=[dict(MouldID=4, MouldNo='M000001', MouldName='Ridge',
                                   AvailableShiftCodes=['1', '2'])], press_product_error=None)
-        form_data = dict(PressProductionID=30, ShiftCode='2', MachineCode='F2', MouldID='4')
+        form_data = dict(PressProductionID=30, ShiftCode='2', ShiftPeriodID='42',
+                         MachineCode='F2', MouldID='4')
         with patch('app.main.get_connection', return_value=PressProductionConnection()), \
              patch('app.main.read_lots', return_value=[dict(LOT)]), \
              patch('app.main.lot_has_dependencies', return_value=False), \
@@ -2108,9 +2145,10 @@ class PressProductionTests(unittest.TestCase):
                 press_form=form_data, press_message='Mould is already assigned.', press_message_type='error')
         page = response.body.decode()
         self.assertIn('action="/lots/7/press-production/30"', page)
-        self.assertIn('value="2" selected>Shift 2', page)
-        self.assertIn('value="F2" data-available-shifts="1,2" data-availability-reason="" selected', page)
-        self.assertIn('value="4" data-available-shifts="1,2" data-availability-reason="" selected', page)
+        self.assertIn('value="42" data-shift-code="2"', page)
+        self.assertIn('id="press-shift-code" name="shift_code" value="2"', page)
+        self.assertRegex(page, r'<option value="F2"[^>]*selected')
+        self.assertRegex(page, r'<option value="4"[^>]*selected')
         self.assertIn('EDIT FITTING', page)
         self.assertIn('CANCEL EDIT', page)
         self.assertIn('Mould is already assigned.', page)
@@ -2296,9 +2334,9 @@ class PressProductionRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn('Mould is already assigned in Shift 2.', page)
         self.assertIn('action="/lots/7/press-production/30"', page)
-        self.assertIn('value="2" selected>Shift 2', page)
-        self.assertIn('value="F2" data-available-shifts="1,2" data-availability-reason="" selected', page)
-        self.assertIn('value="4" data-available-shifts="1,2" data-availability-reason="" selected', page)
+        self.assertIn('id="press-shift-code" name="shift_code" value="2"', page)
+        self.assertRegex(page, r'<option value="F2"[^>]*selected')
+        self.assertRegex(page, r'<option value="4"[^>]*selected')
         self.assertNotIn('CounterQty', submitted_data)
         self.assertNotIn('DispatchQty', submitted_data)
         self.assertNotIn('CuringQty', submitted_data)

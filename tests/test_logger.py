@@ -67,12 +67,15 @@ class QueueCursor:
 
 class SaveCursor:
     def __init__(self, event_id=101, fail=False, overlap_row=None, overlap_machine=(7, 1),
-                 existing_event=(None, 1)):
+                 existing_event=(None, 1), identity_schema=False,
+                 shift_version=(501, "A")):
         self.event_id = event_id
         self.fail = fail
         self.overlap_row = overlap_row
         self.overlap_machine = overlap_machine
         self.existing_event = existing_event
+        self.identity_schema = identity_schema
+        self.shift_version = shift_version
         self.executed = []
         self.inserted = []
         self.rowcount = 1
@@ -91,6 +94,10 @@ class SaveCursor:
         query = getattr(self, "last_query", "")
         if "ProductionDayRuleHistory" in query:
             return (time(8),)
+        if "COL_LENGTH(" in query:
+            return (int(self.identity_schema), int(self.identity_schema))
+        if "FROM dbo.ShiftMasterVersion" in query:
+            return self.shift_version if self.identity_schema else None
         if "SELECT StopDateTime, ShiftID" in query:
             return self.existing_event
         if "SELECT TOP (1) LoggerEventID" in query:
@@ -116,10 +123,13 @@ class SaveCursor:
 
 class SaveConnection:
     def __init__(self, event_id=101, fail=False, overlap_row=None, overlap_machine=(7, 1),
-                 existing_event=(None, 1)):
+                 existing_event=(None, 1), identity_schema=False,
+                 shift_version=(501, "A")):
         self.cursor_instance = SaveCursor(event_id=event_id, fail=fail, overlap_row=overlap_row,
                                           overlap_machine=overlap_machine,
-                                          existing_event=existing_event)
+                                          existing_event=existing_event,
+                                          identity_schema=identity_schema,
+                                          shift_version=shift_version)
         self.commits = 0
         self.rollbacks = 0
 
@@ -521,6 +531,13 @@ class LoggerResolverTests(unittest.TestCase):
         self.assertNotIn("F1", query)
         self.assertEqual(params[14:20], ("F1", None, "Mould1", "RUN", "--", None))
 
+    def test_save_persists_effective_logical_shift_identity_and_snapshot(self):
+        connection = SaveConnection(identity_schema=True, shift_version=(501, "A"))
+        save_logger_event(connection, self.save_input(), self.masters())
+        query, params = connection.cursor_instance.inserted[0]
+        self.assertIn("ShiftMasterID, ShiftCodeSnapshot", query)
+        self.assertEqual(params[-3:], (501, "A", None))
+
     def test_update_preserves_existing_identity_and_commits(self):
         connection = SaveConnection(event_id=501)
         event_id = update_logger_event(connection, 42, self.save_input(duration_min="2.5"), self.masters())
@@ -805,7 +822,9 @@ class LoggerResolverTests(unittest.TestCase):
                     overlap_date.replace(hour=8), overlap_date.replace(hour=10)))
                 with self.assertRaisesRegex(LoggerValidationError, "Time overlaps an existing LOGGER event"):
                     save_logger_event(connection, self.save_input(stop=stop, start=start), self.masters())
-                self.assertEqual(len(connection.cursor_instance.executed), 1)
+                self.assertEqual(sum(
+                    "SELECT TOP (1) LoggerEventID" in query
+                    for query, _ in connection.cursor_instance.executed), 1)
                 self.assertEqual(connection.commits, 0)
                 self.assertEqual(connection.rollbacks, 1)
 
@@ -813,7 +832,9 @@ class LoggerResolverTests(unittest.TestCase):
         connection = SaveConnection(overlap_row=self.overlap_row(
             datetime(2026, 10, 1, 8), datetime(2026, 10, 1, 10)))
         save_logger_event(connection, self.save_input(stop="10:00", start="10:10"), self.masters())
-        self.assertEqual(len(connection.cursor_instance.executed), 2)
+        self.assertEqual(sum(
+            "SELECT TOP (1) LoggerEventID" in query
+            for query, _ in connection.cursor_instance.executed), 1)
         self.assertEqual(connection.commits, 1)
 
     def test_different_primary_instance_or_machine_is_allowed(self):
@@ -837,7 +858,9 @@ class LoggerResolverTests(unittest.TestCase):
                     datetime(2026, 10, 1, 8), datetime(2026, 10, 1, 10)))
                 with self.assertRaisesRegex(LoggerValidationError, "Time overlaps"):
                     save_logger_event(connection, self.save_input(**overrides), self.masters())
-                query, params = connection.cursor_instance.executed[0]
+                query, params = next(
+                    call for call in connection.cursor_instance.executed
+                    if "SELECT TOP (1) LoggerEventID" in call[0])
                 self.assertEqual(params[:2], (7, 1))
 
     def test_related_machine_does_not_create_false_primary_overlap(self):
@@ -848,14 +871,19 @@ class LoggerResolverTests(unittest.TestCase):
             related_mc_id=5, related_mc_instance_no=1,
             sub_mc_id=None, sub_mc_instance_no=None), self.masters())
         self.assertEqual(connection.commits, 1)
-        self.assertEqual(connection.cursor_instance.executed[0][1][:2], (7, 1))
+        overlap_call = next(
+            call for call in connection.cursor_instance.executed
+            if "SELECT TOP (1) LoggerEventID" in call[0])
+        self.assertEqual(overlap_call[1][:2], (7, 1))
 
     def test_cross_midnight_overlap_is_rejected_using_actual_datetimes(self):
         connection = SaveConnection(overlap_row=self.overlap_row(
             datetime(2026, 10, 1, 23, 55), datetime(2026, 10, 2, 0, 5)))
         with self.assertRaisesRegex(LoggerValidationError, "Time overlaps"):
             save_logger_event(connection, self.save_input(stop="23:58", start="00:08"), self.masters())
-        query, params = connection.cursor_instance.executed[0]
+        query, params = next(
+            call for call in connection.cursor_instance.executed
+            if "SELECT TOP (1) LoggerEventID" in call[0])
         self.assertNotIn("ProductionDate", query)
         self.assertEqual(params[:2], (7, 1))
 

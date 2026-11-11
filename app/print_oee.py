@@ -227,7 +227,29 @@ def _overlapping_episode_ids(episodes):
     return overlapping
 
 
+def _shift_key(shift_master_id, shift_code):
+    if shift_master_id is not None:
+        return f'MASTER:{shift_master_id}'
+    code = _normalized_shift_code(shift_code)
+    return f'LEGACY:{code}' if code is not None and code != 'UNKNOWN' else None
+
+
+def _report_shift_groups(report_rows):
+    groups = {}
+    for episode in report_rows:
+        key = _shift_key(episode.get('ShiftMasterID'), episode.get('Shift'))
+        if key is not None:
+            groups.setdefault(key, dict(
+                Key=key, Code=str(episode.get('Shift') or ''),
+                ShiftMasterID=episode.get('ShiftMasterID')))
+    return sorted(groups.values(), key=lambda item: (
+        item['Code'], item['ShiftMasterID'] is None,
+        item['ShiftMasterID'] or 0))
+
+
 def build_press_production_summary(report_rows):
+    report_shifts = _report_shift_groups(report_rows)
+    shift_keys = [item['Key'] for item in report_shifts]
     presses = {}
     for episode in report_rows:
         machine_code = episode.get('MachineCode')
@@ -235,10 +257,10 @@ def build_press_production_summary(report_rows):
             continue
         press = presses.setdefault(machine_code, dict(
             Press=machine_code, Episodes=[], UnknownShiftEpisodes=[],
-            Shifts={'1': [], '2': []}))
+            Shifts={key: [] for key in shift_keys}))
         press['Episodes'].append(episode)
-        shift = str(episode.get('Shift') or '')
-        if (episode.get('ShiftMasterID') is None or shift not in press['Shifts']):
+        shift = _shift_key(episode.get('ShiftMasterID'), episode.get('Shift'))
+        if shift not in press['Shifts']:
             press['UnknownShiftEpisodes'].append(episode)
         else:
             press['Shifts'][shift].append(episode)
@@ -258,9 +280,13 @@ def build_press_production_summary(report_rows):
         shift_summaries = {}
         known_minutes = []
         incomplete_minutes = False
-        for shift, shift_episodes in press['Shifts'].items():
+        for shift in shift_keys:
+            shift_episodes = press['Shifts'][shift]
+            descriptor = next(item for item in report_shifts if item['Key'] == shift)
             if not shift_episodes:
-                shift_summaries[shift] = dict(HasEpisodes=False)
+                shift_summaries[shift] = dict(
+                    Key=shift, Code=descriptor['Code'],
+                    ShiftMasterID=descriptor['ShiftMasterID'], HasEpisodes=False)
                 continue
             actual_values = [episode.get('ActualProductionMinutes')
                              for episode in shift_episodes]
@@ -274,6 +300,9 @@ def build_press_production_summary(report_rows):
                 known_minutes.append(production_minutes)
             counter, curing, reject = _episode_quantity_totals(shift_episodes)
             shift_summaries[shift] = dict(
+                Key=shift,
+                Code=descriptor['Code'],
+                ShiftMasterID=descriptor['ShiftMasterID'],
                 HasEpisodes=True,
                 EpisodeCount=len(shift_episodes),
                 Start=_production_episode_times(shift_episodes, 'StartDateTime'),
@@ -291,8 +320,12 @@ def build_press_production_summary(report_rows):
             Press=press['Press'],
             Mould=mould_names or None,
             StandardSpeed=speeds or None,
-            Shift1=shift_summaries['1'],
-            Shift2=shift_summaries['2'],
+            Shifts=shift_summaries,
+            ShiftGroups=[dict(shift_summaries[key]) for key in shift_keys],
+            Shift1=next((v for v in shift_summaries.values() if v['Code'] == '1'),
+                        dict(HasEpisodes=False)),
+            Shift2=next((v for v in shift_summaries.values() if v['Code'] == '2'),
+                        dict(HasEpisodes=False)),
             TotalProductionMinutes=total_minutes,
             HasUnknownShift=bool(press['UnknownShiftEpisodes']),
         ))
@@ -300,10 +333,18 @@ def build_press_production_summary(report_rows):
 
 
 def build_press_production_totals(summary_rows):
+    shift_keys = list(dict.fromkeys(
+        key for press in summary_rows for key in press.get('Shifts', {})))
+    code_by_key = {
+        key: shift['Code']
+        for press in summary_rows for key, shift in press.get('Shifts', {}).items()
+        if shift.get('Code') is not None
+    }
     totals = {}
-    for shift, key in (('1', 'Shift1'), ('2', 'Shift2')):
-        assigned = [press[key] for press in summary_rows
-                    if press[key]['HasEpisodes']]
+    for shift in shift_keys:
+        assigned = [press['Shifts'][shift] for press in summary_rows
+                    if shift in press.get('Shifts', {})
+                    and press['Shifts'][shift]['HasEpisodes']]
         if not assigned:
             totals[shift] = dict(
                 HasEpisodes=False, ProductionMinutes=None,
@@ -339,16 +380,31 @@ def build_press_production_totals(summary_rows):
         else sum(press_minutes, ZERO_MINUTES)
     )
     return dict(
-        Shift1=totals['1'], Shift2=totals['2'],
+        Shifts=totals,
+        ShiftGroups=[dict(Key=key, **totals[key]) for key in shift_keys],
+        Shift1=next((totals[key] for key in shift_keys if code_by_key.get(key) == '1'),
+                    dict(HasEpisodes=False, ProductionMinutes=None,
+                         Counter=None, Curing=None, WetReject=None)),
+        Shift2=next((totals[key] for key in shift_keys if code_by_key.get(key) == '2'),
+                    dict(HasEpisodes=False, ProductionMinutes=None,
+                         Counter=None, Curing=None, WetReject=None)),
         TotalProductionMinutes=total_minutes)
 
 
 def _query_rows(cursor, production_date):
     cursor.execute("""SELECT CASE WHEN COL_LENGTH(
-        N'dbo.PressProduction', N'ShiftMasterID') IS NULL THEN 0 ELSE 1 END""")
-    shift_schema = bool((cursor.fetchone() or (0,))[0])
+        N'dbo.PressProduction', N'ShiftMasterID') IS NULL THEN 0 ELSE 1 END,
+        CASE WHEN COL_LENGTH(
+        N'dbo.PressProduction', N'ShiftCodeSnapshot') IS NULL THEN 0 ELSE 1 END""")
+    schema = cursor.fetchone() or (0, 0)
+    shift_schema = bool(schema[0])
+    snapshot_schema = shift_schema and len(schema) > 1 and bool(schema[1])
+    shift_code_expression = (
+        'COALESCE(pp.ShiftCodeSnapshot,shift.ShiftCode)'
+        if snapshot_schema else 'shift.ShiftCode'
+    )
     shift_fields = (
-        'pp.ShiftMasterID, shift.ShiftCode AS AssignmentShiftCode,'
+        f'pp.ShiftMasterID, {shift_code_expression} AS AssignmentShiftCode,'
         if shift_schema else
         'CAST(NULL AS bigint) AS ShiftMasterID, '
         'CAST(NULL AS varchar(10)) AS AssignmentShiftCode,'
@@ -378,7 +434,7 @@ def _query_rows(cursor, production_date):
     )
     event_scope = (
         f'''AND pp.ShiftMasterID IS NOT NULL
-             AND event.ShiftID=TRY_CONVERT(int,shift.ShiftCode)
+             AND event.ShiftID=TRY_CONVERT(int,{shift_code_expression})
              AND NOT EXISTS (
                  SELECT 1 FROM dbo.PressProduction AS other WHERE {episode_match})'''
         if shift_schema else ''
@@ -418,7 +474,7 @@ def _query_rows(cursor, production_date):
          {event_scope}
         WHERE lot.ProdDate=? AND lot.IsActive=1
         GROUP BY pp.PressProductionID, pp.ProductionID, lot.ProdDate, lot.Shift,
-                 {('pp.ShiftMasterID, shift.ShiftCode,' if shift_schema else '')}
+                 {(f'pp.ShiftMasterID, {shift_code_expression},' if shift_schema else '')}
                  lot.LotNo, lot.ProductFamily, lot.ProductCode, pp.MachineCode,
                  equipment.EquipmentName, pp.MouldID, mould.MouldNo, mould.MouldName,
                  pp.DispatchQty, pp.CounterQty, pp.CuringQty,
@@ -430,10 +486,13 @@ def _query_rows(cursor, production_date):
 
 
 def _normalized_shift_code(value):
+    if value is None:
+        return None
     try:
         return str(int(value))
     except (TypeError, ValueError):
-        return None
+        code = str(value).strip()
+        return code or None
 
 
 def _oee_code(value):
@@ -497,18 +556,31 @@ def _press_shift_groups(report_rows, mapping):
         if report_row.get('AssignmentShiftUnknown'):
             continue
         machine_code = report_row.get('MachineCode')
-        shift_code = _normalized_shift_code(report_row.get('Shift'))
-        if not machine_code or shift_code is None:
+        shift_code = str(report_row.get('Shift') or '').strip()
+        shift_key = _shift_key(report_row.get('ShiftMasterID'), shift_code)
+        if not machine_code or shift_key is None:
             continue
-        key = (machine_code, shift_code)
+        key = (machine_code, shift_key)
         if key not in by_key:
             group = _new_press_shift_group(machine_code, shift_code, mapping)
+            group['ShiftKey'] = shift_key
+            group['ShiftMasterID'] = report_row.get('ShiftMasterID')
             by_key[key] = group
             groups.append(group)
+    codes = {}
+    for group in groups:
+        key = (group['MachineCode'], group['Shift'])
+        codes.setdefault(key, []).append(group)
+    for key, matching in codes.items():
+        if len(matching) == 1:
+            by_key[key] = matching[0]
     return groups, by_key
 
 
 def _resolve_logger_shift(event, production_date, shift_rules):
+    snapshot = str(event.get('ShiftCodeSnapshot') or '').strip()
+    if snapshot:
+        return snapshot
     valid_shift_codes = {
         _normalized_shift_code(rule.get('ShiftID')) for rule in shift_rules
     }
@@ -602,13 +674,24 @@ def _process_logger_events(events, groups, groups_by_key, mapping,
             f'{machine_prefix}{instance}' if valid_instance else None)
         event['ResolvedShift'] = _resolve_logger_shift(
             event, production_date, shift_rules)
+        if event.get('ShiftMasterID') is not None:
+            resolved_shift_key = _shift_key(
+                event['ShiftMasterID'], event.get('ShiftCodeSnapshot'))
+        else:
+            matches = [
+                candidate for candidate in groups
+                if candidate['MachineCode'] == event['LoggerMachine']
+                and candidate['Shift'] == event['ResolvedShift']
+            ]
+            resolved_shift_key = (
+                matches[0]['ShiftKey'] if len(matches) == 1 else None)
         duration = _duration_minutes(event)
         event['DurationValid'] = duration is not None
         event['EffectiveOEEExcelCode'] = _oee_code(
             event.get('EffectiveOEEExcelCode'))
         group = groups_by_key.get(
-            (event['LoggerMachine'], event['ResolvedShift'])
-        ) if valid_instance and event['ResolvedShift'] is not None else None
+            (event['LoggerMachine'], resolved_shift_key)
+        ) if valid_instance and resolved_shift_key is not None else None
 
         if group is None:
             unattributed_count += 1
@@ -680,12 +763,31 @@ def _query_logger_details(cursor, production_date, report_rows):
     mapping = _read_logger_mappings(cursor)
     groups, groups_by_key = _press_shift_groups(report_rows, mapping)
     shift_rules = read_shift_rules(cursor, production_date)
+    cursor.execute("""SELECT
+        CASE WHEN COL_LENGTH(N'dbo.LoggerEvent',N'ShiftMasterID') IS NULL
+             THEN 0 ELSE 1 END,
+        CASE WHEN COL_LENGTH(N'dbo.LoggerEvent',N'ShiftCodeSnapshot') IS NULL
+             THEN 0 ELSE 1 END""")
+    schema_rows = rows(cursor)
+    has_shift_identity = False
+    if schema_rows:
+        schema = tuple(schema_rows[0].values())
+        has_shift_identity = bool(schema[0])
+        has_shift_snapshot = bool(schema[1])
+    else:
+        has_shift_snapshot = False
+    identity_fields = (
+        ('event.ShiftMasterID AS ShiftMasterID,' if has_shift_identity else
+         'CAST(NULL AS bigint) AS ShiftMasterID,')
+        + ('event.ShiftCodeSnapshot AS ShiftCodeSnapshot,' if has_shift_snapshot else
+           'CAST(NULL AS varchar(20)) AS ShiftCodeSnapshot,')
+    )
     cursor.execute("""SELECT event.LoggerEventID, event.ProductionDate,
             event.StopDateTime, event.StartDateTime, event.DurationMin,
             event.McId, event.McInstanceNo, machine.Machine AS MainMachine,
             machine.No AS MainMachineCount, event.RelatedMcId,
             event.RelatedMcInstanceNo, event.SubMcId, event.SubMcInstanceNo,
-            event.ShiftID, event.StopId, event.SubStopId, event.CauseId,
+            event.ShiftID, {identity_fields} event.StopId, event.SubStopId, event.CauseId,
             event.MEO, event.Note, event.SourceType,
             event.MachineNameSnapshot, event.RelatedMachineSnapshot,
             event.SubMachineSnapshot,
@@ -714,7 +816,8 @@ def _query_logger_details(cursor, production_date, report_rows):
           ON cause.CauseId=event.CauseId
         WHERE event.ProductionDate=?
         ORDER BY machine.Machine, event.McInstanceNo, event.ShiftID,
-                 event.StopDateTime, event.LoggerEventID""", production_date)
+                 event.StopDateTime, event.LoggerEventID""".format(
+                    identity_fields=identity_fields), production_date)
     events = rows(cursor)
     mapping_result = _process_logger_events(
         events, groups, groups_by_key, mapping, production_date, shift_rules)
@@ -733,17 +836,40 @@ def _sum_category_cells(cells):
 
 
 def build_logger_category_table(logger_report, production_summary_rows):
+    shift_descriptors = []
+    seen_shifts = set()
+    for press in production_summary_rows:
+        for shift in press.get('ShiftGroups', []):
+            if shift['Key'] not in seen_shifts:
+                seen_shifts.add(shift['Key'])
+                shift_descriptors.append(shift)
     machines = [dict(
         MachineCode=press['Press'],
+        Shifts={shift['Key']: press.get('Shifts', {}).get(
+            shift['Key'], dict(HasEpisodes=False))['HasEpisodes']
+                for shift in shift_descriptors},
         Shift1=press['Shift1']['HasEpisodes'],
         Shift2=press['Shift2']['HasEpisodes'],
     ) for press in production_summary_rows]
-    groups = {
-        (group['MachineCode'], str(group['Shift'])): group
-        for group in logger_report['groups']
-    }
-    all_shifts_assigned = any(
-        machine['Shift1'] or machine['Shift2'] for machine in machines)
+    groups = {}
+    legacy_groups = {}
+    for group in logger_report['groups']:
+        key = group.get('ShiftKey') or _shift_key(
+            group.get('ShiftMasterID'), group['Shift'])
+        if group.get('ShiftMasterID') is None:
+            matches = [item['Key'] for item in shift_descriptors
+                       if item['Code'] == str(group['Shift'])]
+            if len(matches) == 1:
+                key = matches[0]
+        groups[(group['MachineCode'], key)] = group
+        legacy_groups.setdefault(
+            (group['MachineCode'], str(group['Shift'])), []).append(group)
+        if group.get('ShiftMasterID') is None and len(matches) == 1:
+            groups[(group['MachineCode'], str(group['Shift']))] = group
+    for key, matching in legacy_groups.items():
+        if len(matching) == 1:
+            groups[key] = matching[0]
+    all_shifts_assigned = any(any(machine['Shifts'].values()) for machine in machines)
     sections = []
     for section_code in ('ก', 'ข', 'ค', 'ง'):
         categories = [
@@ -773,6 +899,25 @@ def build_logger_category_table(logger_report, production_summary_rows):
             )
             section_rows.append(dict(
                 Kind='category', Code=code, Label=label,
+                ShiftValues=[dict(
+                    Key=shift['Key'], Code=shift['Code'],
+                    Cells=[dict(
+                        assigned=machine['Shifts'].get(shift['Key'], False),
+                        value=(groups[(machine['MachineCode'], shift['Key'])]
+                               ['CategoryMinutes'].get(code)
+                               if machine['Shifts'].get(shift['Key'], False)
+                               and (machine['MachineCode'], shift['Key']) in groups
+                               else None))
+                        for machine in machines],
+                    Total=_sum_category_cells([
+                        dict(
+                            assigned=machine['Shifts'].get(shift['Key'], False),
+                            value=(groups[(machine['MachineCode'], shift['Key'])]
+                                   ['CategoryMinutes'].get(code)
+                                   if machine['Shifts'].get(shift['Key'], False)
+                                   and (machine['MachineCode'], shift['Key']) in groups
+                                   else None))
+                        for machine in machines])) for shift in shift_descriptors],
                 Shift1=shift_cells['1'],
                 Shift2=shift_cells['2'],
                 Shift1Total=_sum_category_cells(shift_cells['1']),
@@ -801,8 +946,27 @@ def build_logger_category_table(logger_report, production_summary_rows):
         all_shift_subtotal = _sum_category_cells([
             row['AllShiftsTotal'] for row in section_rows
         ])
+        dynamic_subtotals = []
+        for shift_index, shift in enumerate(shift_descriptors):
+            cells = []
+            for machine_index, machine in enumerate(machines):
+                assigned = machine['Shifts'].get(shift['Key'], False)
+                cells.append(_sum_category_cells([
+                    dict(
+                        assigned=assigned,
+                        value=(row['ShiftValues'][shift_index]['Cells'][machine_index]['value']
+                               if row.get('Kind') == 'category' else None))
+                    for row in section_rows if row.get('Kind') == 'category'
+                ]))
+            dynamic_subtotals.append(dict(
+                Key=shift['Key'], Code=shift['Code'], Cells=cells,
+                Total=_sum_category_cells([
+                    dict(assigned=machine['Shifts'].get(shift['Key'], False),
+                         value=cells[index]['value'])
+                    for index, machine in enumerate(machines)])))
         section_rows.append(dict(
             Kind='subtotal', Code='', Label=f'Subtotal ({section_code})',
+            ShiftValues=dynamic_subtotals,
             Shift1=subtotal_shift_cells['1'],
             Shift2=subtotal_shift_cells['2'],
             Shift1Total=subtotal_shift_cells['1Total'],
@@ -810,7 +974,7 @@ def build_logger_category_table(logger_report, production_summary_rows):
             AllShiftsTotal=all_shift_subtotal,
         ))
         sections.append(dict(Code=section_code, Rows=section_rows))
-    return dict(Machines=machines, Sections=sections)
+    return dict(Machines=machines, Sections=sections, ShiftGroups=shift_descriptors)
 
 
 def read_print_oee_context(cursor, production_date):
@@ -824,8 +988,14 @@ def read_print_oee_context(cursor, production_date):
             source['AssignmentShiftUnknown'] = True
         report_rows.append(calculate_oee_row(source))
     logger_report = _query_logger_details(cursor, production_date, report_rows)
-    summaries = {str(shift): summarize([row for row in report_rows if str(row.get('Shift')) == str(shift)])
-                 for shift in ('1', '2')}
+    shift_groups = _report_shift_groups(report_rows)
+    summaries = {}
+    for shift in shift_groups:
+        identity = shift['Key']
+        values = [row for row in report_rows
+                  if _shift_key(row.get('ShiftMasterID'), row.get('Shift')) == identity]
+        summaries[identity] = summarize(values)
+        summaries.setdefault(shift['Code'], summaries[identity])
     summaries['ALL DAY'] = summarize(report_rows)
     excluded = [row for row in report_rows if not row['Eligible']]
     logger_report['all_shift_category_minutes'] = {}
@@ -852,7 +1022,7 @@ def read_print_oee_context(cursor, production_date):
         logger_category_table=logger_category_table,
         logger_report=logger_report, logger_categories=LOGGER_CATEGORIES,
         breakdown_details=_breakdown_details(logger_report['events']),
-        shifts=('1', '2'),
+        shifts=shift_groups,
         press_count=len({row['MachineCode'] for row in report_rows}),
         plan_week=plan_week,
     )

@@ -1,7 +1,7 @@
 SET XACT_ABORT ON;
 
 IF DB_NAME() <> N'SB23_TEST'
-    THROW 52910, 'Test cleanup may only run in SB23_TEST.', 1;
+    THROW 52910, 'Migration 029 test cleanup may only run in SB23_TEST.', 1;
 
 BEGIN TRY
     BEGIN TRANSACTION;

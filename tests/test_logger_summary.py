@@ -9,17 +9,20 @@ from app.main import app, read_press_logger_guide, templates
 
 
 class SummaryCursor:
-    def __init__(self, aggregate, events, overlap=0):
+    def __init__(self, aggregate, events, overlap=0, identity_schema=False):
         self.aggregate = aggregate
         self.events = events
         self.overlap = overlap
+        self.identity_schema = identity_schema
         self.calls = []
         self.result = []
         self.description = []
 
     def execute(self, query, *params):
         self.calls.append((query, params))
-        if 'FROM dbo.ProductionShiftRuleHistory' in query:
+        if 'COL_LENGTH(' in query:
+            self.result = [(int(self.identity_schema), int(self.identity_schema))]
+        elif 'FROM dbo.ProductionShiftRuleHistory' in query:
             self.description = [('EffectiveFromDate',), ('ShiftID',), ('StartTime',)]
             self.result = [(date(2026, 1, 1), 1, datetime.min.time().replace(hour=7)),
                            (date(2026, 1, 1), 2, datetime.min.time().replace(hour=19))]
@@ -211,6 +214,40 @@ class LoggerSummaryTests(unittest.TestCase):
                 'SetupMin', 'ChgOverMin', 'IdleMin', 'CleanMin',
                 'SmdtMin', 'BreakdownMin')],
             [3, 4, 0, 7, 5, 6])
+
+    def test_summary_groups_multiple_period_events_by_saved_logical_shift_identity(self):
+        cursor = SummaryCursor(
+            [(7, 1, 'F', 3, 0, 0, 4, 0, 0)],
+            [
+                (1, 7, 1, datetime(2026, 10, 1, 8), datetime(2026, 10, 1, 8, 3),
+                 3, 2, 'SETUP', None, None, None, None, 42, 'A', date(2026, 10, 1)),
+                (2, 7, 1, datetime(2026, 10, 1, 16), datetime(2026, 10, 1, 16, 4),
+                 4, 5, 'CLEAN', None, None, None, None, 42, 'A', date(2026, 10, 1)),
+            ],
+            identity_schema=True)
+        result = read_logger_time_summary(cursor, date(2026, 10, 1))
+        groups = result['summary'][0]['ShiftGroups']
+        self.assertEqual(len(groups), 1)
+        self.assertEqual((groups[0]['ShiftMasterID'], groups[0]['Code']), (42, 'A'))
+        self.assertEqual(groups[0]['Values']['SETUP'], 3)
+        self.assertEqual(groups[0]['Values']['CLEAN'], 4)
+        self.assertEqual(result['summary'][0]['TotalLoggedMin'], 7)
+        self.assertIn('event.ShiftMasterID AS ShiftMasterID', next(
+            query for query, _ in cursor.calls if 'SELECT event.LoggerEventID' in query))
+
+    def test_summary_template_renders_editable_logical_shift_code(self):
+        body = templates.get_template('logger_summary.html').render(
+            page_title='LOGGER TIME SUMMARY',
+            active_tab='logger-summary',
+            production_date=date(2026, 10, 1),
+            shifts=[dict(Key='MASTER:42', Code='A', ShiftMasterID=42)],
+            summary=[dict(
+                MachineLabel='F1', SetupMin=3, ChgOverMin=0, IdleMin=0,
+                CleanMin=4, SmdtMin=0, BreakdownMin=0,
+                ShiftGroups=[dict(Key='MASTER:42', Values={'SETUP': 3, 'CLEAN': 4})])],
+            events=[], overlap_warning=False, overlap_count=0)
+        self.assertIn('>SHIFT A</th>', body)
+        self.assertEqual(body.count('colspan="6">SHIFT '), 1)
 
     def test_idle_is_excluded_and_saved_classification_is_authoritative(self):
         cursor = SummaryCursor([(7, 1, 'F', 10, 0, 0, 3, 5, 20)], [

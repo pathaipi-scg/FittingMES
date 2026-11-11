@@ -3,13 +3,13 @@ SET XACT_ABORT ON;
 IF DB_NAME() <> N'SB23'
    AND NOT (
        DB_NAME() = N'SB23_TEST'
-       AND CONVERT(nvarchar(10), SESSION_CONTEXT(N'FittingMES_028_TestRun')) = N'1'
+       AND CONVERT(nvarchar(10), SESSION_CONTEXT(N'FittingMES_029_TestRun')) = N'1'
    )
-    THROW 52810, 'Migration 028 may only be applied to SB23 or an authorized SB23_TEST session.', 1;
+    THROW 52930, 'Migration 029 may only be applied to SB23 or an authorized SB23_TEST session.', 1;
 
 IF OBJECT_ID(N'dbo.PressProduction', N'U') IS NULL
    OR OBJECT_ID(N'dbo.ProductionLot', N'U') IS NULL
-    THROW 52811, 'dbo.PressProduction or dbo.ProductionLot is missing.', 1;
+    THROW 52931, 'dbo.PressProduction or dbo.ProductionLot is missing.', 1;
 
 IF COL_LENGTH(N'dbo.PressProduction', N'ProductionID') IS NULL
    OR COL_LENGTH(N'dbo.PressProduction', N'MachineCode') IS NULL
@@ -20,7 +20,7 @@ IF COL_LENGTH(N'dbo.PressProduction', N'ProductionID') IS NULL
    OR COL_LENGTH(N'dbo.PressProduction', N'ProductionEndTime') IS NULL
    OR COL_LENGTH(N'dbo.ProductionLot', N'ProdDate') IS NULL
    OR COL_LENGTH(N'dbo.ProductionLot', N'IsActive') IS NULL
-    THROW 52812, 'A required interval-overlap column is missing.', 1;
+    THROW 52932, 'A required interval-overlap column is missing.', 1;
 
 IF NOT EXISTS (
     SELECT 1
@@ -57,7 +57,7 @@ IF NOT EXISTS (
             AND ic.key_ordinal=3 AND c.name=N'ShiftMasterID'
       )
 )
-    THROW 52813, 'The expected active Press/Shift unique index is missing.', 1;
+    THROW 52933, 'The expected active Press/Shift unique index is missing.', 1;
 
 IF EXISTS (
     SELECT 1 FROM sys.indexes
@@ -66,7 +66,7 @@ IF EXISTS (
                    N'IX_PressProduction_ActiveMouldInterval')
 )
    OR OBJECT_ID(N'dbo.TR_PressProduction_PreventActiveIntervalOverlap', N'TR') IS NOT NULL
-    THROW 52814, 'Migration 028 target objects already exist; refusing to guess prior state.', 1;
+    THROW 52934, 'Migration 029 target objects already exist; refusing to guess prior state.', 1;
 
 BEGIN TRY
     BEGIN TRANSACTION;
@@ -149,7 +149,7 @@ BEGIN
             @LockOwner = N''Transaction'',
             @LockTimeout = 10000;
         IF @lock_result < 0
-            THROW 52815, N''Could not acquire Press/Mould availability lock.'', 1;
+            THROW 52935, N''Could not acquire Press/Mould availability lock.'', 1;
         FETCH NEXT FROM resource_cursor INTO @resource;
     END;
     CLOSE resource_cursor;
@@ -168,7 +168,7 @@ BEGIN
                OR i.ProductionEndTime IS NULL
                OR i.ProductionEndTime <= i.ProductionStartTime)
     )
-        THROW 52816, N''Active Press Production requires a valid start and a later end.'', 1;
+        THROW 52936, N''Active Press Production requires a valid start and a later end.'', 1;
 
     IF EXISTS (
         SELECT 1
@@ -182,7 +182,6 @@ BEGIN
          AND existing_assignment.ReleasedAt IS NULL
         JOIN dbo.ProductionLot AS existing_lot
           ON existing_lot.ProductionID = existing_assignment.ProductionID
-         AND existing_lot.ProdDate = new_lot.ProdDate
         WHERE new_assignment.ReleasedAt IS NULL
           AND new_lot.IsActive = 1
           AND existing_lot.IsActive = 1
@@ -205,7 +204,7 @@ BEGIN
               )
           )
     )
-        THROW 52817, N''Press or Mould assignment overlaps an active interval in this Production Day.'', 1;
+        THROW 52937, N''Press or Mould assignment overlaps an active actual datetime interval.'', 1;
 END;';
 
     COMMIT TRANSACTION;

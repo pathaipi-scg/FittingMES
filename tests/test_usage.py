@@ -5,6 +5,7 @@ import unittest
 from datetime import date, time
 from decimal import Decimal
 from unittest.mock import patch
+from app import usage as app_usage
 from app.usage import read_usage_context, save_usage, validate_quantities
 from test_prod_api import get_page
 from test_production import LOT
@@ -18,7 +19,10 @@ class UsageConnection:
     def __init__(self):
         self.sql=[]; self.commits=0; self.rollbacks=0; self.description=[]; self.results=[]
         self.headers=[]; self.details=[]; self.fail=None
+        self.usage_shift_identity=False
         self.materials=[dict(MASTER)]; self.calculated=[dict(CALC)]
+        self.shifts=[dict(ShiftMasterID=1,ShiftCode='1',ShiftName='Shift 1'),
+                     dict(ShiftMasterID=2,ShiftCode='2',ShiftName='Shift 2')]
         self.daily_calculated=[dict(CALC,RawQty=Decimal('20'),QtyPer1000Counter=Decimal('0.987'),QtyPer1000Curing=Decimal('2'))]
     def cursor(self): return self
     def close(self): pass
@@ -28,8 +32,14 @@ class UsageConnection:
         self.sql.append((sql,args))
         if self.fail and self.fail in sql: raise RuntimeError('failure')
         result=[]
-        if 'sp_getapplock' in sql: result=[{'result':0}]
+        if 'COL_LENGTH(' in sql:
+            result=[dict(HasShiftMasterID=int(self.usage_shift_identity),
+                         HasShiftCodeSnapshot=0)]
+        elif 'OBJECT_ID(' in sql:
+            result=[dict(HasLogicalProduction=0,HasLogicalUsage=0,HasLogicalCalc=0)]
+        elif 'sp_getapplock' in sql: result=[{'result':0}]
         elif 'FROM dbo.MaterialUsageMaster' in sql: result=self.materials
+        elif 'FROM dbo.ShiftMaster WHERE IsActive=1' in sql: result=self.shifts
         elif 'FROM dbo.ProductionShiftRuleHistory' in sql:
             result=[dict(EffectiveFromDate=DAY, ShiftID=1, StartTime=time(6,0)),
                 dict(EffectiveFromDate=DAY, ShiftID=2, StartTime=time(20,0))]
@@ -43,7 +53,8 @@ class UsageConnection:
         elif 'FROM dbo.vw_DailyMaterialUsageTotalCalc' in sql:
             result=self.daily_calculated
         elif 'SELECT MaterialUsageID FROM dbo.DailyMaterialUsage' in sql: result=self.headers
-        elif 'INSERT INTO dbo.DailyMaterialUsage (' in sql: result=[{'MaterialUsageID':8}]
+        elif 'INSERT INTO dbo.DailyMaterialUsage' in sql and 'Detail' not in sql:
+            result=[{'MaterialUsageID':8}]
         elif 'SELECT MaterialUsageCode,SourceType' in sql: result=self.details
         elif sql.lstrip().startswith(('INSERT','UPDATE','DELETE')): pass
         else: raise AssertionError(sql)
@@ -55,6 +66,41 @@ class UsageConnection:
 
 
 class UsageTests(unittest.TestCase):
+    def test_denominators_include_arbitrary_logical_shift_codes(self):
+        lots = [
+            dict(Shift='3', ShiftMasterID=303, ShiftCodeSnapshot='3',
+                 ShiftPeriodID=31, ProductionStartTime=time(8, 1),
+                 CounterQty=100, CuringQty=90),
+            dict(Shift='3', ShiftMasterID=303, ShiftCodeSnapshot='3',
+                 ShiftPeriodID=32, ProductionStartTime=time(16, 1),
+                 CounterQty=200, CuringQty=180),
+        ]
+        with patch('app.usage.read_shift_rules', return_value=[]):
+            totals = app_usage._effective_production_totals(None, DAY, lots)
+        self.assertEqual(totals[('MASTER', 303)],
+                         dict(ShiftMasterID=303, ShiftCode='3',
+                              CounterQty=300, CuringQty=270, LotCount=2))
+
+    def test_usage_denominators_group_lots_by_logical_shift_not_period(self):
+        lots = [
+            dict(Shift='2', ShiftMasterID=301, ShiftCodeSnapshot='1',
+                 ShiftPeriodID=11, ProductionStartTime=time(8, 1),
+                 CounterQty=100, CuringQty=90),
+            dict(Shift='2', ShiftMasterID=301, ShiftCodeSnapshot='1',
+                 ShiftPeriodID=12, ProductionStartTime=time(16, 1),
+                 CounterQty=200, CuringQty=180),
+            dict(Shift='1', ShiftMasterID=302, ShiftCodeSnapshot='2',
+                 ShiftPeriodID=21, ProductionStartTime=time(18, 1),
+                 CounterQty=300, CuringQty=270),
+        ]
+        with patch('app.usage.read_shift_rules', return_value=[]):
+            totals = app_usage._effective_production_totals(None, DAY, lots)
+        self.assertEqual(totals[('MASTER', 301)]['CounterQty'], 300)
+        self.assertEqual(totals[('MASTER', 302)]['CounterQty'], 300)
+        self.assertEqual(totals[('MASTER', 301)]['ShiftCode'], '1')
+        self.assertEqual(totals[('MASTER', 302)]['ShiftCode'], '2')
+        self.assertEqual([lot['Shift'] for lot in lots], ['1', '1', '2'])
+
     def test_denominators_use_effective_production_shift(self):
         conn=UsageConnection()
         records=[dict(LOT,Shift='1',ProductionStartTime=time(8,10),CounterQty=910,CuringQty=890),
@@ -125,6 +171,17 @@ class UsageTests(unittest.TestCase):
                 self.assertTrue(any('OUTPUT INSERTED.MaterialUsageID' in sql for sql,_ in writes))
             else:
                 self.assertFalse(any('INSERT INTO dbo.DailyMaterialUsage (' in sql for sql,_ in writes))
+
+    def test_new_usage_header_persists_logical_shift_id_and_saved_code(self):
+        conn=UsageConnection()
+        conn.usage_shift_identity=True
+        conn.shifts.append(dict(
+            ShiftMasterID=303,ShiftCode='3',ShiftName='Shift 3'))
+        save_usage(conn,DAY,'3',{'dynamic':'12.345'})
+        insert=next((sql,args) for sql,args in conn.sql
+                    if sql.lstrip().startswith('INSERT INTO dbo.DailyMaterialUsage'))
+        self.assertIn('ShiftMasterID',insert[0])
+        self.assertEqual(insert[1],(DAY,'3',303))
 
     def test_blank_zero_and_nonmanual_protection(self):
         conn=UsageConnection()

@@ -7,7 +7,7 @@ import unittest
 from datetime import date, time
 from unittest.mock import patch
 from app.main import app, production_page
-from app.prod_api import read_prod_records, resolve_plan, build_pis_prodorders_payload, field_mapping, build_pis_date_preview, lot_readiness, preview_readiness
+from app.prod_api import read_prod_records, resolve_plan, build_pis_prodorders_payload, field_mapping, build_pis_date_preview, lot_readiness, preview_readiness, _logical_group_key
 from test_production import LOT, PLAN, PRODUCTION_REJECT_CONTEXT, request
 
 DAY = date(2026, 9, 22)
@@ -23,8 +23,9 @@ PLAN_SOURCE = dict(Company='CRTC',Plant='30A1',Machine='SB2-3',PlanWeek='2026W36
 
 
 class ReadOnlyConnection:
-    def __init__(self, records=None):
+    def __init__(self, records=None, shift_snapshots=False):
         self.records = copy.deepcopy(records if records is not None else [RECORD])
+        self.shift_snapshots = shift_snapshots
         self.sql = []
         self.closed = False
     def cursor(self): return self
@@ -32,7 +33,10 @@ class ReadOnlyConnection:
         if not (sql.lstrip().startswith('SELECT') or sql.lstrip().startswith('WITH')):
             raise AssertionError('Viewing must only SELECT')
         self.sql.append((sql,args))
-        if 'FROM Ranked' in sql:
+        if 'COL_LENGTH(' in sql:
+            self.result = [(int(self.shift_snapshots), int(self.shift_snapshots))]
+            self.description = [('HasShiftMasterID',), ('HasShiftCodeSnapshot',)]
+        elif 'FROM Ranked' in sql:
             self.result = []
             self.description = [('PISLogID',), ('ProductionID',), ('LotNo',), ('ProductionDate',),
                                 ('ShiftCode',), ('PlantCode',), ('MachineCode',), ('RequestGroupID',),
@@ -41,8 +45,14 @@ class ReadOnlyConnection:
             self.result = [PLAN_SOURCE] if args[-1] == DAY else []
             self.description = [(key,) for key in PLAN_SOURCE]
         else:
-            self.result = [record for record in self.records if record['ProdDate'] == args[0]]
-            self.description = [(key,) for key in RECORD]
+            self.result = [dict(record,
+                                ShiftMasterID=record.get('ShiftMasterID'),
+                                ShiftCodeSnapshot=record.get('ShiftCodeSnapshot') or record.get('Shift'),
+                                CurrentShiftCode=record.get('Shift'))
+                           for record in self.records if record['ProdDate'] == args[0]]
+            self.description = [(key,) for key in self.result[0]] if self.result else []
+    def fetchone(self):
+        return self.result[0] if self.result else None
     def fetchall(self):
         if self.description and self.description[0][0] == 'PISLogID':
             return self.result
@@ -67,6 +77,15 @@ async def get_page(path, query='', method='GET'):
 
 
 class ProdApiTests(unittest.TestCase):
+    def test_api_group_identity_uses_master_id_when_present(self):
+        first = dict(RECORD, Shift='1', ShiftMasterID=301)
+        same = dict(RECORD, Shift='1', ShiftMasterID=301)
+        other = dict(RECORD, Shift='1', ShiftMasterID=302)
+        legacy = dict(RECORD, Shift='1', ShiftMasterID=None)
+        self.assertEqual(_logical_group_key(first), _logical_group_key(same))
+        self.assertNotEqual(_logical_group_key(first), _logical_group_key(other))
+        self.assertNotEqual(_logical_group_key(first), _logical_group_key(legacy))
+
     def page(self, query='', conn=None):
         conn = conn or ReadOnlyConnection()
         before = copy.deepcopy(conn.records)
@@ -74,17 +93,27 @@ class ProdApiTests(unittest.TestCase):
             status, body = asyncio.run(get_page('/prod-api',query))
         self.assertEqual(conn.records,before)
         self.assertTrue(conn.closed)
-        self.assertIn(len(conn.sql),(2,3))
+        self.assertIn(len(conn.sql),(3,4))
         return status, body, conn
 
     def test_query_uses_existing_tables_parameterized_date_and_active_lots(self):
         conn = ReadOnlyConnection()
         self.assertEqual(read_prod_records(conn,DAY)[0]['Plant'],'30A1')
-        sql,args = conn.sql[0]
+        sql,args = next((sql,args) for sql,args in conn.sql
+                        if 'FROM dbo.ProductionLot p' in sql)
         self.assertIn('LEFT JOIN dbo.ProductionData d ON d.ProductionID=p.ProductionID',sql)
         self.assertIn('WHERE p.IsActive=1 AND p.ProdDate=?',sql)
         self.assertEqual(args,(DAY,))
         self.assertNotIn('PIS',sql)
+
+    def test_api_records_keep_saved_logical_shift_snapshot(self):
+        record = dict(RECORD, Shift='2', ShiftMasterID=301,
+                      ShiftCodeSnapshot='1')
+        conn = ReadOnlyConnection([record], shift_snapshots=True)
+        result = read_prod_records(conn, DAY)
+        self.assertEqual(result[0]['ShiftMasterID'], 301)
+        self.assertEqual(result[0]['ShiftCodeSnapshot'], '1')
+        self.assertEqual(result[0]['Shift'], '1')
 
     def test_prod_route_displays_saved_values_and_navigation(self):
         status, body, _ = self.page('production_date=2026-09-22')
@@ -107,10 +136,14 @@ class ProdApiTests(unittest.TestCase):
 
     def test_default_today_and_historical_filter(self):
         _,_,conn = self.page()
-        self.assertEqual(conn.sql[0][1],(date.today(),))
+        lot_query = next(args for sql,args in conn.sql
+                         if 'FROM dbo.ProductionLot p' in sql)
+        self.assertEqual(lot_query,(date.today(),))
         status,body,conn = self.page('production_date=2020-01-01')
         self.assertEqual(status,200)
-        self.assertEqual(conn.sql[0][1],(date(2020,1,1),))
+        lot_query = next(args for sql,args in conn.sql
+                         if 'FROM dbo.ProductionLot p' in sql)
+        self.assertEqual(lot_query,(date(2020,1,1),))
         self.assertIn('No active Production Lots',body)
         self.assertNotIn('B006690902',body)
 

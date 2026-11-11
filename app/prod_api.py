@@ -42,13 +42,32 @@ def read_historical_plans(cursor, production_date):
 
 
 def read_prod_records(cursor, production_date):
+    cursor.execute("""SELECT
+        CASE WHEN COL_LENGTH(N'dbo.ProductionLot', N'ShiftMasterID') IS NULL
+             THEN 0 ELSE 1 END,
+        CASE WHEN COL_LENGTH(N'dbo.ProductionLot', N'ShiftCodeSnapshot') IS NULL
+             THEN 0 ELSE 1 END""")
+    schema = cursor.fetchone() or (0, 0)
+    if schema[0] and schema[1]:
+        shift_identity = (
+            'p.ShiftMasterID,COALESCE(p.ShiftCodeSnapshot,p.Shift) AS ShiftCodeSnapshot,'
+        )
+    else:
+        shift_identity = (
+            'shift.id AS ShiftMasterID,'
+            'COALESCE(p.Shift,shift.ShiftCode) AS ShiftCodeSnapshot,'
+        )
     cursor.execute("""SELECT p.ProductionID,p.ProdDate,p.Shift,p.MaterialCode,
         p.MaterialName,p.LotNo,p.ProductFamilyID,p.ProductFamily,p.ProductCode,p.PlanName,p.PlanQty,
-        d.ProductionStartTime,d.ProductionEndTime,d.CounterQty,d.CuringQty,d.Remark
+        d.ProductionStartTime,d.ProductionEndTime,d.CounterQty,d.CuringQty,d.Remark,
+        {shift_identity}
+        shift.ShiftCode AS CurrentShiftCode
         FROM dbo.ProductionLot p
+        LEFT JOIN dbo.ShiftMaster AS shift
+          ON shift.ShiftCode=LTRIM(RTRIM(p.Shift))
         LEFT JOIN dbo.ProductionData d ON d.ProductionID=p.ProductionID
         WHERE p.IsActive=1 AND p.ProdDate=?
-        ORDER BY p.ProductionID""", production_date)
+        ORDER BY p.ProductionID""".format(shift_identity=shift_identity), production_date)
     records = rows(cursor)
     cursor.execute("""SELECT Company,Plant,Machine,PlanWeek,VersionNo,PlanName,
         Shift,StartTime,MaterialCode,PlanCount,OperationCode
@@ -57,6 +76,8 @@ def read_prod_records(cursor, production_date):
         'CRTC', '30A1', 'SB2-3', production_date)
     plans = rows(cursor)
     for record in records:
+        if record.get('ShiftMasterID') is not None and record.get('ShiftCodeSnapshot'):
+            record['Shift'] = str(record['ShiftCodeSnapshot'])
         record.update(resolve_plan(record, plans))
         record.update(calculate(record['CounterQty'], record['CuringQty']))
     return records
@@ -98,6 +119,13 @@ def local_timestamps(record):
 def group_key(record):
     return (day(record.get('ProdDate')), clean_string(record.get('Shift')),
             clean_string(record.get('Plant')), clean_string(record.get('Machine')))
+
+
+def _logical_group_key(record):
+    key = group_key(record)
+    identity = record.get('ShiftMasterID')
+    return key[:1] + (('MASTER', identity) if identity is not None
+                      else ('LEGACY', key[1])) + key[2:]
 
 
 def resolve_plan(record, plans):
@@ -205,7 +233,7 @@ def build_pis_date_preview(records, production_date):
     for record in records:
         if day(record['ProdDate']) != production_date:
             raise ValueError('All preview records must belong to the selected Production Date.')
-        key = group_key(record)
+        key = _logical_group_key(record)
         groups.setdefault(key, []).append(record)
     return [build_pis_prodorders_payload(sorted(groups[key], key=lambda row: (
         row.get('ProductionStartTime').isoformat() if row.get('ProductionStartTime') is not None else '',

@@ -1,11 +1,15 @@
 SET NOCOUNT ON;
 
 IF DB_NAME() <> N'SB23'
-    THROW 52800, 'Preflight 028 is intended for SB23 only.', 1;
+   AND NOT (
+       DB_NAME() = N'SB23_TEST'
+       AND CONVERT(nvarchar(10), SESSION_CONTEXT(N'FittingMES_029_TestRun')) = N'1'
+   )
+    THROW 52900, 'Preflight 029 is intended for SB23 or an authorized SB23_TEST session.', 1;
 
 IF OBJECT_ID(N'dbo.PressProduction', N'U') IS NULL
    OR OBJECT_ID(N'dbo.ProductionLot', N'U') IS NULL
-    THROW 52801, 'A required Press Production or Production Lot table is missing.', 1;
+    THROW 52901, 'A required Press Production or Production Lot table is missing.', 1;
 
 SELECT
     pp.ProductionID,
@@ -40,7 +44,6 @@ JOIN dbo.PressProduction AS second_assignment
   ON second_assignment.PressProductionID > first_assignment.PressProductionID
 JOIN dbo.ProductionLot AS second_lot
   ON second_lot.ProductionID = second_assignment.ProductionID
- AND second_lot.ProdDate = first_lot.ProdDate
 WHERE first_lot.IsActive = 1
   AND second_lot.IsActive = 1
   AND first_assignment.ReleasedAt IS NULL

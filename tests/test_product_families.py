@@ -32,7 +32,9 @@ class ProductFamilyTests(unittest.TestCase):
         self.assertEqual(lot_prefix(cursor, 7, '06', date(2026, 9, 21)), 'B066909')
         self.assertIn('ProductFamilyID=?', cursor.execute.call_args.args[0])
         self.assertEqual(cursor.execute.call_args.args[1:], (7,))
-        with self.assertRaisesRegex(ValueError, 'valid Product Family ID'):
+        with patch('app.lots._cutoff_schema_available', return_value=False), \
+             patch('app.lots.lock_lots'), \
+             self.assertRaisesRegex(ValueError, 'valid Product Family ID'):
             lot_prefix(cursor, 'Family A', '06', date(2026, 9, 21))
         cursor.fetchone.return_value = None
         with self.assertRaisesRegex(ValueError, 'not available'):
@@ -272,7 +274,9 @@ class ProductFamilyTests(unittest.TestCase):
         conn = MagicMock()
         plan = dict(StartTime=date(2026, 9, 21), Shift='1', PlanName='Plan',
                     MaterialCode='12345678XX', MaterialName='Product', PlanCount=10)
-        with self.assertRaisesRegex(ValueError, 'valid Product Family ID'):
+        with patch('app.lots._cutoff_schema_available', return_value=False), \
+             patch('app.lots.lock_lots'), \
+             self.assertRaisesRegex(ValueError, 'valid Product Family ID'):
             insert_lot(conn, plan, '06', 'I066909', '01')
         conn.rollback.assert_called_once()
         conn.commit.assert_not_called()

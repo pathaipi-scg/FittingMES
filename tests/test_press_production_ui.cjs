@@ -34,7 +34,10 @@ class Element {
 }
 
 const html = fs.readFileSync('app/templates/production.html', 'utf8');
-assert.match(html, /name="shift_code" required/);
+assert.match(html, /name="shift_period_id" required/);
+assert.match(html, /id="press-shift-code" name="shift_code"/);
+assert.match(html, /name="production_start_time" type="time"/);
+assert.match(html, /name="production_end_time" type="time"/);
 assert.match(html, /data-available-shifts=/);
 assert.match(html, /data-shift-code=/);
 assert.match(html, /Downtime attribution is ambiguous\. Saved values are retained; downtime editing is disabled\./);
@@ -42,7 +45,6 @@ assert.match(html, /<th>Release<\/th><th>Shift<\/th><th>Press<\/th><th>Mould<\/t
 assert.match(html, /<th>Dispatch<\/th><th>Counter<\/th><th>Curing<\/th><th>Start<\/th><th>End<\/th><th>Setup<\/th><th>ChgOver<\/th><th>Idle<\/th><th>Cleaning<\/th><th>Breakdown<\/th><th>SMDT<\/th>/);
 assert.match(html, /class="clock-input" form="press-production-\{\{ pp\.PressProductionID \}\}" name="production_start_time" inputmode="numeric" pattern="[^"]+" placeholder="HH:mm" maxlength="5"/);
 assert.match(html, /class="clock-input" form="press-production-\{\{ pp\.PressProductionID \}\}" name="production_end_time" inputmode="numeric" pattern="[^"]+" placeholder="HH:mm" maxlength="5"/);
-assert.doesNotMatch(html, /name="production_(?:start|end)_time"[^>]*type="time"/);
 assert.match(html, /\.lot-table \.clock-input,\.press-production-table \.clock-input\{width:62px;text-align:center;font-variant-numeric:tabular-nums\}/);
 assert.match(html, /name="counter_qty" type="number" min="0" max="2147483647" step="1" value="[^"]*" aria-label="Counter/);
 assert.doesNotMatch(html, /SAVE DOWNTIME|save_action/);
@@ -185,25 +187,28 @@ assert.ok(scriptMatch, 'Shift-aware fitting form script exists');
 const form = new Element();
 form.dataset.addAction = '/lots/7/press-production';
 form.action = form.dataset.addAction;
-const shift = new Element('1');
-shift.options = ['', '1', '2'].map(value => {
-  const option = new Element(value);
-  option.dataset = {};
-  return option;
-});
+const period = new Element('');
+period.options = [
+  new Element(''),
+  Object.assign(new Element('11'), {dataset: {shiftCode: '1', start: '08:00', end: '16:00'}}),
+  Object.assign(new Element('12'), {dataset: {shiftCode: '2', start: '18:00', end: '04:00'}}),
+];
+const shift = new Element('');
+const start = new Element('');
+const end = new Element('');
 const press = new Element('');
 press.options = [
   new Element(''),
-  Object.assign(new Element('F1'), {dataset: {availableShifts: '2'}}),
-  Object.assign(new Element('F8'), {dataset: {availableShifts: '1,2'}}),
-  Object.assign(new Element('F9'), {dataset: {availableShifts: '1'}}),
+  Object.assign(new Element('F1'), {dataset: {availablePeriods: '12'}}),
+  Object.assign(new Element('F8'), {dataset: {availablePeriods: '11,12'}}),
+  Object.assign(new Element('F9'), {dataset: {availablePeriods: '11'}}),
 ];
 const mould = new Element('');
 mould.options = [
   new Element(''),
-  Object.assign(new Element('10'), {dataset: {availableShifts: '2'}}),
-  Object.assign(new Element('20'), {dataset: {availableShifts: '1'}}),
-  Object.assign(new Element('29'), {dataset: {availableShifts: '2'}}),
+  Object.assign(new Element('10'), {dataset: {availablePeriods: '12'}}),
+  Object.assign(new Element('20'), {dataset: {availablePeriods: '11'}}),
+  Object.assign(new Element('29'), {dataset: {availablePeriods: '12'}}),
 ];
 const submit = new Element();
 submit.textContent = 'ADD FITTING';
@@ -214,6 +219,9 @@ editButton.dataset = {
   editUrl: '/lots/7/press-production/30',
   pressProductionId: '30',
   shiftCode: '1',
+  shiftPeriodId: '11',
+  startTime: '08:00',
+  endTime: '16:00',
   machineCode: 'F1',
   machineLabel: 'F1 / Press 1',
   mouldId: '10',
@@ -224,6 +232,7 @@ legacyEditButton.dataset = {
   editUrl: '/lots/7/press-production/31',
   pressProductionId: '31',
   shiftCode: '',
+  shiftPeriodId: '',
   machineCode: 'F1',
   machineLabel: 'F1 / Press 1',
   mouldId: '10',
@@ -232,14 +241,17 @@ legacyEditButton.dataset = {
 
 const elements = new Map([
   ['add-fitting-form', form],
-  ['press-shift-select', shift],
+  ['press-period-select', period],
+  ['press-shift-code', shift],
   ['add-fitting-submit', submit],
   ['cancel-fitting-edit', cancel],
 ]);
 const document = {
   getElementById: id => elements.get(id) || null,
   querySelector: selector => selector === '.press-choice' ? press :
-    selector === '.mould-choice' ? mould : null,
+    selector === '.mould-choice' ? mould :
+    selector === '.fitting-start-time' ? start :
+    selector === '.fitting-end-time' ? end : null,
   querySelectorAll: selector => selector === '.edit-fitting-button' ?
     [editButton, legacyEditButton] : [],
 };
@@ -254,68 +266,65 @@ vm.runInNewContext(scriptMatch[0].replace(/^<script>|<\/script>$/g, ''), {
   },
 });
 
-assert.equal(press.options[1].disabled, true, 'Occupied Press is unavailable outside its available Shifts');
-assert.equal(press.options[2].disabled, false, 'Shift 1 Press is enabled on initial page setup');
-assert.equal(mould.options[1].disabled, true, 'Occupied Mould is unavailable outside its available Shifts');
-assert.equal(mould.options[2].disabled, false, 'Shift 1 Mould is enabled on initial page setup');
-assert.equal(mould.options[3].disabled, true,
-  'Shift 2-only M000026 is disabled immediately in Shift 1');
+assert.equal(press.options[1].disabled, false, 'Presses with period availability remain selectable');
+assert.equal(mould.options[1].disabled, false, 'Moulds with period availability remain selectable');
 
 press.value = 'F9';
 mould.value = '20';
-shift.value = '2';
-shift.fire('change');
-assert.equal(press.options[1].disabled, false, 'Shift 2 Press becomes enabled in Shift 2');
-assert.equal(mould.options[1].disabled, false, 'Shift 2 Mould becomes enabled in Shift 2');
+period.value = '12';
+period.fire('change');
+assert.equal(shift.value, '2');
+assert.equal(press.options[1].disabled, false, 'Shift 2 Press becomes enabled for its period');
+assert.equal(mould.options[1].disabled, false, 'Shift 2 Mould becomes enabled for its period');
 assert.equal(press.options[3].disabled, true, 'Shift 1-only Press is disabled in Shift 2');
 assert.equal(mould.options[2].disabled, true, 'Shift 1-only Mould is disabled in Shift 2');
-assert.equal(press.value, '', 'Invalid Press is cleared when switching to Shift 2');
-assert.equal(mould.value, '', 'Invalid Mould is cleared when switching to Shift 2');
+assert.equal(press.value, '', 'Unavailable Press is cleared when changing periods');
+assert.equal(mould.value, '', 'Unavailable Mould is cleared when changing periods');
 
 press.value = 'F1';
 mould.value = '10';
-shift.value = '1';
-shift.fire('change');
-assert.equal(press.options[1].disabled, true, 'Shift 2 Press is disabled after switching back to Shift 1');
-assert.equal(mould.options[1].disabled, true, 'Shift 2 Mould is disabled after switching back to Shift 1');
-assert.equal(mould.options[3].disabled, true, 'M000026 remains unavailable in Shift 1');
-assert.equal(press.value, '', 'Invalid Press is cleared when switching back to Shift 1');
-assert.equal(mould.value, '', 'Invalid Mould is cleared when switching back to Shift 1');
+period.value = '11';
+period.fire('change');
+assert.equal(shift.value, '1');
+assert.equal(press.options[1].disabled, true, 'Shift 2 Press is disabled after switching periods');
+assert.equal(mould.options[1].disabled, true, 'Shift 2 Mould is disabled after switching periods');
+assert.equal(press.value, '', 'Unavailable Press is cleared after switching periods');
+assert.equal(mould.value, '', 'Unavailable Mould is cleared after switching periods');
 
 press.value = 'F8';
-assert.equal(press.options[2].disabled, false, 'F8 remains available in Shift 1');
-assert.equal(mould.options[3].disabled, true,
-  'M000026 occupied by another Lot in Shift 1 is displayed but not selectable');
+assert.equal(press.options[2].disabled, false, 'F8 is available in both logical Shift periods');
 
 editButton.fire('click');
 assert.equal(form.action, '/lots/7/press-production/30');
 assert.equal(form.dataset.editingId, '30');
 assert.equal(shift.value, '1');
+assert.equal(period.value, '11');
+assert.equal(start.value, '08:00');
+assert.equal(end.value, '16:00');
 assert.equal(press.value, 'F1');
 assert.equal(mould.value, '10');
 assert.equal(submit.textContent, 'EDIT FITTING');
 assert.equal(cancel.hidden, false);
-assert.equal(press.options[1].dataset.availableShifts, '2,1',
-  'Edited Press gains its current Shift without losing other available Shifts');
-assert.equal(mould.options[1].dataset.availableShifts, '2,1',
-  'Edited Mould gains its current Shift without losing other available Shifts');
+assert.equal(press.options[1].dataset.availablePeriods, '12,11',
+  'Edited Press gains its current period without losing other available periods');
+assert.equal(mould.options[1].dataset.availablePeriods, '12,11',
+  'Edited Mould gains its current period without losing other available periods');
 assert.equal(press.options[1].disabled, false, 'Edited Press remains selectable in its current Shift');
 assert.equal(mould.options[1].disabled, false, 'Edited Mould remains selectable in its current Shift');
-assert.equal(press.options[2].dataset.availableShifts, '1,2',
+assert.equal(press.options[2].dataset.availablePeriods, '11,12',
   'Editing one assignment does not alter F8 availability');
-assert.equal(mould.options[3].disabled, true,
-  'Editing another assignment does not enable M000026 in Shift 1');
 
 cancel.fire('click');
 assert.equal(form.action, '/lots/7/press-production');
 assert.equal(form.dataset.editingId, undefined);
-assert.equal(shift.value, '1');
+assert.equal(shift.value, '');
+assert.equal(period.value, '');
 assert.equal(press.value, '');
 assert.equal(mould.value, '');
 assert.equal(submit.textContent, 'ADD FITTING');
 assert.equal(cancel.hidden, true);
-assert.equal(shift.value, '1', 'Returning to ADD FITTING restores the Shift 1 default');
+assert.equal(shift.value, '', 'ADD FITTING requires an explicit period selection');
 
 legacyEditButton.fire('click');
-assert.equal(shift.value, '', 'Legacy EDIT keeps its unknown Shift instead of defaulting to Shift 1');
-console.log('Shift-aware Production UI regression passed.');
+assert.equal(shift.value, '', 'Legacy EDIT keeps its unknown Shift instead of guessing');
+console.log('Shift-period Production UI regression passed.');

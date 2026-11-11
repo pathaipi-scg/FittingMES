@@ -234,7 +234,8 @@ class ProductionDataTests(unittest.TestCase):
         conn=MagicMock(); conn.cursor.return_value.fetchone.side_effect=[
             (0,), ('NeuFit / NeuStile',), (1, '06'), None, None, (1,), (7,),
         ]
-        with patch('app.lots.lot_prefix', return_value='B066909'):
+        with patch('app.lots.lot_prefix', return_value='B066909'), \
+             patch('app.lots._cutoff_schema_available', return_value=False):
             insert_lot(conn,dict(PLAN,Shift='3'),'06','B066909','01',product_family_id=1)
         args=next(c.args for c in conn.cursor.return_value.execute.call_args_list if 'INSERT INTO dbo.ProductionLot\n' in c.args[0])
         self.assertEqual(args[2],'3')

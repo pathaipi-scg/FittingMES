@@ -225,9 +225,27 @@ def read_reject_entries(cursor, production_date, workflow):
         "LEFT JOIN dbo.Depallet AS d ON entry.DepalletID=d.DepalletID"
         if workflow == "depallet" else ""
     )
+    cursor.execute(f"""SELECT CASE WHEN COL_LENGTH(
+        N'dbo.{table}',N'ShiftCodeSnapshot') IS NULL
+        THEN 0 ELSE 1 END""")
+    schema_rows = rows(cursor)
+    snapshot_column = (
+        "COALESCE(entry.ShiftCodeSnapshot,historical.ShiftCode,shift.ShiftCode)" if schema_rows and
+        next(iter(schema_rows[0].values())) else "shift.ShiftCode")
+    history_join = ("""
+        OUTER APPLY (
+            SELECT TOP (1) version.ShiftCode
+            FROM dbo.ShiftMasterVersion AS version
+            WHERE version.ShiftMasterID=entry.ShiftID
+              AND version.EffectiveFromDate<=entry.ProductionDate
+              AND (version.EffectiveToDate IS NULL
+                   OR version.EffectiveToDate>=entry.ProductionDate)
+            ORDER BY version.EffectiveFromDate DESC,version.VersionNumber DESC
+        ) AS historical
+    """ if schema_rows and next(iter(schema_rows[0].values())) else "")
     cursor.execute(f"""
         SELECT entry.id AS EntryID,entry.ProductionDate,entry.ShiftID,
-               shift.ShiftCode,entry.LineEquipmentID,
+               {snapshot_column} AS ShiftCode,entry.LineEquipmentID,
                line.EquipmentCode AS LineCode,entry.SourceEquipmentID,
                source.EquipmentCode AS SourceCode,
                CASE WHEN source.EquipmentType IN ('LINE','DRY_LINE') THEN 'LINE'
@@ -242,6 +260,7 @@ def read_reject_entries(cursor, production_date, workflow):
                entry.RejectSourceScopeID,entry.Qty
         FROM dbo.{table} AS entry
         JOIN dbo.ShiftMaster AS shift ON shift.id=entry.ShiftID
+        {history_join}
         JOIN dbo.EquipmentMaster AS line ON line.id=entry.LineEquipmentID
         LEFT JOIN dbo.EquipmentMaster AS source ON source.id=entry.SourceEquipmentID
         JOIN dbo.ProductionLot AS lot ON lot.ProductionID=entry.ProductionID
@@ -448,6 +467,7 @@ def _validate_entry(cursor, raw):
         table=WORKFLOW_TABLES[workflow],
         production_date=production_date,
         shift_id=shift_id,
+        shift_code=shift["ShiftCode"],
         line_equipment_id=line_id,
         source_equipment_id=source_id,
         reject_source_scope_id=reason["RejectSourceScopeID"],
@@ -465,31 +485,47 @@ def save_reject_entry(conn, raw):
         cursor = conn.cursor()
         values = _validate_entry(cursor, raw)
         table = values["table"]
+        cursor.execute(
+            f"SELECT CASE WHEN COL_LENGTH(N'dbo.{table}',N'ShiftCodeSnapshot') "
+            "IS NULL THEN 0 ELSE 1 END"
+        )
+        snapshot_row = _fetch_one(cursor)
+        has_shift_snapshot = bool(
+            snapshot_row and next(iter(snapshot_row.values())))
         if values["entry_id"] is None:
             if values["workflow"] == "depallet":
                 cursor.execute("""
                     INSERT INTO dbo.DepalletRejectEntry
                         (ProductionDate,DepalletID,ShiftID,LineEquipmentID,
                          SourceEquipmentID,RejectSourceScopeID,ProductionID,
-                         RejectReasonID,Qty)
+                         RejectReasonID,Qty{snapshot_column})
                     OUTPUT INSERTED.id
-                    VALUES (?,?,?,?,?,?,?,?,?)
-                """, values["production_date"], values["depallet_id"],
+                    VALUES (?,?,?,?,?,?,?,?,?{snapshot_value})
+                """.format(
+                    snapshot_column=",ShiftCodeSnapshot" if has_shift_snapshot else "",
+                    snapshot_value=",?" if has_shift_snapshot else ""),
+                    values["production_date"], values["depallet_id"],
                     values["shift_id"], values["line_equipment_id"],
                     values["source_equipment_id"],
                     values["reject_source_scope_id"], values["production_id"],
-                    values["reject_reason_id"], values["qty"])
+                    values["reject_reason_id"], values["qty"],
+                    *([values["shift_code"]] if has_shift_snapshot else []))
             else:
                 cursor.execute("""
                     INSERT INTO dbo.ProductionRejectEntry
                         (ProductionDate,ShiftID,LineEquipmentID,SourceEquipmentID,
-                         RejectSourceScopeID,ProductionID,RejectReasonID,Qty)
+                         RejectSourceScopeID,ProductionID,RejectReasonID,Qty
+                         {snapshot_column})
                     OUTPUT INSERTED.id
-                    VALUES (?,?,?,?,?,?,?,?)
-                """, values["production_date"], values["shift_id"],
+                    VALUES (?,?,?,?,?,?,?,?{snapshot_value})
+                """.format(
+                    snapshot_column=",ShiftCodeSnapshot" if has_shift_snapshot else "",
+                    snapshot_value=",?" if has_shift_snapshot else ""),
+                    values["production_date"], values["shift_id"],
                     values["line_equipment_id"], values["source_equipment_id"],
                     values["reject_source_scope_id"], values["production_id"],
-                    values["reject_reason_id"], values["qty"])
+                    values["reject_reason_id"], values["qty"],
+                    *([values["shift_code"]] if has_shift_snapshot else []))
             inserted = cursor.fetchone()
             if inserted is None:
                 raise RuntimeError("REJECT entry ID was not returned by the INSERT.")
