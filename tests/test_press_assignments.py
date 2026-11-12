@@ -49,8 +49,10 @@ class AssignmentCursor:
         return self
 
     def fetchall(self):
-        return [tuple(row[column] for column in ASSIGNMENT_COLUMNS)
-                for row in self.data]
+        return [
+            tuple(row[column] for column in ASSIGNMENT_COLUMNS)
+            for row in self.data if row['ProdDate'] == self.params[0]
+        ]
 
 
 def request(path='/assign'):
@@ -63,11 +65,10 @@ class PressAssignmentPageTests(unittest.TestCase):
         cursor = AssignmentCursor([])
         read_press_assignment_context(cursor, PRODUCTION_DATE)
         self.assertTrue(cursor.query.lstrip().upper().startswith('SELECT'))
-        self.assertEqual(cursor.params, (
-            PRODUCTION_DATE, PRODUCTION_DATE, PRODUCTION_DATE))
+        self.assertEqual(cursor.params, (PRODUCTION_DATE,))
         self.assertIn('FROM dbo.PressProduction AS pp', cursor.query)
-        self.assertIn('pp.ProductionStartTime < DATEADD(day, 2', cursor.query)
-        self.assertIn('pp.ProductionEndTime > CONVERT(datetime, ?)', cursor.query)
+        self.assertIn('WHERE lot.ProdDate=?', cursor.query)
+        self.assertNotIn('DATEADD(day, 2', cursor.query)
         self.assertIn('LEFT JOIN dbo.ShiftMaster AS shift', cursor.query)
         self.assertNotIn('ShiftPeriod', cursor.query)
         self.assertNotIn('ShiftMasterVersion', cursor.query)
@@ -89,6 +90,12 @@ class PressAssignmentPageTests(unittest.TestCase):
                        start=datetime(2026, 11, 10, 19, 30),
                        end=datetime(2026, 11, 10, 20, 30),
                        prod_date=date(2026, 11, 9)),
+            assignment(137, press='F9', mould_id=35,
+                       start=datetime(2026, 11, 10, 23), end=None),
+            assignment(138, press='F7', mould_id=36,
+                       start=datetime(2026, 11, 11, 0),
+                       end=datetime(2026, 11, 11, 3),
+                       prod_date=date(2026, 11, 11)),
         ]
         context = read_press_assignment_context(
             AssignmentCursor(rows), PRODUCTION_DATE)
@@ -96,11 +103,16 @@ class PressAssignmentPageTests(unittest.TestCase):
                       if row['PressProductionID'] == 131)
         incomplete = next(row for row in context['assignments']
                           if row['PressProductionID'] == 134)
+        missing_end = next(row for row in context['assignments']
+                           if row['PressProductionID'] == 137)
         released = next(row for row in context['assignments']
                         if row['PressProductionID'] == 135)
 
-        self.assertEqual(context['overlap_count'], 4)
-        self.assertEqual(len(target['OverlapWarnings']), 3)
+        self.assertEqual(context['overlap_count'], 2)
+        self.assertEqual(len(target['OverlapWarnings']), 2)
+        self.assertEqual(
+            {row['PressProductionID'] for row in context['assignments']},
+            {131, 132, 133, 134, 135, 137})
         self.assertEqual(target['StartDisplay'], '19:00')
         self.assertEqual(target['EndDisplay'], '06:00 (+1 day)')
         self.assertAlmostEqual(target['TimelineLeft'], 39.5833, places=3)
@@ -108,6 +120,8 @@ class PressAssignmentPageTests(unittest.TestCase):
         self.assertEqual(incomplete['StartDisplay'], '—')
         self.assertIsNone(incomplete['TimelineWidth'])
         self.assertIn('Missing start time', incomplete['IntervalWarning'])
+        self.assertIn('Missing end time', missing_end['IntervalWarning'])
+        self.assertIsNone(missing_end['TimelineWidth'])
         self.assertEqual(released['ReleasedStatus'], 'Released')
         self.assertFalse(released['OverlapWarnings'])
         self.assertEqual(len(context['timeline_ticks']), 9)

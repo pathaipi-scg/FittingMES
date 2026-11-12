@@ -19,11 +19,9 @@ def read_press_assignments(cursor, production_date):
         LEFT JOIN dbo.MouldMaster AS mould
           ON mould.MouldID=pp.MouldID
         WHERE lot.ProdDate=?
-           OR (pp.ProductionStartTime < DATEADD(day, 2, CONVERT(datetime, ?))
-               AND pp.ProductionEndTime > CONVERT(datetime, ?))
         ORDER BY pp.MachineCode, shift.ShiftCode, pp.ProductionStartTime,
                  lot.LotNo, pp.PressProductionID''',
-        production_date, production_date, production_date)
+        production_date)
     return rows(cursor)
 
 

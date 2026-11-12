@@ -43,11 +43,12 @@ class LotUpdateCursor:
         elif 'SELECT TOP (1) DayStartTime' in query:
             self.result = [(DAY_START,)]
         else:
-            resource_id, excluded_id = args
+            resource_id, production_date, excluded_id = args
             self.result = [
                 row[:8] for row in self.conflicts
                 if row[0] != (excluded_id or 0)
                 and row[8] == resource_id
+                and row[2] == production_date
             ]
 
     def fetchone(self):
@@ -232,7 +233,7 @@ class ResourceAvailabilityTests(unittest.TestCase):
             requested_production_date=DAY)
         self.assertIn('Lot I02691112', reason)
 
-    def test_actual_overlap_is_detected_across_production_dates(self):
+    def test_previous_production_day_overlap_does_not_block_new_day(self):
         cursor = AssignmentCursor([assignment(
             1, 'I02691112', date(2026, 11, 6),
             datetime(2026, 11, 6, 23), datetime(2026, 11, 7, 9),
@@ -241,7 +242,36 @@ class ResourceAvailabilityTests(unittest.TestCase):
             cursor, 'press', 'F1',
             (datetime(2026, 11, 7, 8), datetime(2026, 11, 7, 10)),
             requested_production_date=DAY)
-        self.assertIn('Lot I02691112', reason)
+        self.assertIsNone(reason)
+
+    def test_previous_production_day_mould_overlap_does_not_block_new_day(self):
+        cursor = AssignmentCursor([assignment(
+            1, 'I02691112', date(2026, 11, 6),
+            datetime(2026, 11, 6, 23), datetime(2026, 11, 7, 9),
+            None, None, resource_id=9)])
+        self.assertIsNone(find_assignment_conflict(
+            cursor, 'mould', 9,
+            (datetime(2026, 11, 7, 8), datetime(2026, 11, 7, 10)),
+            requested_production_date=DAY))
+
+    def test_previous_day_missing_end_does_not_block_new_day(self):
+        cursor = AssignmentCursor([assignment(
+            1, 'I02691112', date(2026, 11, 6),
+            datetime(2026, 11, 6, 23), None, None, None)])
+        self.assertIsNone(find_assignment_conflict(
+            cursor, 'press', 'F1',
+            (datetime(2026, 11, 7, 8), datetime(2026, 11, 7, 10)),
+            requested_production_date=DAY))
+
+    def test_next_production_day_overlap_does_not_block_selected_day(self):
+        cursor = AssignmentCursor([assignment(
+            1, 'I02691112', date(2026, 11, 8),
+            datetime(2026, 11, 8, 0), datetime(2026, 11, 8, 10),
+            None, None)])
+        self.assertIsNone(find_assignment_conflict(
+            cursor, 'press', 'F1',
+            (datetime(2026, 11, 7, 23), datetime(2026, 11, 8, 2)),
+            requested_production_date=DAY))
 
     def test_ongoing_assignment_conflicts_within_production_day(self):
         cursor = AssignmentCursor([assignment(

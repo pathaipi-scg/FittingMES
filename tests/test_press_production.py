@@ -660,6 +660,39 @@ class PressProductionTests(unittest.TestCase):
         self.assertNotIn('assigned_press.ShiftMasterID', query)
         self.assertEqual(args, (3, '02'))
 
+    def test_previous_production_day_does_not_disable_press_dropdown(self):
+        class DailyAvailabilityCursor:
+            description = []
+
+            def __init__(self):
+                self.calls = []
+                self.result = []
+
+            def execute(self, query, *args):
+                self.calls.append((query, args))
+                if 'FROM dbo.vw_PressMcCapabilityMatrix AS capability' in query:
+                    self.description = [(key,) for key in (
+                        'PressCode', 'PressName', 'CurrentLine',
+                        'CurrentLineName', 'StandardSpeed', 'EquipmentIsActive')]
+                    self.result = [('F7', 'Press 7', 'LINE1', 'Line 1', 5, True)]
+                elif 'FROM dbo.PressProduction AS assigned WITH' in query:
+                    self.result = []
+                return self
+
+            def fetchall(self):
+                result, self.result = self.result, []
+                return result
+
+        cursor = DailyAvailabilityCursor()
+        result = read_eligible_presses(
+            cursor, 3, '02', date(2026, 11, 7),
+            requested_interval=(
+                datetime(2026, 11, 7, 8), datetime(2026, 11, 7, 10)))
+        self.assertTrue(result[0]['Available'])
+        conflict_query, conflict_args = cursor.calls[-1]
+        self.assertIn('lot.ProdDate=?', conflict_query)
+        self.assertEqual(conflict_args, ('F7', date(2026, 11, 7), None))
+
     def test_active_shift_choices_use_shift_master_business_codes(self):
         cursor = ReadCursor([dict(ShiftCode='1', ShiftName='Shift 1'),
                              dict(ShiftCode='2', ShiftName='Shift 2')])

@@ -46,10 +46,12 @@ def find_assignment_conflict(cursor, resource_type, resource_id, requested_inter
         raise ValueError('Production Lot has an invalid Production Date.')
     if resource_type == 'press':
         predicate = 'assigned.MachineCode=?'
-        parameters = [resource_id, exclude_press_production_id]
+        parameters = [resource_id, requested_production_date,
+                      exclude_press_production_id]
     elif resource_type == 'mould':
         predicate = 'assigned.MouldID=?'
-        parameters = [resource_id, exclude_press_production_id]
+        parameters = [resource_id, requested_production_date,
+                      exclude_press_production_id]
     else:
         raise ValueError('Unknown production resource type.')
 
@@ -70,6 +72,7 @@ def find_assignment_conflict(cursor, resource_type, resource_id, requested_inter
         ) AS day_rule
         WHERE lot.IsActive=1 AND assigned.ReleasedAt IS NULL
           AND {predicate}
+          AND lot.ProdDate=?
           AND assigned.PressProductionID<>COALESCE(?,0)
         ORDER BY assigned.PressProductionID''',
         *parameters)
@@ -79,14 +82,14 @@ def find_assignment_conflict(cursor, resource_type, resource_id, requested_inter
         try:
             if isinstance(production_date, datetime):
                 production_date = production_date.date()
+            if production_date != requested_production_date:
+                continue
             if not isinstance(production_date, date) or not isinstance(day_start_time, time):
                 raise ValueError('Production date or Production Day rule is unresolved.')
             existing_start, existing_end = resolve_effective_interval(
                 production_date, day_start_time, assignment_start, assignment_end,
                 lot_start, lot_end)
         except (TypeError, ValueError):
-            if production_date != requested_production_date:
-                continue
             return (f'Already assigned to Lot {lot_no} (assignment '
                     f'{assignment_id}) with an invalid or unresolved production interval.')
         overlaps = ((requested_end is None or existing_start < requested_end)
