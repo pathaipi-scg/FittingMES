@@ -2150,7 +2150,8 @@ def usage_page(request: Request, production_date: date | None = None, saved: boo
 def print_prod_page(request: Request, production_date: date | None = None):
     production_date = production_date or date.today()
     context = dict(page_title='PRINT PROD', active_tab='print-prod', production_date=production_date,
-                   records=[], shifts=[], daily_materials=[], error=None)
+                   records=[], shifts=[], daily_totals=dict(PlanQty=0, CounterQty=0, CuringQty=0),
+                   daily_materials=[], error=None)
     status = 200
     try:
         with closing(get_connection()) as conn:

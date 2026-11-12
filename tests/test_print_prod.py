@@ -86,9 +86,9 @@ class PrintProdTests(unittest.TestCase):
     RULES = [dict(EffectiveFromDate=DAY, ShiftID=1, StartTime=time(6, 0)),
              dict(EffectiveFromDate=DAY, ShiftID=2, StartTime=time(20, 0))]
 
-    def page(self, path, query=''):
+    def page(self, path, query='', report=REPORT):
         with patch('app.main.get_connection') as connection, \
-             patch('app.main.read_print_prod_context', return_value=REPORT):
+             patch('app.main.read_print_prod_context', return_value=report):
             status, body = asyncio.run(get_page(path, query))
         return status, body, connection
 
@@ -107,6 +107,14 @@ class PrintProdTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertNotIn(str(OTHER_DAY), body)
 
+    def test_print_prod_database_failure_renders_safe_empty_totals(self):
+        with patch('app.main.get_connection', side_effect=RuntimeError('private details')):
+            status, body = asyncio.run(get_page('/print-prod'))
+        self.assertEqual(status, 503)
+        self.assertIn('class="print-report"', body)
+        self.assertIn('>0</td>', body)
+        self.assertNotIn('private details', body)
+
     def test_print_prod_formats_decimal_usage_to_one_place(self):
         report = dict(records=[dict(ProdDate=DAY, Shift='1', LotNo='I01690901',
                                     ProductCode='01', ProductName='ปิดจั่ว', PlanQty=800,
@@ -123,8 +131,8 @@ class PrintProdTests(unittest.TestCase):
                                             QtyPer1000Counter=Decimal('13.123359'),
                                             QtyPer1000Curing=Decimal('33.707865'))],
                       plan_week='2026W37')
-        with patch('app.main.read_print_prod_context', return_value=report):
-            status, body = asyncio.run(get_page('/print-prod', 'production_date=2026-09-22'))[:2]
+        status, body, _ = self.page(
+            '/print-prod', 'production_date=2026-09-22', report=report)
         self.assertEqual(status, 200)
         for value in ('30.0', '6.9', '7.1', '20.0', '13.1', '33.7'):
             self.assertIn(value, body)
@@ -163,8 +171,8 @@ class PrintProdTests(unittest.TestCase):
             daily_materials=materials,
             plan_week='2026W37',
         )
-        with patch('app.main.read_print_prod_context', return_value=report):
-            status, body = asyncio.run(get_page('/print-prod', 'production_date=2026-09-22'))[:2]
+        status, body, _ = self.page(
+            '/print-prod', 'production_date=2026-09-22', report=report)
 
         self.assertEqual(status, 200)
         self.assertIn('กะ1', body)
@@ -215,8 +223,8 @@ class PrintProdTests(unittest.TestCase):
             daily_totals=dict(PlanQty=20, CounterQty=18, CuringQty=16),
             daily_materials=daily_materials, plan_week='2026W37',
         )
-        with patch('app.main.read_print_prod_context', return_value=report):
-            status, body = asyncio.run(get_page('/print-prod', 'production_date=2026-09-22'))[:2]
+        status, body, _ = self.page(
+            '/print-prod', 'production_date=2026-09-22', report=report)
 
         self.assertEqual(status, 200)
         parser = ProductionTableParser()
