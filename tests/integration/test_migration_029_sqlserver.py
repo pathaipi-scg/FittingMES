@@ -147,11 +147,12 @@ class Migration029SqlServerIntegrationTests(unittest.TestCase):
         self, production_id, machine, mould, start, end, shift=1
     ):
         self.cursor.execute("""
+            SET NOCOUNT ON;
             INSERT INTO dbo.PressProduction
                 (ProductionID, MachineCode, MouldID, ShiftMasterID,
                  ProductionStartTime, ProductionEndTime)
-            OUTPUT INSERTED.PressProductionID
             VALUES (?, ?, ?, ?, ?, ?)
+            SELECT CONVERT(bigint, SCOPE_IDENTITY())
         """, production_id, machine, mould, shift, start, end)
         return int(self.cursor.fetchone()[0])
 
@@ -190,6 +191,25 @@ class Migration029SqlServerIntegrationTests(unittest.TestCase):
             production_id, "F_SEQ", 91001,
             datetime(2026, 11, 7, 16), datetime(2026, 11, 8, 1),
         )
+
+    def test_overlapping_intervals_are_rejected_for_press_f1_through_f14(self):
+        start = datetime(2026, 11, 7, 8)
+        end = datetime(2026, 11, 7, 16)
+        for press_number in range(1, 15):
+            machine = f"F{press_number}"
+            production_id = self._add_lot()
+            self.connection.commit()
+            self._add_assignment(production_id, machine, 95000 + press_number, start, end)
+            self.connection.commit()
+            self._assert_database_error(
+                52937,
+                lambda machine=machine, press_number=press_number:
+                    self._add_assignment(
+                        production_id, machine, 96000 + press_number,
+                        datetime(2026, 11, 7, 15), datetime(2026, 11, 7, 18),
+                    ),
+            )
+            self.connection.rollback()
 
     def test_overlapping_press_interval_is_rejected(self):
         production_id = self._add_lot()
@@ -308,7 +328,7 @@ class Migration029SqlServerIntegrationTests(unittest.TestCase):
                     message = str(exc)
                     if "1205" in message and attempt == 0:
                         continue
-                    if "52937" in message:
+                    if "52937" in message or "52935" in message:
                         return "blocked"
                     if "1205" in message:
                         return "deadlock-unresolved"
@@ -401,7 +421,7 @@ class Migration029SqlServerIntegrationTests(unittest.TestCase):
                         message = str(exc)
                         if "1205" in message and attempt == 0:
                             continue
-                        if "52937" in message:
+                        if "52937" in message or "52935" in message:
                             return "blocked"
                         if "1205" in message:
                             return "deadlock-unresolved"

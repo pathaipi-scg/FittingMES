@@ -37,27 +37,29 @@ SELECT N'ProductionLot rows without ShiftMasterID snapshot', COUNT_BIG(*)
 FROM dbo.ProductionLot
 WHERE ShiftMasterID IS NULL
 UNION ALL
-SELECT N'Usage rows with legacy Shift string', COUNT_BIG(*)
+SELECT N'Usage rows awaiting logical identity migration', COUNT_BIG(*)
 FROM dbo.DailyMaterialUsage
-WHERE ShiftMasterID IS NULL
 UNION ALL
-SELECT N'LOGGER rows with legacy ShiftID only', COUNT_BIG(*)
-FROM dbo.LoggerEvent
-WHERE ShiftMasterID IS NULL;
+SELECT N'LOGGER rows awaiting logical identity migration', COUNT_BIG(*)
+FROM dbo.LoggerEvent;
 
 SELECT ShiftMasterID, ShiftCode, EffectiveFromDate, EffectiveToDate,
        VersionNumber, IsActive
 FROM dbo.ShiftMasterVersion
 ORDER BY ShiftMasterID, EffectiveFromDate, VersionNumber;
 
-SELECT ShiftPeriodID, ShiftMasterID, PeriodLabel, StartTime, EndTime,
-       EffectiveFromDate, EffectiveToDate, IsActive
-FROM dbo.ShiftPeriodVersion
-ORDER BY ShiftMasterID, EffectiveFromDate, DisplayOrder;
+SELECT period_version.ShiftPeriodID, period.ShiftMasterID,
+       period_version.PeriodLabel, period_version.StartTime,
+       period_version.EndTime, period_version.EffectiveFromDate,
+       period_version.EffectiveToDate, period_version.IsActive
+FROM dbo.ShiftPeriodVersion AS period_version
+JOIN dbo.ShiftPeriodMaster AS period
+  ON period.id = period_version.ShiftPeriodID
+ORDER BY period.ShiftMasterID, period_version.EffectiveFromDate,
+         period_version.DisplayOrder;
 
-SELECT N'Manual usage duplicate logical keys' AS CheckName,
-       ReportDate, ShiftMasterID, COUNT_BIG(*) AS DuplicateCount
+SELECT N'Legacy manual usage duplicate date/Shift keys' AS CheckName,
+       ReportDate, Shift, COUNT_BIG(*) AS DuplicateCount
 FROM dbo.DailyMaterialUsage
-WHERE ShiftMasterID IS NOT NULL
-GROUP BY ReportDate, ShiftMasterID
+GROUP BY ReportDate, Shift
 HAVING COUNT_BIG(*) > 1;

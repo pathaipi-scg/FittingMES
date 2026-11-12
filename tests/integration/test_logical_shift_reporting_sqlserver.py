@@ -1,5 +1,6 @@
 import os
 import unittest
+from decimal import Decimal
 
 import pyodbc
 
@@ -127,6 +128,106 @@ class LogicalShiftReportingSqlServerTests(unittest.TestCase):
             WHERE ReportDate=? AND ShiftMasterID=?
         """, candidate[0], candidate[1])
         self.assertEqual(self.cursor.fetchone()[0], 1)
+
+    def test_usage_and_production_inputs_aggregate_once_across_shift_periods(self):
+        self.cursor.execute("""
+            SELECT lot.ProdDate,lot.ShiftMasterID
+            FROM dbo.ProductionLot AS lot
+            WHERE lot.ProductionID=990010
+        """)
+        production_date, shift_master_id = self.cursor.fetchone()
+        self.cursor.execute("""
+            SELECT SUM(CounterQty),SUM(CuringQty),SUM(LotCount),COUNT_BIG(*)
+            FROM dbo.vw_DailyProductionQtyLogical
+            WHERE ReportDate=? AND ShiftMasterID=?
+        """, production_date, shift_master_id)
+        self.assertEqual(tuple(self.cursor.fetchone()), (300, 240, 2, 1))
+
+        self.cursor.execute("""
+            SELECT ShiftMasterID,RawQty,CounterQty,CuringQty,LotCount,
+                   QtyPer1000Counter,QtyPer1000Curing
+            FROM dbo.vw_DailyMaterialUsageCalcLogical
+            WHERE MaterialUsageID=990001
+        """)
+        usage = self.cursor.fetchone()
+        self.assertIsNotNone(usage)
+        self.assertEqual(usage[0], shift_master_id)
+        self.assertEqual(Decimal(str(usage[1])), Decimal("12.500"))
+        self.assertEqual(tuple(usage[2:5]), (300, 240, 2))
+        self.assertEqual(Decimal(str(usage[5])), Decimal("41.667"))
+        self.assertEqual(Decimal(str(usage[6])), Decimal("52.083"))
+
+    def test_oee_inputs_are_aggregated_across_periods_before_rates(self):
+        self.cursor.execute("""
+            SELECT SUM(assignment.CounterQty),SUM(assignment.CuringQty),
+                   SUM(DATEDIFF_BIG(SECOND,assignment.ProductionStartTime,
+                                    assignment.ProductionEndTime))/60.0,
+                   SUM(ISNULL(assignment.DowntimeMinutes,0))
+            FROM dbo.PressProduction AS assignment
+            WHERE assignment.ProductionID IN (990010,990011)
+              AND assignment.ShiftMasterID=(
+                  SELECT ShiftMasterID FROM dbo.ProductionLot
+                  WHERE ProductionID=990010)
+        """)
+        counter, curing, actual_minutes, downtime = self.cursor.fetchone()
+        self.assertEqual((counter, curing), (300, 240))
+        self.assertEqual(Decimal(str(actual_minutes)), Decimal("600.000000"))
+        self.assertEqual(Decimal(str(downtime)), Decimal("0.00"))
+
+        availability = (Decimal(str(actual_minutes)) - Decimal(str(downtime))) / Decimal(str(actual_minutes))
+        quality = Decimal(curing) / Decimal(counter)
+        performance = Decimal(counter) / (Decimal("1") * (Decimal(str(actual_minutes)) - Decimal(str(downtime))))
+        self.assertEqual(availability, Decimal("1"))
+        self.assertEqual(quality, Decimal("0.8"))
+        self.assertEqual(performance, Decimal("0.5"))
+        self.assertEqual(availability * quality * performance, Decimal("0.40"))
+
+    def test_reject_and_logger_inputs_are_not_duplicated_by_period_count(self):
+        self.cursor.execute("""
+            SELECT lot.ProdDate,lot.Shift
+            FROM dbo.ProductionLot AS lot
+            WHERE lot.ProductionID=990010
+        """)
+        production_date, shift_code = self.cursor.fetchone()
+        self.cursor.execute("""
+            SELECT SUM(RejectQty),COUNT_BIG(*)
+            FROM dbo.ProductionRejectEntry
+            WHERE ProductionDate=? AND Shift=?
+        """, production_date, shift_code)
+        self.assertEqual(tuple(self.cursor.fetchone()), (5, 1))
+        self.cursor.execute("""
+            SELECT SUM(DurationMin),COUNT_BIG(*)
+            FROM dbo.LoggerEvent
+            WHERE ProductionDate=?
+        """, production_date)
+        self.assertEqual(tuple(self.cursor.fetchone()), (15, 1))
+        self.cursor.execute("""
+            SELECT SUM(RejectQty),COUNT_BIG(*)
+            FROM dbo.DepalletRejectEntry
+            WHERE ProductionDate=? AND Shift=?
+        """, production_date, shift_code)
+        self.assertEqual(tuple(self.cursor.fetchone()), (7, 1))
+
+    def test_cutoff_and_historical_production_dates_remain_preserved(self):
+        self.cursor.execute("""
+            SELECT
+                (SELECT DayStartTime FROM dbo.ProductionDayRuleHistory
+                 WHERE EffectiveFromDate='2026-01-01'),
+                (SELECT CutoffTime FROM dbo.ProductionDateCutoffVersion
+                 WHERE EffectiveFromDate=(SELECT MIN(EffectiveFromDate)
+                                          FROM dbo.ProductionDateCutoffVersion)),
+                (SELECT ProdDate FROM dbo.ProductionLot WHERE ProductionID=990001),
+                (SELECT ProductionDateCutoffSnapshot
+                 FROM dbo.ProductionLot WHERE ProductionID=990012),
+                (SELECT PeriodStartTimeSnapshot FROM dbo.PressProduction
+                 WHERE ProductionID=990012)
+        """)
+        historical_start, cutoff, historical_date, saved_cutoff, period_start = self.cursor.fetchone()
+        self.assertEqual(str(historical_start), "08:00:00")
+        self.assertEqual(str(cutoff), "07:00:00")
+        self.assertEqual(str(historical_date), "2026-09-03")
+        self.assertEqual(str(saved_cutoff), "07:00:00")
+        self.assertEqual(str(period_start), "04:00:00")
 
 
 if __name__ == "__main__":

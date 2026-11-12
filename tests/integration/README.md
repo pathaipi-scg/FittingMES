@@ -191,10 +191,10 @@ The suite covers adjacent same-key intervals, Press and Mould overlap
 rejection, cross-midnight adjacency within one Production Day, unresolved
 historical rows, unrelated versus allocation-relevant updates, concurrent
 direct INSERT/UPDATE, application-lock serialization, and rollback guards.
-Concurrent direct-SQL tests accept either an overlap rejection or SQL Server
-deadlock error 1205 for a losing transaction, then verify that no overlapping
-pair committed. This is not a claim that mixed application/direct writers are
-deadlock-free.
+Concurrent direct-SQL tests accept an overlap rejection, availability-lock
+timeout (52935), or SQL Server deadlock error 1205 for a losing transaction,
+then verify that no overlapping pair committed. This is not a claim that
+mixed application/direct writers are deadlock-free.
 
 ## Rollback and cleanup
 

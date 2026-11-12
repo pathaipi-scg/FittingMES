@@ -66,20 +66,21 @@ BEGIN TRY
     ALTER TABLE dbo.DepalletRejectEntry
         ADD ShiftCodeSnapshot varchar(10) NULL;
 
-    ALTER TABLE dbo.DailyMaterialUsage
-        ADD CONSTRAINT FK_DailyMaterialUsage_ShiftMaster
-            FOREIGN KEY (ShiftMasterID) REFERENCES dbo.ShiftMaster(id);
-    ALTER TABLE dbo.LoggerEvent
-        ADD CONSTRAINT FK_LoggerEvent_ShiftMaster
-            FOREIGN KEY (ShiftMasterID) REFERENCES dbo.ShiftMaster(id);
+    EXEC sys.sp_executesql N'
+ALTER TABLE dbo.DailyMaterialUsage
+    ADD CONSTRAINT FK_DailyMaterialUsage_ShiftMaster
+        FOREIGN KEY (ShiftMasterID) REFERENCES dbo.ShiftMaster(id);
+ALTER TABLE dbo.LoggerEvent
+    ADD CONSTRAINT FK_LoggerEvent_ShiftMaster
+        FOREIGN KEY (ShiftMasterID) REFERENCES dbo.ShiftMaster(id);
 
-    CREATE UNIQUE INDEX UX_DailyMaterialUsage_Date_ShiftMaster
-        ON dbo.DailyMaterialUsage (ReportDate, ShiftMasterID)
-        WHERE ShiftMasterID IS NOT NULL;
-    CREATE INDEX IX_LoggerEvent_ProductionDate_ShiftMaster
-        ON dbo.LoggerEvent (ProductionDate, ShiftMasterID)
-        INCLUDE (DurationMin, StopId)
-        WHERE ShiftMasterID IS NOT NULL;
+CREATE UNIQUE INDEX UX_DailyMaterialUsage_Date_ShiftMaster
+    ON dbo.DailyMaterialUsage (ReportDate, ShiftMasterID)
+    WHERE ShiftMasterID IS NOT NULL;
+CREATE INDEX IX_LoggerEvent_ProductionDate_ShiftMaster
+    ON dbo.LoggerEvent (ProductionDate, ShiftMasterID)
+    INCLUDE (DurationMin, StopId)
+    WHERE ShiftMasterID IS NOT NULL;';
 
     EXEC sys.sp_executesql N'
 CREATE VIEW dbo.vw_DailyProductionQtyLogical

@@ -37,6 +37,45 @@ class LogicalShiftReportingMigrationTests(unittest.TestCase):
                       self.migration)
         self.assertNotRegex(self.migration, r'UPDATE\s+dbo\.(?:ProductionLot|LoggerEvent|DailyMaterialUsage)')
 
+    def test_new_column_constraints_and_indexes_are_deferred_after_alter(self):
+        batches = re.findall(
+            r"EXEC\s+sys\.sp_executesql\s+N'((?:''|[^'])*)';",
+            self.migration,
+            re.IGNORECASE | re.DOTALL,
+        )
+        deferred_sql = '\n'.join(batch.replace("''", "'") for batch in batches)
+        for statement in (
+                'ALTER TABLE dbo.DailyMaterialUsage',
+                'FK_DailyMaterialUsage_ShiftMaster',
+                'ALTER TABLE dbo.LoggerEvent',
+                'FK_LoggerEvent_ShiftMaster',
+                'CREATE UNIQUE INDEX UX_DailyMaterialUsage_Date_ShiftMaster',
+                'CREATE INDEX IX_LoggerEvent_ProductionDate_ShiftMaster'):
+            self.assertIn(statement, deferred_sql)
+
+        outer_batch = re.sub(
+            r"EXEC\s+sys\.sp_executesql\s+N'((?:''|[^'])*)';",
+            '',
+            self.migration,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        self.assertNotRegex(
+            outer_batch,
+            r"(?is)ALTER TABLE dbo\.(?:DailyMaterialUsage|LoggerEvent)\s+"
+            r"ADD CONSTRAINT FK_(?:DailyMaterialUsage|LoggerEvent)_ShiftMaster"
+            r"[\s\S]*?ShiftMasterID",
+        )
+        self.assertNotRegex(
+            outer_batch,
+            r"(?is)CREATE (?:UNIQUE )?INDEX "
+            r"(?:UX_DailyMaterialUsage_Date_ShiftMaster|"
+            r"IX_LoggerEvent_ProductionDate_ShiftMaster)"
+            r"[\s\S]*?ShiftMasterID",
+        )
+        self.assertIn('BEGIN TRANSACTION', self.migration)
+        self.assertIn('BEGIN CATCH', self.migration)
+        self.assertIn('ROLLBACK TRANSACTION', self.migration)
+
     def test_new_views_aggregate_by_master_and_preserve_legacy_key(self):
         for view_name in ('vw_DailyProductionQtyLogical',
                           'vw_DailyMaterialUsageLogical',
@@ -54,6 +93,12 @@ class LogicalShiftReportingMigrationTests(unittest.TestCase):
         self.assertIn("OBJECT_ID(N'dbo.ShiftPeriodMaster', N'U')", self.preflight)
         self.assertIn("TR_PressProduction_PreventActiveIntervalOverlap", self.preflight)
         self.assertIn("CutoffTime = '07:00'", self.preflight)
+        self.assertIn("JOIN dbo.ShiftPeriodMaster AS period", self.preflight)
+        self.assertIn("period.ShiftMasterID", self.preflight)
+        self.assertNotRegex(
+            self.preflight,
+            r"FROM dbo\.(?:DailyMaterialUsage|LoggerEvent)\s+(?:WHERE|GROUP BY)[^;]*ShiftMasterID",
+        )
         self.assertNotRegex(self.preflight, r'\b(?:INSERT|UPDATE|DELETE|MERGE|ALTER|DROP|EXEC)\b')
         self.assertIn('COUNT_BIG(*) AS DuplicateCount', self.preflight)
         self.assertNotIn('AS RowCount', self.preflight)
