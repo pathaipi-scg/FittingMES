@@ -13,7 +13,9 @@ from app.press_production import (read_eligible_moulds, read_eligible_presses,
                                   release_press_production, undo_release_press_production,
                                   validate_press_input, calculate_smdt,
                                   _resolve_new_assignment_interval,
-                                  _resolve_saved_lot_interval)
+                                  _resolve_saved_lot_interval,
+                                  _legacy_shift_interval)
+from app.resource_availability import find_assignment_conflict
 from app.main import production_page, save_press_production_route_action
 from test_production import DAY, LOT, PLAN, PRODUCTION_REJECT_CONTEXT, request
 
@@ -81,6 +83,13 @@ class PressProductionCursor:
                     self.conn.day_start_time))
         elif 'ProductionDayRuleHistory' in sql:
             self.result = [(self.conn.day_start_time,)]
+        elif 'FROM dbo.ProductionShiftRuleHistory' in sql:
+            self._set([
+                dict(EffectiveFromDate=self.conn.production_date, ShiftID=1,
+                     StartTime=time(6)),
+                dict(EffectiveFromDate=self.conn.production_date, ShiftID=2,
+                     StartTime=time(19)),
+            ])
         elif 'FROM dbo.ProductionData WHERE ProductionID=?' in sql:
             self.result = [(self.conn.lot_start_time, self.conn.lot_end_time)]
         elif 'FROM dbo.ShiftMaster' in sql:
@@ -1599,7 +1608,8 @@ class PressProductionTests(unittest.TestCase):
 
     def test_new_assignment_defaults_to_saved_lot_interval_and_is_active(self):
         conn = PressProductionConnection()
-        data = valid_input(CounterQty='', CuringQty='', ProductionStartTime='', ProductionEndTime='', Remark='')
+        data = valid_input(ShiftCode='2', CounterQty='', CuringQty='',
+                           ProductionStartTime='', ProductionEndTime='', Remark='')
         save_press_production(conn, 7, data)
         self.assertEqual(len(conn.press_rows), 1)
         self.assertEqual(conn.press_rows[30]['ProductionStartTime'],
@@ -1641,6 +1651,51 @@ class PressProductionTests(unittest.TestCase):
                 self.assertEqual(
                     interval,
                     (datetime(2026, 9, 27, 6), datetime(2026, 9, 27, 8)))
+
+    def test_legacy_shift2_interval_allows_sequential_press_and_mould_reuse(self):
+        production_date = date(2026, 11, 10)
+        cutoff = time(8)
+        lot_start, lot_end = time(8), time(6)
+        lot_interval = _resolve_saved_lot_interval(
+            production_date, cutoff, lot_start, lot_end)
+        rules = [
+            dict(ShiftID=1, StartTime=time(6)),
+            dict(ShiftID=2, StartTime=time(19)),
+        ]
+        shift1 = _legacy_shift_interval(production_date, '1', rules)
+        shift2 = _legacy_shift_interval(production_date, '2', rules)
+        self.assertEqual(
+            _resolve_new_assignment_interval(
+                production_date, cutoff, lot_interval, None, None, None, shift1),
+            (datetime(2026, 11, 10, 8), datetime(2026, 11, 10, 19)))
+        requested = _resolve_new_assignment_interval(
+            production_date, cutoff, lot_interval, None, None, None, shift2)
+        self.assertEqual(
+            requested,
+            (datetime(2026, 11, 10, 19), datetime(2026, 11, 11, 6)))
+        self.assertEqual(
+            _resolve_new_assignment_interval(
+                production_date, cutoff, lot_interval, None,
+                '20:00', '05:00', shift2),
+            (datetime(2026, 11, 10, 20), datetime(2026, 11, 11, 5)))
+
+        conn = PressProductionConnection()
+        conn.production_date = production_date
+        conn.press_rows[131] = dict(
+            PressProductionID=131, ProductionID=98, LotNo='I11691117',
+            MachineCode='F7', MouldID=32, ProductionDate=production_date,
+            ProductionStartTime=datetime(2026, 11, 10, 8),
+            ProductionEndTime=datetime(2026, 11, 10, 19), ReleasedAt=None)
+        cursor = conn.cursor()
+        self.assertIsNone(find_assignment_conflict(
+            cursor, 'press', 'F7', requested,
+            requested_production_date=production_date))
+        self.assertIsNone(find_assignment_conflict(
+            cursor, 'mould', 32, requested,
+            requested_production_date=production_date))
+        self.assertIsNotNone(find_assignment_conflict(
+            cursor, 'press', 'F7', lot_interval,
+            requested_production_date=production_date))
 
     def test_new_assignment_manual_times_override_lot_default(self):
         production_date = date(2026, 9, 26)
@@ -2388,7 +2443,8 @@ class PressProductionRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn('Mould is already assigned in Shift 2.', page)
         self.assertIn('action="/lots/7/press-production/30"', page)
-        self.assertIn('id="press-shift-code" name="shift_code" value="2"', page)
+        self.assertIn('data-mode="shift" name="shift_code"', page)
+        self.assertRegex(page, r'<option value="2" data-shift-code="2"[^>]*selected')
         self.assertRegex(page, r'<option value="F2"[^>]*selected')
         self.assertRegex(page, r'<option value="4"[^>]*selected')
         self.assertNotIn('CounterQty', submitted_data)

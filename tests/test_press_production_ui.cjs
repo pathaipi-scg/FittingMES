@@ -34,7 +34,7 @@ class Element {
 }
 
 const html = fs.readFileSync('app/templates/production.html', 'utf8');
-assert.match(html, /name="shift_period_id" required/);
+assert.match(html, /data-mode="\{\{ 'period' if eligible_periods else 'shift' \}\}" name="\{\{ 'shift_period_id' if eligible_periods else 'shift_code' \}\}" required/);
 assert.match(html, /id="press-shift-code" name="shift_code"/);
 assert.match(html, /name="production_start_time" type="time"/);
 assert.match(html, /name="production_end_time" type="time"/);
@@ -190,6 +190,7 @@ const form = new Element();
 form.dataset.addAction = '/lots/7/press-production';
 form.action = form.dataset.addAction;
 const period = new Element('');
+period.dataset.mode = 'period';
 period.options = [
   new Element(''),
   Object.assign(new Element('11'), {dataset: {
@@ -339,4 +340,60 @@ assert.equal(shift.value, '', 'ADD FITTING requires an explicit period selection
 
 legacyEditButton.fire('click');
 assert.equal(shift.value, '', 'Legacy EDIT keeps its unknown Shift instead of guessing');
-console.log('Shift-period Production UI regression passed.');
+
+const legacyPeriod = new Element('');
+legacyPeriod.dataset.mode = 'shift';
+legacyPeriod.options = [
+  new Element(''),
+  Object.assign(new Element('1'), {dataset: {
+    shiftCode: '1', defaultStart: '08:00', defaultEnd: '19:00',
+  }}),
+  Object.assign(new Element('2'), {dataset: {
+    shiftCode: '2', defaultStart: '19:00', defaultEnd: '06:00',
+  }}),
+];
+const legacyStart = new Element('');
+const legacyEnd = new Element('');
+const legacyPress = new Element('');
+legacyPress.options = [
+  new Element(''),
+  Object.assign(new Element('F7'), {dataset: {availableShifts: '2'}}),
+];
+const legacyMould = new Element('');
+legacyMould.options = [
+  new Element(''),
+  Object.assign(new Element('32'), {dataset: {availableShifts: '2'}}),
+];
+const legacyElements = new Map([
+  ['add-fitting-form', form],
+  ['press-period-select', legacyPeriod],
+  ['press-shift-code', null],
+  ['add-fitting-submit', submit],
+  ['cancel-fitting-edit', cancel],
+]);
+const legacyDocument = {
+  getElementById: id => legacyElements.get(id) || null,
+  querySelector: selector => selector === '.press-choice' ? legacyPress :
+    selector === '.mould-choice' ? legacyMould :
+    selector === '.fitting-start-time' ? legacyStart :
+    selector === '.fitting-end-time' ? legacyEnd : null,
+  querySelectorAll: selector => selector === '.edit-fitting-button' ? [] : [],
+};
+vm.runInNewContext(scriptMatch[0].replace(/^<script>|<\/script>$/g, ''), {
+  document: legacyDocument,
+  Option: class {
+    constructor(text, value) {
+      this.textContent = text;
+      this.value = value;
+      this.dataset = {};
+    }
+  },
+});
+legacyPeriod.value = '2';
+legacyPeriod.fire('change');
+assert.equal(legacyPeriod.value, '2');
+assert.equal(legacyStart.value, '19:00');
+assert.equal(legacyEnd.value, '06:00');
+assert.equal(legacyPress.options[1].disabled, false);
+assert.equal(legacyMould.options[1].disabled, false);
+console.log('Shift-period and legacy Shift Production UI regressions passed.');

@@ -1,0 +1,90 @@
+{% extends "api_base.html" %}
+{% block content %}
+<style>
+.assignment-filters{display:flex;align-items:end;gap:8px;flex-wrap:wrap}
+.assignment-filters label{display:grid;gap:2px}
+.assignment-filters select{min-width:110px}
+.assignment-timeline{overflow-x:auto}
+.timeline-axis,.timeline-row{min-width:900px}
+.timeline-axis{height:24px;margin-left:230px;position:relative;border-bottom:1px solid #c7d2df}
+.timeline-tick{position:absolute;bottom:2px;white-space:nowrap;transform:translateX(-50%);font-size:9px;color:#718096}
+.timeline-row{display:grid;grid-template-columns:220px minmax(0,1fr);gap:10px;align-items:center;margin:3px 0}
+.timeline-label{overflow:hidden;text-overflow:ellipsis}
+.timeline-track{height:19px;position:relative;background:repeating-linear-gradient(90deg,#f3f6f9 0,#f3f6f9 calc(12.5% - 1px),#dce4ec calc(12.5% - 1px),#dce4ec 12.5%)}
+.timeline-bar{position:absolute;top:2px;height:15px;min-width:2px;overflow:hidden;border-radius:2px;background:#2878b8;color:#fff;padding:1px 3px;font-size:8px;white-space:nowrap}
+.timeline-bar.released{background:#718096}
+.assignment-warning{color:#9d2525;white-space:normal}
+.assignment-incomplete{color:#8a5a00;white-space:normal}
+.released-row{color:#68778a}
+</style>
+<section class="panel">
+<h1>ASSIGN</h1>
+<p class="muted">Read-only Press/Mould assignments for the selected Production Date. Shift Period is not stored in the current SB23 schema.</p>
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+<form class="assignment-filters" method="get" action="/assign">
+<input type="hidden" name="production_date" value="{{ production_date }}">
+<label>Press
+<select name="press">
+<option value="">All Presses</option>
+{% for option in press_options %}<option value="{{ option }}" {% if selected_press == option %}selected{% endif %}>{{ option }}</option>{% endfor %}
+</select>
+</label>
+<label>Shift
+<select name="shift">
+<option value="">All Shifts</option>
+{% for option in shift_options %}<option value="{{ option }}" {% if selected_shift == option %}selected{% endif %}>Shift {{ option }}</option>{% endfor %}
+</select>
+</label>
+<label>Mould
+<select name="mould_id">
+<option value="">All Moulds</option>
+{% for option in mould_options %}<option value="{{ option.MouldID }}" {% if selected_mould == option.MouldID %}selected{% endif %}>{{ option.Label }}</option>{% endfor %}
+</select>
+</label>
+<button class="primary" type="submit">FILTER</button>
+<a href="/assign?production_date={{ production_date }}">CLEAR FILTERS</a>
+</form>
+{% if overlap_count %}<p class="assignment-warning" role="alert">{{ overlap_count }} actual overlap pair(s) detected in assignments loaded for this date (independent of filters).</p>
+{% else %}<p class="muted">No actual Press/Mould interval overlaps detected in assignments loaded for this date.</p>{% endif %}
+</section>
+<section class="panel">
+<h2>Assignment Timeline</h2>
+<p class="muted">Timeline spans the selected date and the following calendar day. Bars use saved Start/End timestamps only; incomplete intervals have no bar.</p>
+<div class="assignment-timeline">
+<div class="timeline-axis">
+{% for tick in timeline_ticks %}<span class="timeline-tick" style="left:{{ tick.Position }}%">{{ tick.Label }}</span>{% endfor %}
+</div>
+{% for assignment in assignments %}
+<div class="timeline-row">
+<span class="timeline-label">{{ assignment.ProdDate }} · {{ assignment.MachineCode }} · {{ assignment.LotNo }} · Shift {{ assignment.ShiftCode or '—' }}</span>
+<div class="timeline-track">
+{% if assignment.TimelineWidth %}<span class="timeline-bar{% if assignment.ReleasedAt %} released{% endif %}" style="left:{{ assignment.TimelineLeft }}%;width:{{ assignment.TimelineWidth }}%" title="{{ assignment.MachineCode }} / {{ assignment.LotNo }}: {{ assignment.StartDisplay }}–{{ assignment.EndDisplay }}">{{ assignment.StartDisplay }}–{{ assignment.EndDisplay }}</span>{% endif %}
+</div>
+</div>
+{% else %}<p class="muted">No assignments match these filters.</p>{% endfor %}
+</div>
+</section>
+<section class="panel">
+<h2>Press/Mould Assignments</h2>
+<div class="table-scroll"><table>
+<thead><tr><th>Production Date</th><th>Press</th><th>Mould</th><th>Lot</th><th>Shift / Period</th><th>Start</th><th>End</th><th>Released</th><th>Lot Status</th><th>Warnings</th></tr></thead>
+<tbody>
+{% for assignment in assignments %}
+<tr{% if assignment.ReleasedAt %} class="released-row"{% endif %}>
+<td>{{ assignment.ProdDate }}</td>
+<td>{{ assignment.MachineCode }}{% if assignment.PressName %} / {{ assignment.PressName }}{% endif %}</td>
+<td>{% if assignment.MouldID %}{{ assignment.MouldNo or ('Mould ' ~ assignment.MouldID) }}{% else %}—{% endif %}</td>
+<td>{{ assignment.LotNo }} ({{ assignment.ProductionID }})</td>
+<td>Shift {{ assignment.ShiftCode or '—' }} / {{ assignment.ShiftPeriodDisplay }}</td>
+<td>{{ assignment.StartDisplay }}</td>
+<td>{{ assignment.EndDisplay }}</td>
+<td>{{ assignment.ReleasedStatus }}</td>
+<td>{{ assignment.LotStatus }}</td>
+<td>{% if assignment.OverlapWarnings %}{% for warning in assignment.OverlapWarnings %}<div class="assignment-warning">{{ warning }}</div>{% endfor %}{% endif %}
+{% if assignment.IntervalWarning %}<div class="assignment-incomplete">{{ assignment.IntervalWarning }}</div>{% endif %}
+</td>
+</tr>
+{% else %}<tr><td colspan="10" class="muted">No assignments match these filters.</td></tr>{% endfor %}
+</tbody></table></div>
+</section>
+{% endblock %}

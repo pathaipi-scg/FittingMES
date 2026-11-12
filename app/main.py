@@ -21,6 +21,7 @@ from app.database import get_connection
 from app.pis_config import PISConfig
 from app.pis_client import PISClient, PISClientError
 from app.usage import read_usage_context, save_usage
+from app.press_assignments import read_press_assignment_context
 from app.prod_api import (read_prod_records, read_historical_plans, build_pis_date_preview,
                           field_mapping, lot_readiness, preview_readiness)
 from app.production_pis_log import latest_states
@@ -2145,6 +2146,33 @@ def usage_page(request: Request, production_date: date | None = None, saved: boo
         status = 503
     return templates.TemplateResponse(request=request, name='usage.html', context=context,
                                       status_code=status, headers={'Cache-Control':'no-store'})
+
+
+@app.get('/assign', response_class=HTMLResponse)
+def press_assignment_page(request: Request, production_date: date | None = None,
+                          press: str | None = None, shift: str | None = None,
+                          mould_id: str | None = None):
+    production_date = production_date or date.today()
+    context = dict(page_title='ASSIGN', active_tab='assign',
+                   production_date=production_date, assignments=[],
+                   press_options=[], shift_options=[], mould_options=[],
+                   selected_press=press or '', selected_shift=shift or '',
+                   selected_mould=mould_id or '', overlap_count=0,
+                   timeline_ticks=[], error=None)
+    status = 200
+    try:
+        with closing(get_connection()) as conn:
+            context.update(read_press_assignment_context(
+                conn.cursor(), production_date, press, shift, mould_id))
+    except ValueError as exc:
+        context['error'] = str(exc)
+        status = 400
+    except Exception:
+        context['error'] = 'Unable to load Press/Mould assignments. Please retry.'
+        status = 503
+    return templates.TemplateResponse(
+        request=request, name='press_assignments.html', context=context,
+        status_code=status, headers={'Cache-Control': 'no-store'})
 
 
 @app.get('/print-prod', response_class=HTMLResponse)

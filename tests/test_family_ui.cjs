@@ -93,7 +93,8 @@ const productionSubmenu = navigationHTML.slice(
   navigationHTML.indexOf('<div class="production-submenu-row"'),
   navigationHTML.indexOf('<div class="settings-submenu-row"')
 );
-assert.ok(productionSubmenu.indexOf('>PRODUCTION</a>') < productionSubmenu.indexOf("('logger','LOGGER','/logger')"));
+assert.ok(productionSubmenu.indexOf('>PRODUCTION</a>') < productionSubmenu.indexOf('>ASSIGN</a>'));
+assert.ok(productionSubmenu.indexOf('>ASSIGN</a>') < productionSubmenu.indexOf("('logger','LOGGER','/logger')"));
 assert.ok(productionSubmenu.indexOf("('logger','LOGGER','/logger')") < productionSubmenu.indexOf("('reject','REJECT','/reject')"));
 assert.ok(productionSubmenu.indexOf("('reject','REJECT','/reject')") < productionSubmenu.indexOf("('usage','USAGE','/usage')"));
 const depalletSubmenu = navigationHTML.slice(
@@ -120,7 +121,7 @@ function dateNavigation(path, query = 'production_date=2026-09-14', action = pat
   });
   return {dateInput,navigations,change(value) { dateInput.value=value; dateInput.handlers.change(); }};
 }
-for (const path of ['/','/usage','/depallet','/prod-api','/reject-api']) {
+for (const path of ['/','/assign','/usage','/depallet','/prod-api','/reject-api']) {
   const test = dateNavigation(path,'production_date=2026-09-14&filter=active&filter=shift1');
   test.change('2026-09-14'); test.change('');
   test.dateInput.validity.valid=false; test.change('invalid');
@@ -145,7 +146,7 @@ const failedPost = dateNavigation('/lots/7/production','production_id=7','/');
 failedPost.change('2026-09-15');
 assert.equal(failedPost.navigations[0].pathname,'/');
 assert.equal(failedPost.navigations[0].searchParams.has('production_id'),false);
-console.log('Shared date auto-navigation passed on all five tabs; query preservation, stale selections and no form submissions verified.');
+console.log('Shared date auto-navigation passed on all six tabs; query preservation, stale selections and no form submissions verified.');
 
 const settingsToggle = {attrs:{'aria-expanded':'false'},handlers:{},
   getAttribute(name) { return this.attrs[name]; },

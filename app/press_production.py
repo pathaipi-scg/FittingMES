@@ -3,10 +3,11 @@ from decimal import Decimal, InvalidOperation
 
 from app.lots import lock_lots, rows
 from app.production_clock import read_day_start_time, resolve_run_times, clock_display
+from app.production_data import read_shift_rules
 from app.resource_availability import (find_assignment_conflict,
                                        read_lot_boundaries,
                                        resolve_effective_interval)
-from app.shift_schedule import (period_contains_interval, period_interval,
+from app.shift_schedule import (parse_clock, period_contains_interval, period_interval,
                                 resolve_period_interval)
 from app.shift_settings import read_effective_cutoff
 
@@ -498,7 +499,8 @@ def _resolve_saved_lot_interval(production_date, cutoff_time, lot_start, lot_end
 
 
 def _resolve_new_assignment_interval(production_date, cutoff_time, lot_interval,
-                                     period_config, actual_start, actual_end):
+                                     period_config, actual_start, actual_end,
+                                     legacy_shift_interval=None):
     lot_interval_start, lot_interval_end = lot_interval
     has_start = bool(str(actual_start or '').strip())
     has_end = bool(str(actual_end or '').strip())
@@ -512,6 +514,12 @@ def _resolve_new_assignment_interval(production_date, cutoff_time, lot_interval,
             if end <= start:
                 raise ValueError('The saved Lot interval does not overlap the selected Shift Period.')
             return start, end
+        if legacy_shift_interval:
+            start = max(lot_interval_start, legacy_shift_interval[0])
+            end = min(lot_interval_end, legacy_shift_interval[1])
+            if end <= start:
+                raise ValueError('The saved Lot interval does not overlap the selected Shift.')
+            return start, end
         return lot_interval
     if not has_start or not has_end:
         raise ValueError('Enter both actual Start and End times.')
@@ -522,6 +530,20 @@ def _resolve_new_assignment_interval(production_date, cutoff_time, lot_interval,
             actual_start, actual_end, cutoff_time)
     return resolve_run_times(
         production_date, actual_start, actual_end, cutoff_time)
+
+
+def _legacy_shift_interval(production_date, shift_code, shift_rules):
+    shift_code = str(shift_code or '').strip()
+    for index, rule in enumerate(shift_rules):
+        if str(rule['ShiftID']) != shift_code:
+            continue
+        next_rule = shift_rules[(index + 1) % len(shift_rules)]
+        start_clock = parse_clock(rule['StartTime'], 'Shift start')
+        end_clock = parse_clock(next_rule['StartTime'], 'Next Shift start')
+        end_date = production_date + timedelta(days=end_clock <= start_clock)
+        return (datetime.combine(production_date, start_clock),
+                datetime.combine(end_date, end_clock))
+    raise ValueError('No effective time range is configured for the selected Shift.')
 
 
 def _require_active_lot(cursor, production_id):
@@ -815,10 +837,18 @@ def save_press_production(conn, production_id, data, press_production_id=None):
                           cutoff_time=cutoff_config['CutoffTime'])
         new_requested_interval = None
         if is_new_press:
+            legacy_shift_interval = None
+            if (period_config is None
+                    and not str(data.get('ProductionStartTime') or '').strip()
+                    and not str(data.get('ProductionEndTime') or '').strip()):
+                legacy_shift_interval = _legacy_shift_interval(
+                    production_date, values['ShiftCode'],
+                    read_shift_rules(cursor, production_date))
             new_requested_interval = _resolve_new_assignment_interval(
                 production_date, cutoff_config['CutoffTime'], lot_interval,
                 period_config,
-                data.get('ProductionStartTime'), data.get('ProductionEndTime'))
+                data.get('ProductionStartTime'), data.get('ProductionEndTime'),
+                legacy_shift_interval)
             values['ProductionStartTime'], values['ProductionEndTime'] = new_requested_interval
         if period_config:
             shift_master_id = period_config['ShiftMasterID']
@@ -1242,6 +1272,8 @@ def build_press_production_context(cursor, lot, press_form=None):
         lot_start, lot_end = read_lot_boundaries(cursor, lot['ProductionID'])
         lot_interval = _resolve_saved_lot_interval(
             lot['ProdDate'], cutoff_config['CutoffTime'], lot_start, lot_end)
+        legacy_shift_rules = (
+            read_shift_rules(cursor, lot['ProdDate']) if not eligible_periods else [])
         assignment_start = press_form.get('ProductionStartTime') or None
         assignment_end = press_form.get('ProductionEndTime') or None
         if excluded_id is not None:
@@ -1258,9 +1290,14 @@ def build_press_production_context(cursor, lot, press_form=None):
                 assignment_end = existing_times[1]
         if not eligible_periods:
             if excluded_id is None:
-                requested_interval = _resolve_new_assignment_interval(
-                    lot['ProdDate'], cutoff_config['CutoffTime'], lot_interval,
-                    None, assignment_start, assignment_end)
+                selected_shift_code = str(press_form.get('ShiftCode') or '')
+                if selected_shift_code:
+                    selected_shift_interval = _legacy_shift_interval(
+                        lot['ProdDate'], selected_shift_code, legacy_shift_rules)
+                    requested_interval = _resolve_new_assignment_interval(
+                        lot['ProdDate'], cutoff_config['CutoffTime'], lot_interval,
+                        None, assignment_start, assignment_end,
+                        selected_shift_interval)
             else:
                 requested_interval = resolve_effective_interval(
                     lot['ProdDate'], cutoff_config['CutoffTime'],
@@ -1330,17 +1367,40 @@ def build_press_production_context(cursor, lot, press_form=None):
                 if mould['Available']:
                     option['AvailablePeriodIDs'].append(period_id)
     else:
+        selected_shift_code = str(press_form.get('ShiftCode') or '')
         for shift in eligible_shifts:
             shift_code = str(shift['ShiftCode'])
+            try:
+                shift_interval = _legacy_shift_interval(
+                    lot['ProdDate'], shift_code, legacy_shift_rules)
+                default_interval = _resolve_new_assignment_interval(
+                    lot['ProdDate'], cutoff_config['CutoffTime'], lot_interval,
+                    None, None, None, shift_interval)
+                shift['DefaultStartTime'] = default_interval[0].strftime('%H:%M')
+                shift['DefaultEndTime'] = default_interval[1].strftime('%H:%M')
+                if excluded_id is not None and selected_shift_code == shift_code:
+                    interval = requested_interval
+                elif selected_shift_code == shift_code:
+                    interval = _resolve_new_assignment_interval(
+                        lot['ProdDate'], cutoff_config['CutoffTime'], lot_interval,
+                        None, assignment_start, assignment_end, shift_interval)
+                else:
+                    interval = default_interval
+            except ValueError as exc:
+                shift['Available'] = False
+                shift['AvailabilityReason'] = str(exc)
+                continue
+            shift['Available'] = True
+            shift['AvailabilityReason'] = None
             presses = read_eligible_presses(cursor, product_family_id, product_code,
-                lot['ProdDate'], shift_code, excluded_id, requested_interval)
+                lot['ProdDate'], shift_code, excluded_id, interval)
             for press in presses:
                 option = presses_by_code.setdefault(press['PressCode'],
                     dict(press, AvailableShiftCodes=[]))
                 if press['Available']:
                     option['AvailableShiftCodes'].append(shift_code)
             moulds = read_eligible_moulds(cursor, product_family_id, product_code,
-                lot['ProdDate'], shift_code, excluded_id, requested_interval)
+                lot['ProdDate'], shift_code, excluded_id, interval)
             for mould in moulds:
                 option = moulds_by_id.setdefault(mould['MouldID'],
                     dict(mould, AvailableShiftCodes=[]))
