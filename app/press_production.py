@@ -489,6 +489,41 @@ def validate_press_input(data, require_mould=True, production_date=None, day_sta
                 Remark=remark or None)
 
 
+def _resolve_saved_lot_interval(production_date, cutoff_time, lot_start, lot_end):
+    if lot_start is None or lot_end is None:
+        raise ValueError(
+            'กรุณากรอกและบันทึกเวลาเริ่มต้นและเวลาสิ้นสุดของ Lot ก่อนเพิ่ม Fitting')
+    return resolve_effective_interval(
+        production_date, cutoff_time, None, None, lot_start, lot_end)
+
+
+def _resolve_new_assignment_interval(production_date, cutoff_time, lot_interval,
+                                     period_config, actual_start, actual_end):
+    lot_interval_start, lot_interval_end = lot_interval
+    has_start = bool(str(actual_start or '').strip())
+    has_end = bool(str(actual_end or '').strip())
+    if not has_start and not has_end:
+        if period_config:
+            period_start, period_end = period_interval(
+                production_date, period_config['StartTime'],
+                period_config['EndTime'], cutoff_time)
+            start = max(lot_interval_start, period_start)
+            end = min(lot_interval_end, period_end)
+            if end <= start:
+                raise ValueError('The saved Lot interval does not overlap the selected Shift Period.')
+            return start, end
+        return lot_interval
+    if not has_start or not has_end:
+        raise ValueError('Enter both actual Start and End times.')
+
+    if period_config:
+        return resolve_period_interval(
+            production_date, period_config['StartTime'], period_config['EndTime'],
+            actual_start, actual_end, cutoff_time)
+    return resolve_run_times(
+        production_date, actual_start, actual_end, cutoff_time)
+
+
 def _require_active_lot(cursor, production_id):
     cursor.execute('''SELECT ProductionID, ProductFamilyID, ProductCode, ProdDate
         FROM dbo.ProductionLot WITH (UPDLOCK,HOLDLOCK)
@@ -751,6 +786,12 @@ def save_press_production(conn, production_id, data, press_production_id=None):
             if has_period_schema else
             dict(ProductionDateCutoffVersionID=None, CutoffTime=day_start_time)
         )
+        lot_start, lot_end = (None, None)
+        lot_interval = None
+        if is_new_press:
+            lot_start, lot_end = read_lot_boundaries(cursor, production_id)
+            lot_interval = _resolve_saved_lot_interval(
+                production_date, cutoff_config['CutoffTime'], lot_start, lot_end)
         validation_data = data
         if downtime_only:
             validation_data = dict(data)
@@ -772,6 +813,13 @@ def save_press_production(conn, production_id, data, press_production_id=None):
                                           and not downtime_only),
                           period_config=period_config,
                           cutoff_time=cutoff_config['CutoffTime'])
+        new_requested_interval = None
+        if is_new_press:
+            new_requested_interval = _resolve_new_assignment_interval(
+                production_date, cutoff_config['CutoffTime'], lot_interval,
+                period_config,
+                data.get('ProductionStartTime'), data.get('ProductionEndTime'))
+            values['ProductionStartTime'], values['ProductionEndTime'] = new_requested_interval
         if period_config:
             shift_master_id = period_config['ShiftMasterID']
             values['ShiftCode'] = period_config['ShiftCode']
@@ -784,11 +832,7 @@ def save_press_production(conn, production_id, data, press_production_id=None):
 
         mould_only_edit = False
         if press_production_id is None:
-            lot_start, lot_end = read_lot_boundaries(cursor, production_id)
-            requested_interval = resolve_effective_interval(
-                production_date, day_start_time,
-                values['ProductionStartTime'], values['ProductionEndTime'],
-                lot_start, lot_end)
+            requested_interval = new_requested_interval
             _lock_allocation_keys(
                 cursor, production_date,
                 press_identities=[(shift_master_id, values['MachineCode'])],
@@ -844,6 +888,11 @@ def save_press_production(conn, production_id, data, press_production_id=None):
                 raise ValueError('Press Production row not found for this Lot.')
             if existing[7] is not None:
                 raise ValueError('Released Press Production rows cannot be edited; undo release first.')
+            if (not downtime_only
+                    and not str(data.get('ProductionStartTime') or '').strip()
+                    and not str(data.get('ProductionEndTime') or '').strip()):
+                values['ProductionStartTime'] = existing[4]
+                values['ProductionEndTime'] = existing[5]
             if has_period_schema and not downtime_only and period_config is None:
                 if existing[11] is not None:
                     period_config = _resolve_assignment_period(
@@ -1181,9 +1230,18 @@ def build_press_production_context(cursor, lot, press_form=None):
         excluded_id = None
     requested_interval = None
     interval_error = None
+    lot_interval_error = None
+    cutoff_config = (
+        read_effective_cutoff(cursor, lot['ProdDate'], day_start_time)
+        if _period_schema_available(cursor) else
+        dict(ProductionDateCutoffVersionID=None, CutoffTime=day_start_time)
+    )
+    lot_start = lot_end = None
     try:
         day_start_time = read_day_start_time(cursor, lot['ProdDate'])
         lot_start, lot_end = read_lot_boundaries(cursor, lot['ProductionID'])
+        lot_interval = _resolve_saved_lot_interval(
+            lot['ProdDate'], cutoff_config['CutoffTime'], lot_start, lot_end)
         assignment_start = press_form.get('ProductionStartTime') or None
         assignment_end = press_form.get('ProductionEndTime') or None
         if excluded_id is not None:
@@ -1199,34 +1257,42 @@ def build_press_production_context(cursor, lot, press_form=None):
             if 'ProductionEndTime' not in press_form:
                 assignment_end = existing_times[1]
         if not eligible_periods:
-            requested_interval = resolve_effective_interval(
-                lot['ProdDate'], day_start_time, assignment_start, assignment_end,
-                lot_start, lot_end)
+            if excluded_id is None:
+                requested_interval = _resolve_new_assignment_interval(
+                    lot['ProdDate'], cutoff_config['CutoffTime'], lot_interval,
+                    None, assignment_start, assignment_end)
+            else:
+                requested_interval = resolve_effective_interval(
+                    lot['ProdDate'], cutoff_config['CutoffTime'],
+                    assignment_start, assignment_end, lot_start, lot_end)
     except (TypeError, ValueError) as exc:
         interval_error = str(exc)
+        if lot_start is None or lot_end is None:
+            lot_interval_error = (
+                'กรุณากรอกและบันทึกเวลาเริ่มต้นและเวลาสิ้นสุดของ Lot ก่อนเพิ่ม Fitting')
     if interval_error:
         return dict(press_production=rows_for_lot, day_start_time=day_start_time,
                     eligible_shifts=eligible_shifts, eligible_periods=eligible_periods,
                     eligible_presses=[],
-                    eligible_moulds=[], press_product_error=interval_error)
+                    eligible_moulds=[],
+                    press_product_error=None if lot_interval_error else interval_error,
+                    lot_interval_error=lot_interval_error)
 
     presses_by_code = {}
     moulds_by_id = {}
-    cutoff_config = (
-        read_effective_cutoff(cursor, lot['ProdDate'], day_start_time)
-        if _period_schema_available(cursor) else
-        dict(ProductionDateCutoffVersionID=None, CutoffTime=day_start_time)
-    )
     if eligible_periods:
         selected_period_id = str(press_form.get('ShiftPeriodID') or '')
         for period in eligible_periods:
             period_id = str(period['ShiftPeriodID'])
             try:
-                interval = resolve_period_interval(
-                    lot['ProdDate'], period['StartTime'], period['EndTime'],
+                default_interval = _resolve_new_assignment_interval(
+                    lot['ProdDate'], cutoff_config['CutoffTime'], lot_interval,
+                    period, None, None)
+                interval = _resolve_new_assignment_interval(
+                    lot['ProdDate'], cutoff_config['CutoffTime'], lot_interval,
+                    period,
                     press_form.get('ProductionStartTime') if selected_period_id == period_id else None,
-                    press_form.get('ProductionEndTime') if selected_period_id == period_id else None,
-                    cutoff_config['CutoffTime'])
+                    press_form.get('ProductionEndTime') if selected_period_id == period_id else None)
                 period['PeriodLabelDisplay'] = (
                     f"{period['ShiftCode']} ({period['StartTime']:%H:%M}-"
                     f"{period['EndTime']:%H:%M}"
@@ -1243,6 +1309,8 @@ def build_press_production_context(cursor, lot, press_form=None):
             shift_code = str(period['ShiftCode'])
             period['ProductionStartTime'] = interval[0]
             period['ProductionEndTime'] = interval[1]
+            period['DefaultStartTime'] = default_interval[0].strftime('%H:%M')
+            period['DefaultEndTime'] = default_interval[1].strftime('%H:%M')
             presses = read_eligible_presses(cursor, product_family_id, product_code,
                 lot['ProdDate'], shift_code, excluded_id, interval)
             for press in presses:
@@ -1301,4 +1369,5 @@ def build_press_production_context(cursor, lot, press_form=None):
                 eligible_periods=eligible_periods,
                 eligible_presses=list(presses_by_code.values()),
                 eligible_moulds=list(moulds_by_id.values()),
-                press_product_error=None)
+                press_product_error=None,
+                lot_interval_error=None)

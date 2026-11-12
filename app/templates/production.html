@@ -251,6 +251,7 @@ main>header,main>.panel,main>.error{flex-shrink:0}
 <div class="lot-input-heading"><h2>ADD FITTING</h2><span class="muted">Assign a Press/Mould to {{ current.LotNo }}</span></div>
 {% if press_message %}<p class="press-production-message{% if press_message_type == 'error' %} error{% endif %}" role="status">{{ press_message }}</p>{% endif %}
 {% if press_product_error %}<p class="error" role="alert">{{ press_product_error }}</p>{% endif %}
+{% if lot_interval_error and press_message != lot_interval_error %}<p class="error" role="alert">{{ lot_interval_error }}</p>{% endif %}
 {% if eligible_presses and not press_product_error %}
 {% set editing_press_id = press_form.get('PressProductionID') %}
 <form id="add-fitting-form" method="post"
@@ -261,15 +262,15 @@ main>header,main>.panel,main>.error{flex-shrink:0}
 <input type="hidden" id="press-shift-code" name="shift_code" value="{{ press_form.get('ShiftCode') or '' }}">
 </form>
 <div class="table-scroll"><table class="depallet-grid press-add-fitting-table"><thead><tr><th>Shift Period</th><th>Press</th><th>Mould</th><th>Actual Start</th><th>Actual End</th><th>Action</th><th></th></tr></thead><tbody><tr>
-<td class="editable"><select form="add-fitting-form" id="press-period-select" name="shift_period_id" required aria-label="Shift Period"><option value="">Select Shift Period</option>{% for period in eligible_periods %}<option value="{{ period.ShiftPeriodID }}" data-shift-code="{{ period.ShiftCode }}" data-start="{{ period.StartTime.strftime('%H:%M') }}" data-end="{{ period.EndTime.strftime('%H:%M') }}" {% if press_form.get('ShiftPeriodID')|string == period.ShiftPeriodID|string %}selected{% endif %} {% if not period.Available %}disabled{% endif %} title="{{ period.AvailabilityReason or '' }}">{{ period.PeriodLabelDisplay }}</option>{% endfor %}</select></td>
+<td class="editable"><select form="add-fitting-form" id="press-period-select" name="shift_period_id" required aria-label="Shift Period"><option value="">Select Shift Period</option>{% for period in eligible_periods %}<option value="{{ period.ShiftPeriodID }}" data-shift-code="{{ period.ShiftCode }}" data-start="{{ period.StartTime.strftime('%H:%M') }}" data-end="{{ period.EndTime.strftime('%H:%M') }}" data-default-start="{{ period.DefaultStartTime or '' }}" data-default-end="{{ period.DefaultEndTime or '' }}" {% if press_form.get('ShiftPeriodID')|string == period.ShiftPeriodID|string %}selected{% endif %} {% if not period.Available %}disabled{% endif %} title="{{ period.AvailabilityReason or '' }}">{{ period.PeriodLabelDisplay }}</option>{% endfor %}</select></td>
 <td class="editable"><select form="add-fitting-form" class="press-choice" name="machine_code" required aria-label="Press"><option value="">Select Press</option>{% for press in eligible_presses %}<option value="{{ press.PressCode }}" data-available-shifts="{{ press.AvailableShiftCodes|join(',') }}" data-available-periods="{{ press.AvailablePeriodIDs|default([])|join(',') }}" data-availability-reason="{{ press.AvailabilityReason or '' }}" {% if press_form.get('MachineCode')|string == press.PressCode|string %}selected{% endif %} {% if not press.AvailableShiftCodes %}disabled{% endif %} title="{{ press.AvailabilityReason or '' }}">{{ press.PressCode }} / {{ press.PressName }}{% if not press.AvailableShiftCodes %} ({{ press.AvailabilityReason or 'unavailable' }}){% endif %}</option>{% endfor %}</select></td>
 <td class="editable"><select form="add-fitting-form" class="mould-choice" name="mould_id" required aria-label="Mould"><option value="">Select ACTIVE Mould</option>{% for mould in eligible_moulds %}<option value="{{ mould.MouldID }}" data-available-shifts="{{ mould.AvailableShiftCodes|join(',') }}" data-available-periods="{{ mould.AvailablePeriodIDs|default([])|join(',') }}" data-availability-reason="{{ mould.AvailabilityReason or '' }}" {% if press_form.get('MouldID')|string == mould.MouldID|string %}selected{% endif %} {% if not mould.AvailableShiftCodes %}disabled{% endif %} title="{{ mould.AvailabilityReason or '' }}">{{ mould.MouldNo or ('Mould ' ~ mould.MouldID) }} / {{ mould.MouldName }}{% if not mould.AvailableShiftCodes %} ({{ mould.AvailabilityReason or 'unavailable' }}){% endif %}</option>{% endfor %}</select></td>
 <td class="editable"><input form="add-fitting-form" class="fitting-start-time" name="production_start_time" type="time" value="{{ press_form.get('ProductionStartTime') or '' }}" required aria-label="Actual assignment start"></td>
 <td class="editable"><input form="add-fitting-form" class="fitting-end-time" name="production_end_time" type="time" value="{{ press_form.get('ProductionEndTime') or '' }}" required aria-label="Actual assignment end"></td>
-<td><button form="add-fitting-form" id="add-fitting-submit" class="primary" type="submit" {% if not eligible_periods or not eligible_presses or not eligible_moulds %}disabled{% endif %}>{% if editing_press_id %}EDIT FITTING{% else %}ADD FITTING{% endif %}</button>
+<td><button form="add-fitting-form" id="add-fitting-submit" class="primary" type="submit" {% if not eligible_periods or not eligible_presses or not eligible_moulds or (lot_interval_error and not editing_press_id) %}disabled{% endif %}>{% if editing_press_id %}EDIT FITTING{% else %}ADD FITTING{% endif %}</button>
 <button form="add-fitting-form" id="cancel-fitting-edit" type="button" {% if not editing_press_id %}hidden{% endif %}>CANCEL EDIT</button></td><td></td>
 </tr></tbody></table></div>
-{% elif not press_product_error %}<p class="muted">{% if not eligible_shifts %}No active Shift is configured.{% else %}No active Press is currently enabled for this Lot Product.{% endif %}</p>{% endif %}
+{% elif not press_product_error and not lot_interval_error %}<p class="muted">{% if not eligible_shifts %}No active Shift is configured.{% else %}No active Press is currently enabled for this Lot Product.{% endif %}</p>{% endif %}
 </section>
 <section class="panel" aria-label="Press Production">
 <div class="lot-input-heading"><h2>PRESS PRODUCTION</h2><span class="muted">Per-Press records for {{ current.LotNo }}</span></div>
@@ -440,8 +441,8 @@ main>header,main>.panel,main>.error{flex-shrink:0}
   period.addEventListener('change', () => {
     const selected = period.selectedOptions[0];
     shift.value = selected?.dataset.shiftCode || '';
-    if (selected?.dataset.start) start.value = selected.dataset.start;
-    if (selected?.dataset.end) end.value = selected.dataset.end;
+    start.value = selected?.dataset.defaultStart || '';
+    end.value = selected?.dataset.defaultEnd || '';
     syncAvailability(true);
   });
   document.querySelectorAll('.edit-fitting-button').forEach(button => {
@@ -451,8 +452,8 @@ main>header,main>.panel,main>.error{flex-shrink:0}
   if (period.value) {
     const selected = period.selectedOptions[0];
     shift.value = selected?.dataset.shiftCode || shift.value;
-    if (!start.value && selected?.dataset.start) start.value = selected.dataset.start;
-    if (!end.value && selected?.dataset.end) end.value = selected.dataset.end;
+    if (!start.value) start.value = selected?.dataset.defaultStart || '';
+    if (!end.value) end.value = selected?.dataset.defaultEnd || '';
   }
   syncAvailability(false);
 })();

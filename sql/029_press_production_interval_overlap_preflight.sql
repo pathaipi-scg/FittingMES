@@ -24,7 +24,37 @@ HAVING COUNT_BIG(*) > 1
 ORDER BY pp.ProductionID, pp.MachineCode, pp.ShiftMasterID;
 
 SELECT
+    pp.PressProductionID,
+    pp.ProductionID,
+    lot.LotNo,
+    lot.ProdDate AS ProductionDate,
+    pp.MachineCode,
+    pp.MouldID,
+    pp.ProductionStartTime,
+    pp.ProductionEndTime,
+    pp.ReleasedAt,
+    pp.ShiftMasterID,
+    lot.IsActive,
+    CASE WHEN pp.ProductionStartTime IS NULL THEN 1 ELSE 0 END AS MissingStartTime,
+    CASE WHEN pp.ProductionEndTime IS NULL THEN 1 ELSE 0 END AS MissingEndTime,
+    CASE WHEN pp.ProductionStartTime IS NOT NULL
+               AND pp.ProductionEndTime IS NOT NULL
+               AND pp.ProductionEndTime <= pp.ProductionStartTime
+         THEN 1 ELSE 0 END AS NonPositiveInterval
+FROM dbo.PressProduction AS pp
+JOIN dbo.ProductionLot AS lot
+  ON lot.ProductionID = pp.ProductionID
+WHERE lot.IsActive = 1
+  AND pp.ReleasedAt IS NULL
+  AND (pp.ProductionStartTime IS NULL
+       OR pp.ProductionEndTime IS NULL
+       OR pp.ProductionEndTime <= pp.ProductionStartTime)
+ORDER BY lot.ProdDate, pp.PressProductionID;
+
+SELECT
+    N'Valid actual interval overlap' AS Finding,
     first_assignment.PressProductionID AS FirstPressProductionID,
+    first_assignment.ProductionID AS FirstProductionID,
     first_lot.LotNo AS FirstLotNo,
     first_lot.ProdDate AS ProductionDate,
     first_assignment.MachineCode AS FirstMachineCode,
@@ -32,11 +62,71 @@ SELECT
     first_assignment.ProductionStartTime AS FirstStartTime,
     first_assignment.ProductionEndTime AS FirstEndTime,
     second_assignment.PressProductionID AS SecondPressProductionID,
+    second_assignment.ProductionID AS SecondProductionID,
     second_lot.LotNo AS SecondLotNo,
     second_assignment.MachineCode AS SecondMachineCode,
     second_assignment.MouldID AS SecondMouldID,
     second_assignment.ProductionStartTime AS SecondStartTime,
-    second_assignment.ProductionEndTime AS SecondEndTime
+    second_assignment.ProductionEndTime AS SecondEndTime,
+    CASE WHEN first_assignment.ProductionStartTime
+                   > second_assignment.ProductionStartTime
+         THEN first_assignment.ProductionStartTime
+         ELSE second_assignment.ProductionStartTime END AS OverlapStartTime,
+    CASE WHEN first_assignment.ProductionEndTime
+                   < second_assignment.ProductionEndTime
+         THEN first_assignment.ProductionEndTime
+         ELSE second_assignment.ProductionEndTime END AS OverlapEndTime
+FROM dbo.PressProduction AS first_assignment
+JOIN dbo.ProductionLot AS first_lot
+  ON first_lot.ProductionID = first_assignment.ProductionID
+JOIN dbo.PressProduction AS second_assignment
+  ON second_assignment.PressProductionID > first_assignment.PressProductionID
+JOIN dbo.ProductionLot AS second_lot
+  ON second_lot.ProductionID = second_assignment.ProductionID
+WHERE first_lot.IsActive = 1
+  AND second_lot.IsActive = 1
+  AND first_assignment.ReleasedAt IS NULL
+  AND second_assignment.ReleasedAt IS NULL
+  AND first_assignment.ProductionStartTime IS NOT NULL
+  AND first_assignment.ProductionEndTime IS NOT NULL
+  AND first_assignment.ProductionEndTime > first_assignment.ProductionStartTime
+  AND second_assignment.ProductionStartTime IS NOT NULL
+  AND second_assignment.ProductionEndTime IS NOT NULL
+  AND second_assignment.ProductionEndTime > second_assignment.ProductionStartTime
+  AND (first_assignment.MachineCode = second_assignment.MachineCode
+       OR (first_assignment.MouldID IS NOT NULL
+           AND first_assignment.MouldID = second_assignment.MouldID))
+  AND first_assignment.ProductionStartTime < second_assignment.ProductionEndTime
+  AND second_assignment.ProductionStartTime < first_assignment.ProductionEndTime
+ORDER BY first_lot.ProdDate, first_assignment.PressProductionID,
+         second_assignment.PressProductionID;
+
+SELECT
+    N'Potential conflict caused by NULL interval endpoint' AS Finding,
+    first_assignment.PressProductionID AS FirstPressProductionID,
+    first_assignment.ProductionID AS FirstProductionID,
+    first_lot.LotNo AS FirstLotNo,
+    first_lot.ProdDate AS FirstProductionDate,
+    first_assignment.MachineCode AS FirstMachineCode,
+    first_assignment.MouldID AS FirstMouldID,
+    first_assignment.ProductionStartTime AS FirstStartTime,
+    first_assignment.ProductionEndTime AS FirstEndTime,
+    CASE WHEN first_assignment.ProductionStartTime IS NULL THEN 1 ELSE 0 END
+        AS FirstMissingStartTime,
+    CASE WHEN first_assignment.ProductionEndTime IS NULL THEN 1 ELSE 0 END
+        AS FirstMissingEndTime,
+    second_assignment.PressProductionID AS SecondPressProductionID,
+    second_assignment.ProductionID AS SecondProductionID,
+    second_lot.LotNo AS SecondLotNo,
+    second_lot.ProdDate AS SecondProductionDate,
+    second_assignment.MachineCode AS SecondMachineCode,
+    second_assignment.MouldID AS SecondMouldID,
+    second_assignment.ProductionStartTime AS SecondStartTime,
+    second_assignment.ProductionEndTime AS SecondEndTime,
+    CASE WHEN second_assignment.ProductionStartTime IS NULL THEN 1 ELSE 0 END
+        AS SecondMissingStartTime,
+    CASE WHEN second_assignment.ProductionEndTime IS NULL THEN 1 ELSE 0 END
+        AS SecondMissingEndTime
 FROM dbo.PressProduction AS first_assignment
 JOIN dbo.ProductionLot AS first_lot
   ON first_lot.ProductionID = first_assignment.ProductionID
@@ -51,38 +141,12 @@ WHERE first_lot.IsActive = 1
   AND (first_assignment.MachineCode = second_assignment.MachineCode
        OR (first_assignment.MouldID IS NOT NULL
            AND first_assignment.MouldID = second_assignment.MouldID))
-  AND (
-      first_assignment.ProductionStartTime IS NULL
-      OR second_assignment.ProductionStartTime IS NULL
-      OR (first_assignment.ProductionEndTime IS NOT NULL
-          AND first_assignment.ProductionEndTime <= first_assignment.ProductionStartTime)
-      OR (second_assignment.ProductionEndTime IS NOT NULL
-          AND second_assignment.ProductionEndTime <= second_assignment.ProductionStartTime)
-      OR ((first_assignment.ProductionEndTime IS NULL
-           OR second_assignment.ProductionStartTime < first_assignment.ProductionEndTime)
-          AND (second_assignment.ProductionEndTime IS NULL
-               OR first_assignment.ProductionStartTime < second_assignment.ProductionEndTime))
-  )
+  AND (first_assignment.ProductionStartTime IS NULL
+       OR first_assignment.ProductionEndTime IS NULL
+       OR second_assignment.ProductionStartTime IS NULL
+       OR second_assignment.ProductionEndTime IS NULL)
 ORDER BY first_lot.ProdDate, first_assignment.PressProductionID,
          second_assignment.PressProductionID;
-
-SELECT
-    pp.PressProductionID,
-    lot.LotNo,
-    lot.ProdDate AS ProductionDate,
-    pp.MachineCode,
-    pp.MouldID,
-    pp.ProductionStartTime,
-    pp.ProductionEndTime
-FROM dbo.PressProduction AS pp
-JOIN dbo.ProductionLot AS lot
-  ON lot.ProductionID = pp.ProductionID
-WHERE lot.IsActive = 1
-  AND pp.ReleasedAt IS NULL
-  AND (pp.ProductionStartTime IS NULL
-       OR (pp.ProductionEndTime IS NOT NULL
-           AND pp.ProductionEndTime <= pp.ProductionStartTime))
-ORDER BY lot.ProdDate, pp.PressProductionID;
 
 SELECT
     i.name AS IndexName,

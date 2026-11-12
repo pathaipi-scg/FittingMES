@@ -38,6 +38,8 @@ assert.match(html, /name="shift_period_id" required/);
 assert.match(html, /id="press-shift-code" name="shift_code"/);
 assert.match(html, /name="production_start_time" type="time"/);
 assert.match(html, /name="production_end_time" type="time"/);
+assert.match(html, /data-default-start="\{\{ period\.DefaultStartTime or '' \}\}"/);
+assert.match(html, /lot_interval_error/);
 assert.match(html, /data-available-shifts=/);
 assert.match(html, /data-shift-code=/);
 assert.match(html, /Downtime attribution is ambiguous\. Saved values are retained; downtime editing is disabled\./);
@@ -190,8 +192,14 @@ form.action = form.dataset.addAction;
 const period = new Element('');
 period.options = [
   new Element(''),
-  Object.assign(new Element('11'), {dataset: {shiftCode: '1', start: '08:00', end: '16:00'}}),
-  Object.assign(new Element('12'), {dataset: {shiftCode: '2', start: '18:00', end: '04:00'}}),
+  Object.assign(new Element('11'), {dataset: {
+    shiftCode: '1', start: '08:00', end: '16:00',
+    defaultStart: '08:15', defaultEnd: '15:45',
+  }}),
+  Object.assign(new Element('12'), {dataset: {
+    shiftCode: '2', start: '18:00', end: '04:00',
+    defaultStart: '22:30', defaultEnd: '03:30',
+  }}),
 ];
 const shift = new Element('');
 const start = new Element('');
@@ -274,6 +282,8 @@ mould.value = '20';
 period.value = '12';
 period.fire('change');
 assert.equal(shift.value, '2');
+assert.equal(start.value, '22:30', 'Shift 2 defaults to the Lot/period intersection');
+assert.equal(end.value, '03:30', 'Overnight period end follows the Lot/period intersection');
 assert.equal(press.options[1].disabled, false, 'Shift 2 Press becomes enabled for its period');
 assert.equal(mould.options[1].disabled, false, 'Shift 2 Mould becomes enabled for its period');
 assert.equal(press.options[3].disabled, true, 'Shift 1-only Press is disabled in Shift 2');
@@ -286,6 +296,8 @@ mould.value = '10';
 period.value = '11';
 period.fire('change');
 assert.equal(shift.value, '1');
+assert.equal(start.value, '08:15', 'Shift 1 defaults to the Lot/period intersection');
+assert.equal(end.value, '15:45', 'Shift 1 end defaults to the Lot/period intersection');
 assert.equal(press.options[1].disabled, true, 'Shift 2 Press is disabled after switching periods');
 assert.equal(mould.options[1].disabled, true, 'Shift 2 Mould is disabled after switching periods');
 assert.equal(press.value, '', 'Unavailable Press is cleared after switching periods');

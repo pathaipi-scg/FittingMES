@@ -28,7 +28,8 @@ class PressProductionIntervalMigrationTests(unittest.TestCase):
 
     def test_preflight_is_read_only_and_reports_existing_invalid_or_overlapping_rows(self):
         self.assertIn("SESSION_CONTEXT(N'FittingMES_029_TestRun')", self.preflight)
-        self.assertIn('first_assignment.ProductionStartTime IS NULL', self.preflight)
+        self.assertIn('pp.ProductionStartTime IS NULL', self.preflight)
+        self.assertIn('pp.ProductionEndTime IS NULL', self.preflight)
         self.assertIn('second_assignment.ProductionStartTime IS NULL', self.preflight)
         self.assertIn('first_assignment.ProductionStartTime < second_assignment.ProductionEndTime',
                       self.preflight)
@@ -37,6 +38,37 @@ class PressProductionIntervalMigrationTests(unittest.TestCase):
             r'\b(?:INSERT|UPDATE|DELETE|ALTER|DROP|CREATE|MERGE)\b',
         )
         self.assertNotIn('second_lot.ProdDate = first_lot.ProdDate', self.preflight)
+
+    def test_preflight_separates_invalid_intervals_real_overlaps_and_null_candidates(self):
+        invalid_start = self.preflight.index('AS MissingStartTime')
+        actual_overlap = self.preflight.index(
+            "N'Valid actual interval overlap' AS Finding"
+        )
+        null_candidate = self.preflight.index(
+            "N'Potential conflict caused by NULL interval endpoint' AS Finding"
+        )
+        self.assertLess(invalid_start, actual_overlap)
+        self.assertLess(actual_overlap, null_candidate)
+        self.assertIn('AS MissingEndTime', self.preflight)
+        self.assertIn('AS NonPositiveInterval', self.preflight)
+        self.assertIn('first_assignment.ProductionStartTime IS NOT NULL',
+                      self.preflight)
+        self.assertIn('first_assignment.ProductionEndTime IS NOT NULL',
+                      self.preflight)
+        self.assertIn('second_assignment.ProductionStartTime IS NOT NULL',
+                      self.preflight)
+        self.assertIn('second_assignment.ProductionEndTime IS NOT NULL',
+                      self.preflight)
+        self.assertIn('AS OverlapStartTime', self.preflight)
+        self.assertIn('AS OverlapEndTime', self.preflight)
+        self.assertIn(
+            'second_assignment.PressProductionID > first_assignment.PressProductionID',
+            self.preflight,
+        )
+        self.assertIn('first_assignment.ProductionStartTime IS NULL',
+                      self.preflight[null_candidate:])
+        self.assertIn('first_assignment.ProductionEndTime IS NULL',
+                      self.preflight[null_candidate:])
 
     def test_migration_replaces_identity_unique_index_with_interval_indexes(self):
         self.assertIn('DROP INDEX UX_PressProduction_Production_Machine_ShiftActive',

@@ -11,7 +11,9 @@ from app.press_production import (read_eligible_moulds, read_eligible_presses,
                                   read_press_production, read_assigned_press_codes,
                                   save_press_production,
                                   release_press_production, undo_release_press_production,
-                                  validate_press_input, calculate_smdt)
+                                  validate_press_input, calculate_smdt,
+                                  _resolve_new_assignment_interval,
+                                  _resolve_saved_lot_interval)
 from app.main import production_page, save_press_production_route_action
 from test_production import DAY, LOT, PLAN, PRODUCTION_REJECT_CONTEXT, request
 
@@ -471,7 +473,7 @@ class PressProductionTests(unittest.TestCase):
         self.assertEqual(conn.press_rows[30]['PressProductionID'], before['PressProductionID'])
         for key in ('ProductionID', 'MachineCode', 'MouldID', 'DispatchQty', 'CounterQty', 'CuringQty', 'ProductionDate', 'Remark'):
             self.assertEqual(conn.press_rows[30][key], before[key])
-        self.assertIsNone(conn.press_rows[30]['ReleasedAt'])
+        self.assertIsNone(conn.press_rows[30].get('ReleasedAt'))
         self.assertIsNone(conn.press_rows[30]['ReleasedBy'])
         self.assertEqual(conn.usage_rows[30], usage)
         self.assertEqual(conn.time_events[100], events)
@@ -1165,6 +1167,10 @@ class PressProductionTests(unittest.TestCase):
         save_press_production(conn, 7, data, 30)
         self.assertEqual(conn.press_rows[30]['ProductionStartTime'], start)
         self.assertEqual(conn.press_rows[30]['ProductionEndTime'], end)
+        save_press_production(conn, 7, valid_input(
+            ProductionStartTime='', ProductionEndTime=''), 30)
+        self.assertEqual(conn.press_rows[30]['ProductionStartTime'], start)
+        self.assertEqual(conn.press_rows[30]['ProductionEndTime'], end)
 
     def test_press_shift_times_update_only_the_selected_assignment(self):
         shift_one_start = datetime(2026, 9, 26, 10, 0)
@@ -1591,13 +1597,61 @@ class PressProductionTests(unittest.TestCase):
         for data in (valid_input(CounterQty=''), valid_input(CounterQty='5', CuringQty='6')):
             with self.assertRaises(ValueError): validate_press_input(data, production_date=DAY, day_start_time=time(8))
 
-    def test_new_press_mould_assignment_can_start_without_production_values(self):
+    def test_new_assignment_defaults_to_saved_lot_interval_and_is_active(self):
         conn = PressProductionConnection()
         data = valid_input(CounterQty='', CuringQty='', ProductionStartTime='', ProductionEndTime='', Remark='')
         save_press_production(conn, 7, data)
         self.assertEqual(len(conn.press_rows), 1)
-        self.assertIsNone(conn.press_rows[30]['ProductionStartTime'])
-        self.assertIsNone(conn.press_rows[30]['ProductionEndTime'])
+        self.assertEqual(conn.press_rows[30]['ProductionStartTime'],
+                         datetime(2026, 9, 26, 22))
+        self.assertEqual(conn.press_rows[30]['ProductionEndTime'],
+                         datetime(2026, 9, 27, 0, 15))
+        self.assertIsNone(conn.press_rows[30].get('ReleasedAt'))
+
+    def test_new_assignment_requires_both_saved_lot_times(self):
+        for start_time, end_time in ((None, None), (None, time(0, 15)),
+                                     (time(22), None)):
+            conn = PressProductionConnection()
+            conn.lot_start_time = start_time
+            conn.lot_end_time = end_time
+            with self.subTest(start_time=start_time, end_time=end_time):
+                with self.assertRaisesRegex(ValueError, 'กรุณากรอกและบันทึก'):
+                    save_press_production(conn, 7, valid_input())
+            self.assertEqual(conn.press_rows, {})
+            self.assertEqual((conn.commits, conn.rollbacks), (0, 1))
+
+    def test_new_assignment_rejects_one_missing_actual_endpoint(self):
+        conn = PressProductionConnection()
+        with self.assertRaisesRegex(ValueError, 'both Start and End'):
+            save_press_production(conn, 7, valid_input(
+                ProductionStartTime='', ProductionEndTime='00:15'))
+        self.assertEqual(conn.press_rows, {})
+        self.assertEqual((conn.commits, conn.rollbacks), (0, 1))
+
+    def test_new_assignment_period_default_intersects_lot_at_effective_cutoff(self):
+        production_date = date(2026, 9, 26)
+        for cutoff in (time(7), time(8)):
+            with self.subTest(cutoff=cutoff):
+                lot_start, lot_end = time(6), time(8, 30)
+                lot_interval = _resolve_saved_lot_interval(
+                    production_date, cutoff, lot_start, lot_end)
+                interval = _resolve_new_assignment_interval(
+                    production_date, cutoff, lot_interval,
+                    dict(StartTime=time(4), EndTime=time(8)), '', '')
+                self.assertEqual(
+                    interval,
+                    (datetime(2026, 9, 27, 6), datetime(2026, 9, 27, 8)))
+
+    def test_new_assignment_manual_times_override_lot_default(self):
+        production_date = date(2026, 9, 26)
+        lot_start, lot_end = time(22), time(0, 15)
+        cutoff = time(8)
+        lot_interval = _resolve_saved_lot_interval(
+            production_date, cutoff, lot_start, lot_end)
+        self.assertEqual(
+            _resolve_new_assignment_interval(
+                production_date, cutoff, lot_interval, None, '08:00', '16:00'),
+            (datetime(2026, 9, 26, 8), datetime(2026, 9, 26, 16)))
 
     def test_manual_minutes_create_five_rows_and_reload_values(self):
         conn = PressProductionConnection()

@@ -620,6 +620,7 @@ def production_page(request, plan_id=None, product_code=None, confirm=False, map
                    product_code=None, lot=None, error=None, lots_load_failed=False, running_no=None,
                    running_suffix=None, running_suffix_warning=None, created_lot=None,
                    press_production=[], day_start_time=None, eligible_presses=[], eligible_moulds=[], press_product_error=None,
+                   lot_interval_error=None,
                    eligible_shifts=[], press_form={},
                    press_message=press_message, press_message_type=press_message_type,
                    wet_reject_reasons=[], wet_reject_events=[], wet_reject_summary=[], wet_reject_total=0,
